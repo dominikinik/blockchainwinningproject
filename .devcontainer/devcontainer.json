@@ -1,5 +1,5 @@
 {
-  "name": "live — Solana bootcamp",
+  "name": "SLAna monorepo",
 
   "build": {
     "dockerfile": "../Dockerfile",
@@ -22,9 +22,10 @@
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
 
-  "forwardPorts": [8899],
+  "forwardPorts": [8899, 5173],
   "portsAttributes": {
-    "8899": { "label": "Surfpool RPC", "onAutoForward": "silent" }
+    "8899": { "label": "Surfpool RPC", "onAutoForward": "silent" },
+    "5173": { "label": "SLAna frontend", "onAutoForward": "notify" }
   },
 
   "customizations": {
