@@ -37,6 +37,7 @@ uptime_deal_tests() {
 
 run uptime-db sh test/run-tests.sh
 run uptime-service ./mvnw -q test
+run uptime-monitor ./mvnw -q test
 run frontend frontend_tests
 run uptime-deal uptime_deal_tests
 

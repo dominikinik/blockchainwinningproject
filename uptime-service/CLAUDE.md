@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in the 
 
 ## Overview
 
-A Spring Boot 4.1 / Java 21 service that monitors its own health and records per-second uptime history. It builds on the host machine; the repo's devcontainer has no JDK.
+A Spring Boot 4.1 / Java 21 service that monitors its own health and records per-second uptime history. It is also the health **provider** of the uptime split: `../uptime-monitor` subscribes to its `GET /api/health` and tracks its downtime from outside. It builds on the host machine; the repo's devcontainer has no JDK.
 
 ## Commands
 
@@ -31,7 +31,7 @@ Swagger UI is served at `/swagger-ui.html`, OpenAPI at `/v3/api-docs`, and healt
 There is one data flow. A logical switch drives health, health is sampled, samples are aggregated, and the API reads the aggregates back:
 
 1. **`state/ApplicationStateService`** is an `AtomicBoolean` up/down switch, toggled by `POST /api/application/{stop,start}`. Stopping does **not** stop the process. It only flips the switch.
-2. **`state/ApplicationStateHealthIndicator`** exposes the switch as the `applicationState` component of `/actuator/health`. When it is DOWN, the endpoint returns 503.
+2. **`state/ApplicationStateHealthIndicator`** exposes the switch as the `applicationState` component of `/actuator/health`. When it is DOWN, the endpoint returns 503. **`web/HealthController`** exposes the same switch as `GET /api/health` for `uptime-monitor`. It always answers 200 with `{"status":"UP"|"DOWN"}`, so the monitor records a stop as `Downtime`, not as `InternalErrorHappened`.
 3. **`monitor/UptimeSampler`** has two `@Scheduled` jobs. `sample()` runs every `uptime.sample-interval-ms` (10 ms) and reads the health indicator into in-memory per-epoch-second buckets. `flush()` runs every `uptime.flush-interval-ms` (1 s) and persists every *completed* second; the current second stays in memory while it is still filling. A second counts as up only if **every** sample in it was UP. The scheduler pool size is 3 (`spring.task.scheduling.pool.size`) so that sampling, flushing and deal settlement don't block each other.
 4. **`uptime/UptimeRecord`** stores one row per second, keyed by the second's start `Instant` (`ts` column, UTC, truncated).
 5. **`uptime/UptimeQueryService`** backs `GET /api/uptime` (an inclusive `[from, to]` range, one point per second) and `GET /api/uptime/at`. **Any second with no record is reported as down**, so time when the process was off counts as downtime. The range defaults to the last `uptime.default-range-seconds` seconds and is capped at `uptime.max-range-seconds`. An invalid range throws `IllegalArgumentException`, which `web/ApiExceptionHandler` maps to a 400 `ProblemDetail`.

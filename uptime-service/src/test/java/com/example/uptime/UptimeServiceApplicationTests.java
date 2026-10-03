@@ -174,6 +174,16 @@ class UptimeServiceApplicationTests {
 	}
 
 	@Test
+	void monitorHealthEndpointAlwaysAnswers200WithTheState() throws Exception {
+		mvc.perform(get("/api/health")).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UP"));
+		mvc.perform(post("/api/application/stop"));
+		mvc.perform(get("/api/health")).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("DOWN"));
+		mvc.perform(post("/api/application/start"));
+		mvc.perform(get("/api/health")).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UP"));
+		mvc.perform(post("/api/health")).andExpect(status().isMethodNotAllowed());
+	}
+
+	@Test
 	void stopAndStartSwitchHealthEndpointAndState() throws Exception {
 		mvc.perform(get("/actuator/health")).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UP"));
 		mvc.perform(get("/api/application/state")).andExpect(jsonPath("$.status").value("UP"));
@@ -261,6 +271,7 @@ class UptimeServiceApplicationTests {
 			.andExpect(jsonPath("$.paths['/api/uptime']").exists())
 			.andExpect(jsonPath("$.paths['/api/uptime/at']").exists())
 			.andExpect(jsonPath("$.paths['/api/application/stop']").exists())
+			.andExpect(jsonPath("$.paths['/api/health']").exists())
 			.andExpect(jsonPath("$.paths['/api/application/start']").exists())
 			.andExpect(jsonPath("$.paths['/api/application/state']").exists())
 			.andExpect(jsonPath("$.paths['/api/deals']").exists())
