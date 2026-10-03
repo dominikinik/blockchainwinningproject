@@ -21,7 +21,7 @@ export function makeSLA(overrides: Partial<SLA> = {}): SLA {
     customerWallet: WALLET, providerWallet: PROVIDER, customerPaymentSol: 10, providerGuaranteeSol: 2,
     requiredUptime: 99.9, currentUptime: 99.95, successfulChecks: 90, failedChecks: 10,
     startAt: new Date(now - 86_400_000).toISOString(), endAt: new Date(now + 86_400_000).toISOString(),
-    durationDays: 7, checkIntervalMinutes: 5, timeoutMs: 2000, consensusRequired: 3, monitorCount: 5,
+    durationDays: 7, consensusRequired: 3, monitorCount: 5,
     status: 'healthy', history: [], timeline: ['up', 'down'],
     settlement: { state: 'pending', projectionRecipient: 'provider', projectionAmountSol: 12 },
     ...overrides,

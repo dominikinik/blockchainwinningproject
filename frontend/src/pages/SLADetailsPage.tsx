@@ -6,7 +6,7 @@ import { useWalletModal } from '@solana/wallet-adapter-react-ui'
 import { EmptyState, ErrorState, LoadingState, ResultBadge, SectionHeading, StatusBadge } from '../components/UI'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { useNow } from '../hooks/useNow'
-import { formatCheckInterval, formatDuration } from '../lib/agreementTerms'
+import { formatDuration } from '../lib/agreementTerms'
 import { formatDate, formatSol, shortAddress, timeRemainingPrecise, totalEscrowSol } from '../lib/format'
 import { slaService } from '../services/solana/slaService'
 
@@ -75,7 +75,6 @@ export function SLADetailsPage() {
             <div><span>End time</span><strong>{formatDate(sla.endAt, sla.durationDays < 1 / 24)}</strong></div>
             <div><span>Duration</span><strong>{formatDuration(sla.durationDays)}</strong></div>
             <div><span>Required uptime</span><strong>{sla.requiredUptime}%</strong></div>
-            <div><span>Check interval</span><strong>{formatCheckInterval(sla.checkIntervalMinutes)}</strong></div>
             <div><span>Monitoring</span><strong>One server</strong></div>
             <div><span>Customer service payment</span><strong>{formatSol(sla.customerPaymentSol)}</strong></div>
             <div><span>Provider guarantee</span><strong>{formatSol(sla.providerGuaranteeSol)}</strong></div>

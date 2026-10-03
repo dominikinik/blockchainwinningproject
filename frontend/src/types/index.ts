@@ -33,8 +33,6 @@ export interface SLA {
   startAt: string
   endAt: string
   durationDays: number
-  checkIntervalMinutes: number
-  timeoutMs: number
   consensusRequired: number
   monitorCount: number
   status: SLAStatus
@@ -85,8 +83,6 @@ export interface CreateSLAInput {
   providerGuaranteeSol: number
   requiredUptime: number
   durationDays: number
-  checkIntervalMinutes: number
-  timeoutMs: number
   consensusRequired: number
   monitorCount: number
 }

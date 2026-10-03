@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkIntervalOptions, durationOptions, formatCheckInterval, formatDuration } from './agreementTerms'
+import { durationOptions, formatDuration } from './agreementTerms'
 
 describe('durationOptions', () => {
   it('labels match formatDuration for every option', () => {
@@ -8,12 +8,6 @@ describe('durationOptions', () => {
   it('is sorted from shortest to longest', () => {
     const values = durationOptions.map((option) => option.value)
     expect(values).toEqual([...values].sort((a, b) => a - b))
-  })
-})
-
-describe('checkIntervalOptions', () => {
-  it('labels match formatCheckInterval for every option', () => {
-    for (const option of checkIntervalOptions) expect(formatCheckInterval(option.value)).toBe(option.label)
   })
 })
 
@@ -34,16 +28,5 @@ describe('formatDuration', () => {
   })
   it('rounds to whole seconds', () => {
     expect(formatDuration(30.4 / 86_400)).toBe('30 seconds')
-  })
-})
-
-describe('formatCheckInterval', () => {
-  it.each([
-    [10 / 60, 'Every 10 seconds'],
-    [1, 'Every 1 minute'],
-    [5, 'Every 5 minutes'],
-    [2.5, 'Every 2.5 minutes'],
-  ])('formats %f minutes as %s', (minutes, label) => {
-    expect(formatCheckInterval(minutes)).toBe(label)
   })
 })

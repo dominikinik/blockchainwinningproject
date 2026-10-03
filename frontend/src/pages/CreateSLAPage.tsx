@@ -5,7 +5,7 @@ import { useWallet } from '@solana/wallet-adapter-react'
 import { useWalletModal } from '@solana/wallet-adapter-react-ui'
 import { PublicKey } from '@solana/web3.js'
 import { ErrorState } from '../components/UI'
-import { checkIntervalOptions, durationOptions, formatDuration } from '../lib/agreementTerms'
+import { durationOptions, formatDuration } from '../lib/agreementTerms'
 import { formatSol, totalEscrowSol } from '../lib/format'
 import { slaService } from '../services/solana/slaService'
 import type { CreateSLAInput } from '../types'
@@ -16,8 +16,7 @@ type Draft = Omit<CreateSLAInput, 'customerWallet' | 'monitorCount' | 'customerP
 }
 const initialDraft: Draft = {
   name: '', endpoint: '', providerWallet: '', customerPaymentSol: '10', providerGuaranteeSol: '2', requiredUptime: 99.9,
-  durationDays: durationOptions[1].value, checkIntervalMinutes: checkIntervalOptions[0].value,
-  timeoutMs: 2000, consensusRequired: 1,
+  durationDays: durationOptions[1].value, consensusRequired: 1,
 }
 const MONITOR_COUNT = 1
 
@@ -40,7 +39,6 @@ function validate(draft: Draft): Record<string, string> {
   }
   if (!Number.isFinite(draft.requiredUptime) || draft.requiredUptime <= 0 || draft.requiredUptime > 100) errors.requiredUptime = 'Enter a percentage above 0 and up to 100.'
   if (!durationOptions.some((option) => option.value === draft.durationDays)) errors.durationDays = 'Choose a duration.'
-  if (!checkIntervalOptions.some((option) => option.value === draft.checkIntervalMinutes) || draft.checkIntervalMinutes > draft.durationDays * 1440) errors.checkIntervalMinutes = 'Choose an interval no longer than the agreement.'
   return errors
 }
 
@@ -52,7 +50,6 @@ export function CreateSLAPage() {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
-  const intervalTooLong = draft.checkIntervalMinutes > draft.durationDays * 1440
   const customerPayment = Number(draft.customerPaymentSol)
   const providerGuarantee = Number(draft.providerGuaranteeSol)
   const totalEscrow = draft.customerPaymentSol.trim() && draft.providerGuaranteeSol.trim() && Number.isFinite(customerPayment + providerGuarantee)
@@ -60,7 +57,7 @@ export function CreateSLAPage() {
 
   function update<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft((current) => ({ ...current, [key]: value }))
-    setErrors((current) => ({ ...current, [key]: '', checkIntervalMinutes: '' }))
+    setErrors((current) => ({ ...current, [key]: '' }))
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -90,7 +87,6 @@ export function CreateSLAPage() {
         <div className="form-section"><div className="form-section-heading"><span className="form-step">02</span><div><h2>Agreement terms</h2><p>Set the funds and the performance threshold.</p></div></div>
           <div className="field-grid"><div className="field"><label htmlFor="customer-payment">Customer service payment</label><div className="input-with-suffix"><input id="customer-payment" type="number" min="0.000000001" max="10000" step="1" value={draft.customerPaymentSol} onChange={(e) => update('customerPaymentSol', e.target.value)} aria-invalid={Boolean(errors.customerPaymentSol)} /><span>SOL</span></div><small>{errors.customerPaymentSol || 'Returned to the customer if the SLA is breached.'}</small></div><div className="field"><label htmlFor="provider-guarantee">Provider SLA guarantee</label><div className="input-with-suffix"><input id="provider-guarantee" type="number" min="0.000000001" max="10000" step="1" value={draft.providerGuaranteeSol} onChange={(e) => update('providerGuaranteeSol', e.target.value)} aria-invalid={Boolean(errors.providerGuaranteeSol)} /><span>SOL</span></div><small>{errors.providerGuaranteeSol || 'Returned to the provider when the SLA is met.'}</small></div></div>
           <div className="field-grid"><div className="field"><label htmlFor="uptime">Required uptime</label><div className="input-with-suffix"><input id="uptime" type="number" min="0.01" max="100" step="0.01" value={draft.requiredUptime} onChange={(e) => update('requiredUptime', Number(e.target.value))} aria-invalid={Boolean(errors.requiredUptime)} /><span>%</span></div><small>{errors.requiredUptime || 'Minimum acceptable uptime over the period.'}</small></div><div className="field"><label htmlFor="duration">SLA duration</label><select id="duration" value={draft.durationDays} onChange={(e) => update('durationDays', Number(e.target.value))} aria-invalid={Boolean(errors.durationDays)}>{durationOptions.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}</select><small>{errors.durationDays || 'Starts when both parties have funded escrow.'}</small></div></div>
-          <div className="field-grid"><div className="field"><label htmlFor="interval">Check interval</label><select id="interval" value={draft.checkIntervalMinutes} onChange={(e) => update('checkIntervalMinutes', Number(e.target.value))} aria-invalid={Boolean(errors.checkIntervalMinutes) || intervalTooLong}>{checkIntervalOptions.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}</select><small>{errors.checkIntervalMinutes || (intervalTooLong ? 'Choose an interval no longer than the agreement.' : 'Outages between scheduled checks may be missed.')}</small></div><div className="field field-total-locked"><span>Total held in escrow</span><strong>{totalEscrow}</strong></div></div>
         </div>
         {submitError && <div className="form-submit-error"><ErrorState message={submitError} /></div>}
         <div className="form-submit"><button className="button button-primary button-large" type="submit" disabled={submitting}>{submitting ? 'Creating agreement...' : 'Create SLA'}<ArrowRight size={17} /></button></div>

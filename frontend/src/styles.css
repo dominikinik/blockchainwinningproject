@@ -50,4 +50,3 @@
 .service-scope-note{display:flex;align-items:flex-start;gap:10px;padding:0 4px;color:#8993a2;font-size:11px;line-height:1.6}
 .service-scope-note svg{flex:none;margin-top:1px;color:#756ce5}
 @media(max-width:600px){.live-timeline-wrap{padding:20px 18px 16px}.live-timeline{gap:2px;height:46px}.live-timeline-axis{font-size:9px}.live-history-footer{padding:13px 18px}.service-scope-note{padding:0 2px}}
-.field-total-locked{align-self:end;min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 13px;border:1px solid #e8e6fb;background:#f8f7ff;border-radius:8px}.field-total-locked>span{font-size:11px;font-weight:700;color:#77728f}.field-total-locked strong{font-size:14px;color:#5148ce;white-space:nowrap}

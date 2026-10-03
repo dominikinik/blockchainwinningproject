@@ -9,7 +9,13 @@ const delay = (ms = 280) => new Promise((resolve) => window.setTimeout(resolve, 
 
 function readStored(): SLA[] {
   try {
-    return JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '[]') as SLA[]
+    const entries = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '[]') as Array<SLA & Record<string, unknown>>
+    return entries.map((entry) => {
+      const clean = { ...entry }
+      delete clean.checkIntervalMinutes
+      delete clean.timeoutMs
+      return clean as SLA
+    })
   } catch {
     return []
   }

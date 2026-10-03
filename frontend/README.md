@@ -28,10 +28,9 @@ SLANA_UPTIME_SERVICE_TARGET=http://host.docker.internal:8080 npm run dev
 - Dashboard, SLA details, and monitoring are browseable without a wallet.
 - Phantom and Solflare connections use Solana Devnet.
 - Creating an SLA requires a connected wallet. The current service records a customer SOL payment and provider SOL guarantee in browser storage; it does not sign transactions or transfer SOL.
-- Request timeout is fixed at 2,000 ms in the mock agreement data; it is not a form control until customer endpoint monitoring exists.
 - The current UI assumes one monitoring server. The form does not ask for monitor consensus; newly created mock agreements retain a fixed 1-of-1 value only for model compatibility.
 - The form offers 30-second, 1-minute, 5-minute, and 15-minute demo durations, plus longer terms. A countdown on the Dashboard and details page lets a demo agreement reach its end during a presentation.
-- Check interval always shows 10 seconds, 1 minute, 5 minutes, and 10 minutes. An interval longer than the agreement is rejected at submission; customer endpoint checks are not implemented yet.
+- Monitoring check cadence and request timeout are service configuration, not agreement terms. Customer endpoint checks are not implemented yet.
 - After a demo agreement ends, the details page accepts a mock settlement request. New agreements have no monitor evidence, so this records the request without inventing a payout recipient or transaction.
 - The ended Email API agreement demonstrates the settlement request state. Its mock settlement is handled by the service and stored locally; no SOL moves.
 - New agreements and mock settlements persist in browser `localStorage`. Seed agreements, observations, and SLA uptime history live in `src/mocks/data.ts`.
