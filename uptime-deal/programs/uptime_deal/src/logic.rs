@@ -1,6 +1,8 @@
 //! Pure deal rules with no Solana types, unit-tested below.
 
-use crate::constants::{CANCEL_TIMEOUT_SECONDS, MAX_DEAL_DURATION_SECONDS, MIN_DEAL_LAMPORTS, UPTIME_THRESHOLD_PERCENT};
+use crate::constants::{
+    ACCEPT_TIMEOUT_SECONDS, CANCEL_TIMEOUT_SECONDS, MAX_DEAL_DURATION_SECONDS, MIN_DEAL_LAMPORTS, UPTIME_THRESHOLD_PERCENT,
+};
 
 /// Why an uptime measurement was rejected.
 #[derive(Debug, PartialEq, Eq)]
@@ -40,11 +42,11 @@ pub fn uptime_above_threshold(up_seconds: u64, total_seconds: u64) -> Result<boo
     Ok(up_seconds as u128 * 100 > total_seconds as u128 * UPTIME_THRESHOLD_PERCENT as u128)
 }
 
-/// Checks that an escrow amount is large enough to open a deal.
+/// Checks that a deposit (the payer's payment or the recipient's guarantee) is large enough.
 ///
 /// # Arguments
 ///
-/// * `amount_lamports` - the lamports the payer wants to lock.
+/// * `amount_lamports` - the lamports a party wants to lock.
 ///
 /// # Returns
 ///
@@ -80,6 +82,62 @@ pub fn duration_is_valid(duration_seconds: u64) -> bool {
 pub fn cancel_allowed(starts_at: i64, duration_seconds: u64, now: i64) -> bool {
     // i128 keeps the sum exact for any stored values.
     now as i128 >= starts_at as i128 + duration_seconds as i128 + CANCEL_TIMEOUT_SECONDS as i128
+}
+
+/// The terms a recipient agrees to when it accepts a deal. `accept_deal` compares the terms the
+/// recipient signed with the stored ones, so a proposal replaced at the same address can't be accepted
+/// by a transaction built for the old one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Terms {
+    /// The payer's payment in lamports.
+    pub amount_lamports: u64,
+    /// The recipient's guarantee in lamports.
+    pub guarantee_lamports: u64,
+    /// Length of the uptime window in seconds.
+    pub duration_seconds: u64,
+    /// The oracle's public key bytes.
+    pub oracle: [u8; 32],
+}
+
+/// Tells whether the terms a recipient signed are exactly the deal's terms.
+///
+/// # Arguments
+///
+/// * `stored` - the terms recorded in the deal.
+/// * `signed` - the terms the recipient passed to `accept_deal`.
+///
+/// # Returns
+///
+/// `true` when every field matches, otherwise `false`.
+pub fn terms_match(stored: &Terms, signed: &Terms) -> bool {
+    stored == signed
+}
+
+/// Computes until when a new proposal can be accepted.
+///
+/// # Arguments
+///
+/// * `now` - the chain time (unix seconds) of `create_deal`.
+///
+/// # Returns
+///
+/// `now + ACCEPT_TIMEOUT_SECONDS`, saturating at `i64::MAX`.
+pub fn accept_deadline(now: i64) -> i64 {
+    now.saturating_add(ACCEPT_TIMEOUT_SECONDS)
+}
+
+/// Tells whether a proposal can still be accepted.
+///
+/// # Arguments
+///
+/// * `accept_deadline` - the deadline stored in the deal.
+/// * `now` - the current chain time (unix seconds).
+///
+/// # Returns
+///
+/// `true` while `now < accept_deadline`, otherwise `false`.
+pub fn accept_open(accept_deadline: i64, now: i64) -> bool {
+    now < accept_deadline
 }
 
 #[cfg(test)]
@@ -155,5 +213,33 @@ mod tests {
     fn cancel_math_does_not_overflow() {
         assert!(!cancel_allowed(i64::MAX, u64::MAX, i64::MAX));
         assert!(cancel_allowed(i64::MIN, 0, 0));
+    }
+
+    fn terms() -> Terms {
+        Terms { amount_lamports: 10, guarantee_lamports: 20, duration_seconds: 60, oracle: [7; 32] }
+    }
+
+    #[test]
+    fn terms_match_only_when_every_field_matches() {
+        assert!(terms_match(&terms(), &terms()));
+        assert!(!terms_match(&terms(), &Terms { amount_lamports: 11, ..terms() }));
+        assert!(!terms_match(&terms(), &Terms { guarantee_lamports: 19, ..terms() }));
+        assert!(!terms_match(&terms(), &Terms { duration_seconds: 61, ..terms() }));
+        assert!(!terms_match(&terms(), &Terms { oracle: [8; 32], ..terms() }));
+    }
+
+    #[test]
+    fn accept_deadline_is_one_timeout_after_creation() {
+        assert_eq!(accept_deadline(1_000), 1_000 + ACCEPT_TIMEOUT_SECONDS);
+        assert_eq!(accept_deadline(i64::MAX - 1), i64::MAX);
+    }
+
+    #[test]
+    fn accept_closes_at_the_deadline() {
+        let deadline = accept_deadline(1_000);
+        assert!(accept_open(deadline, 1_000));
+        assert!(accept_open(deadline, deadline - 1));
+        assert!(!accept_open(deadline, deadline));
+        assert!(!accept_open(deadline, i64::MAX));
     }
 }

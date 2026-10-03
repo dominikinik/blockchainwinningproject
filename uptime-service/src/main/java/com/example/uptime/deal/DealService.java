@@ -14,6 +14,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import com.example.uptime.deal.DealProgram.DealAccount;
+import com.example.uptime.deal.DealProgram.DealStatus;
 import com.example.uptime.deal.TrackedDeal.Status;
 import com.example.uptime.solana.Base58;
 import com.example.uptime.solana.OracleKey;
@@ -25,16 +26,17 @@ import com.example.uptime.uptime.UptimePoint;
 import com.example.uptime.uptime.UptimeQueryService;
 
 /**
- * Acts as the oracle of the {@code uptime_deal} program. A wallet creates a deal on chain naming this
- * service's key as its oracle, then registers it here. The window comes from the deal account itself
- * ({@code starts_at} and {@code duration_seconds}, set by the chain at creation), never from the caller.
- * Once it has ended (plus a grace period for the last second to be flushed), the
- * service counts this service's own recorded up seconds in the window and sends {@code settle_deal}.
- * The program decides who gets the escrow; the service reads that verdict back from the
- * {@code DealSettled} event.
+ * Acts as the oracle of the {@code uptime_deal} program. A payer proposes a deal on chain naming this
+ * service's key as its oracle, then registers it here, usually while it is still a proposal. The service
+ * re-reads a proposal on every tick until the recipient accepts it (or a party cancels it). The window
+ * comes from the accepted deal account itself ({@code starts_at}, set by the chain at acceptance, and
+ * {@code duration_seconds}), never from the caller. Once it has ended (plus a grace period for the last
+ * second to be flushed), the service counts this service's own recorded up seconds in the window and sends
+ * {@code settle_deal}. The program decides who gets both deposits; the service reads that verdict back from
+ * the {@code DealSettled} event.
  * <p>
- * Tracked deals live in memory only: after a restart, deals registered before it are no longer
- * settled, and their escrow stays in the deal until the payer cancels it.
+ * Tracked deals live in memory only: after a restart, deals registered before it are no longer settled,
+ * and their deposits stay in the deal until a party cancels it.
  */
 @Service
 public class DealService {
@@ -78,9 +80,9 @@ public class DealService {
 	 * Starts watching an on-chain deal.
 	 *
 	 * @param address Base58 address of the {@code Deal} account, already created on chain
-	 * @return the tracked deal, {@code ACTIVE}, whose window is {@code [starts_at, starts_at +
-	 *         duration_seconds)} from the account; if that window is already over it settles on the next
-	 *         tick
+	 * @return the tracked deal: {@code PROPOSED} with no window while the recipient hasn't accepted, or
+	 *         {@code ACTIVE} with the window {@code [starts_at, starts_at + duration_seconds)} from the
+	 *         account; if that window is already over it settles on the next tick
 	 * @throws IllegalArgumentException if the address is invalid, the account is missing, isn't a deal of
 	 *                                  this program, names another oracle, or has a duration of 0 or
 	 *                                  above {@code deal.max-duration-seconds}
@@ -109,14 +111,21 @@ public class DealService {
 		}
 		ensureOracleFunded();
 
+		boolean accepted = deal.status() == DealStatus.ACTIVE;
 		Instant start = deal.startsAt();
 		TrackedDeal tracked = new TrackedDeal(address, deal.payer(), deal.recipient(), deal.amountLamports(),
-				deal.durationSeconds(), start, start.plusSeconds(deal.durationSeconds()), Status.ACTIVE, null, null,
-				null, null, null, 0, null);
+				deal.guaranteeLamports(), deal.durationSeconds(), deal.acceptDeadline(), start,
+				accepted ? start.plusSeconds(deal.durationSeconds()) : null, accepted ? Status.ACTIVE : Status.PROPOSED,
+				null, null, null, null, null, 0, null);
 		if (deals.putIfAbsent(address, tracked) != null) {
 			throw new DealAlreadyRegisteredException(address);
 		}
-		log.info("Watching deal {} from {} to {}", address, tracked.startsAt(), tracked.endsAt());
+		if (accepted) {
+			log.info("Watching deal {} from {} to {}", address, tracked.startsAt(), tracked.endsAt());
+		}
+		else {
+			log.info("Watching proposal {} until its recipient accepts it", address);
+		}
 		return tracked;
 	}
 
@@ -138,20 +147,25 @@ public class DealService {
 	/**
 	 * Lists tracked deals.
 	 *
-	 * @return every tracked deal, newest window first
+	 * @return every tracked deal, most recently proposed first
 	 */
 	public List<TrackedDeal> list() {
-		return deals.values().stream().sorted(Comparator.comparing(TrackedDeal::startsAt).reversed()).toList();
+		return deals.values().stream().sorted(Comparator.comparing(TrackedDeal::acceptDeadline).reversed()).toList();
 	}
 
 	/**
-	 * Advances every active deal whose window is over: sends its settlement, or checks on a sent one.
-	 * Runs every {@code deal.poll-interval-ms}; one deal's failure never stops the others.
+	 * Advances every tracked deal: picks up the acceptance (or cancellation) of a proposal, and for an
+	 * active deal whose window is over sends its settlement or checks on a sent one. Runs every
+	 * {@code deal.poll-interval-ms}; one deal's failure never stops the others.
 	 */
 	@Scheduled(fixedDelayString = "${deal.poll-interval-ms}")
 	public void settleDue() {
 		Instant now = clock.instant();
 		for (TrackedDeal deal : deals.values()) {
+			if (deal.status() == Status.PROPOSED) {
+				deals.put(deal.address(), checkAccepted(deal));
+				continue;
+			}
 			if (deal.status() != Status.ACTIVE
 					|| now.isBefore(deal.endsAt().plusSeconds(properties.settleGraceSeconds()))) {
 				continue;
@@ -165,6 +179,30 @@ public class DealService {
 				next = deal.failedAttempt(e.getMessage(), properties.maxSettleAttempts());
 			}
 			deals.put(deal.address(), next);
+		}
+	}
+
+	/**
+	 * Re-reads a proposal: accepted (the window comes from the chain), closed (withdrawn or rejected), or
+	 * still waiting. A read failure leaves it waiting for the next tick, since nothing is due yet.
+	 */
+	private TrackedDeal checkAccepted(TrackedDeal deal) {
+		try {
+			DealAccount account = readDeal(deal.address());
+			if (account == null) {
+				return closedOnChain(deal);
+			}
+			if (account.status() != DealStatus.ACTIVE) {
+				return deal;
+			}
+			Instant start = account.startsAt();
+			log.info("Deal {} was accepted; watching it from {} to {}", deal.address(), start,
+					start.plusSeconds(account.durationSeconds()));
+			return deal.accepted(start, start.plusSeconds(account.durationSeconds()));
+		}
+		catch (RuntimeException e) {
+			log.warn("Checking proposal {} failed: {}", deal.address(), e.getMessage());
+			return deal;
 		}
 	}
 

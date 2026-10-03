@@ -33,7 +33,14 @@ The mock service assigns an ID and start/end timestamps, then returns the create
 
 ## Available now
 
-- **Uptime deal, end to end (`/deal`):** the wallet signs the real `uptime_deal` `create_deal` instruction, which locks SOL and fixes the uptime window on chain. `POST /api/deals` registers the deal with `uptime-service`, which is the program's oracle. After the window (for example 10 s), the service sends `settle_deal` with its own recorded up/total seconds. The program pays the recipient when uptime is above 99% and refunds the payer otherwise. The page shows the verdict and the recipient's on-chain balance. Covered by `frontend/e2e` (Playwright) and runnable by hand with `scripts/run-deal-demo.sh`. What it measures is the Java service's own health, not a customer endpoint. Tracked deals live in the service's memory, so a restart before settlement stops it from settling them; the payer can then reclaim the escrow with `cancel_deal` ("Reclaim escrow" on the page) 10 minutes after the window ends.
+- **Uptime deal, end to end (`/deal`):** a two-sided agreement on the real `uptime_deal` program.
+  - The payer's wallet signs `create_deal`, which proposes the deal and locks the payment.
+  - `POST /api/deals` registers the proposal with `uptime-service`, which is the program's oracle.
+  - The provider sees the proposal under "Proposals for you" and signs `accept_deal`. That locks its guarantee and starts the uptime window on chain; the program refuses the acceptance if the terms differ from the ones the provider was shown.
+  - After the window (for example 10 s), the service sends `settle_deal` with its own recorded up/total seconds. The program pays both deposits to the provider when uptime is above 99%, and to the payer otherwise.
+  - The page shows the verdict and the provider's on-chain balance. Covered by `frontend/e2e` (Playwright) and runnable by hand with `scripts/run-deal-demo.sh`, using two browser windows.
+  - What it measures is the Java service's own health, not a customer endpoint.
+  - Tracked deals live in the service's memory, so a restart before settlement stops it from settling them. Either party can then reclaim its deposit with `cancel_deal` ("Reclaim deposits" on the page) 10 minutes after the window ends. A proposal can be withdrawn by the payer or rejected by the provider at any time.
 
 - The Monitoring page reads the Java service's own `GET /api/application/state` and `GET /api/uptime?from=...&to=...` endpoints. The timeline shows recorded `UP` or `DOWN` seconds for the **Java service**, refreshing every 10 seconds. It does not measure customer API endpoints.
 - Vite proxies relative `/api` requests to `uptime-service` during development, so the browser does not need CORS. The target is `http://localhost:8080` by default, or `SLANA_UPTIME_SERVICE_TARGET`.

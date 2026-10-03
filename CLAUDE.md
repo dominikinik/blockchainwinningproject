@@ -26,7 +26,7 @@ This repository is a monorepo that will hold multiple independent modules, each 
 - `uptime-service/` (Java 21, Spring Boot): a service that monitors its own health and records per-second uptime history. See [uptime-service/CLAUDE.md](uptime-service/CLAUDE.md).
 - `uptime-db/` (PostgreSQL 17, Docker Compose): the local database for `uptime-service`, which owns its schema and data. See [uptime-db/CLAUDE.md](uptime-db/CLAUDE.md).
 - `frontend/` (React, TypeScript, Vite): the SLAna dashboard and Solana wallet UI. See [frontend/CLAUDE.md](frontend/CLAUDE.md).
-- `uptime-deal/` (Rust, Anchor 1.1.2): a Solana program that pays one account from another's escrow when reported uptime is above 99%, otherwise refunds. See [uptime-deal/CLAUDE.md](uptime-deal/CLAUDE.md).
+- `uptime-deal/` (Rust, Anchor 1.1.2): a Solana program for an uptime agreement. The payer proposes it with a payment, and the provider accepts it with a guarantee, which starts the window. When reported uptime is above 99% the provider gets both deposits; otherwise the payer does. See [uptime-deal/CLAUDE.md](uptime-deal/CLAUDE.md).
 
 ## Shared environment
 
