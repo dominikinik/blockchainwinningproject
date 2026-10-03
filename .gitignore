@@ -20,3 +20,6 @@ dist/
 frontend/e2e/.ledger/
 frontend/test-results/
 frontend/playwright-report/
+
+# Editor settings
+.vscode/

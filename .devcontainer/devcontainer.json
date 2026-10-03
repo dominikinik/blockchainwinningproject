@@ -10,6 +10,13 @@
     }
   },
 
+  // The Dev Containers CLI inspects the Dockerfile's base image before building,
+  // pulling it for the host platform and ignoring `FROM --platform` and the
+  // build `platform` option. The OtterSec image is amd64-only, so on Apple
+  // Silicon that pull fails with "no matching manifest for linux/arm64/v8".
+  // Pre-pulling the amd64 variant lets the CLI find it locally.
+  "initializeCommand": "docker pull --platform linux/amd64 quay.io/ottersec/anchor:v1.1.2",
+
   "remoteUser": "root",
 
   "remoteEnv": {
