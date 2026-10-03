@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Route, Routes, MemoryRouter } from 'react-router-dom'
@@ -60,9 +60,9 @@ describe('DashboardPage', () => {
     ])
     setup()
     expect(await screen.findByRole('link', { name: 'Alpha' })).toHaveAttribute('href', '/sla/a')
-    // active: a and c (b ended, d settled) -> 02; locked 10 + 20; violations 1
+    // active: a and c (b ended, d settled) -> 02; locked: unsettled a, b, c -> (10 + 2) + (5 + 1) + (20 + 4); violations 1
     expect(screen.getByText('02')).toBeInTheDocument()
-    expect(screen.getByText('30 SOL')).toBeInTheDocument()
+    expect(screen.getByText('42 SOL')).toBeInTheDocument()
     expect(screen.getByText('01')).toBeInTheDocument()
     // average of measured SLAs (a, b, d): (100 + 98 + 99.95) / 3
     expect(screen.getByText('99.32%')).toBeInTheDocument()
@@ -73,18 +73,20 @@ describe('DashboardPage', () => {
     expect(screen.getAllByText(`${PROVIDER.slice(0, 4)}...${PROVIDER.slice(-4)}`)).toHaveLength(4)
   })
 
-  it('counts short agreements down by the second and drops them from active when they end', async () => {
+  it('counts short agreements down by the second and drops them from active but keeps their escrow locked when they end', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
     getSLAs.mockResolvedValue([makeSLA({ id: 'short', customerPaymentSol: 3, providerGuaranteeSol: 1, endAt: '2026-01-01T00:00:30Z' })])
     setup()
     expect(await screen.findByText('30s')).toBeInTheDocument()
-    expect(screen.getByText('3 SOL', { selector: '.metric-card strong' })).toBeInTheDocument()
+    expect(screen.getByText('4 SOL', { selector: '.metric-card strong' })).toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(29_000) })
     expect(screen.getByText('1s')).toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
     expect(screen.getByText('Ended')).toBeInTheDocument()
-    expect(screen.getByText('0 SOL', { selector: '.metric-card strong' })).toBeInTheDocument()
+    expect(within(screen.getByText('Active SLAs').closest('.metric-card') as HTMLElement).getByText('00')).toBeInTheDocument()
+    // ended but not yet settled, so customer payment + guarantee stay locked
+    expect(screen.getByText('4 SOL', { selector: '.metric-card strong' })).toBeInTheDocument()
   })
 
   it('navigates to the SLA details when a row is clicked', async () => {

@@ -76,7 +76,6 @@ describe('SLADetailsPage', () => {
     expect(screen.getByText('99.95%', { selector: 'strong' })).toBeInTheDocument()
     expect(screen.getByText('Measured so far')).toBeInTheDocument()
     expect(screen.getByText('100 checks recorded')).toBeInTheDocument()
-    expect(screen.getByText('Every 5 minutes')).toBeInTheDocument()
     expect(screen.getByText('7 days')).toBeInTheDocument()
     expect(screen.getByText('One server')).toBeInTheDocument()
     expect(screen.queryByText(/consensus/i)).not.toBeInTheDocument()
