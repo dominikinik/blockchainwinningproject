@@ -10,23 +10,10 @@ export const durationOptions = [
   { value: 30, label: '30 days' },
 ] as const
 
-export const checkIntervalOptions = [
-  { value: 10 / 60, label: 'Every 10 seconds' },
-  { value: 1, label: 'Every 1 minute' },
-  { value: 5, label: 'Every 5 minutes' },
-  { value: 10, label: 'Every 10 minutes' },
-] as const
-
 export function formatDuration(days: number): string {
   const seconds = Math.round(days * 86_400)
   if (seconds < 60) return `${seconds} seconds`
   if (seconds < 3600) return `${seconds / 60} ${seconds === 60 ? 'minute' : 'minutes'}`
   if (seconds < 86_400) return `${seconds / 3600} ${seconds === 3600 ? 'hour' : 'hours'}`
   return `${seconds / 86_400} ${seconds === 86_400 ? 'day' : 'days'}`
-}
-
-export function formatCheckInterval(minutes: number): string {
-  const seconds = Math.round(minutes * 60)
-  if (seconds < 60) return `Every ${seconds} seconds`
-  return `Every ${seconds / 60} ${seconds === 60 ? 'minute' : 'minutes'}`
 }

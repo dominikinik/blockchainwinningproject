@@ -24,7 +24,8 @@ export interface SLA {
   endpoint: string
   customerWallet: string
   providerWallet: string
-  escrowSol: number
+  customerPaymentSol: number
+  providerGuaranteeSol: number
   requiredUptime: number
   currentUptime: number
   successfulChecks: number
@@ -32,8 +33,6 @@ export interface SLA {
   startAt: string
   endAt: string
   durationDays: number
-  checkIntervalMinutes: number
-  timeoutMs: number
   consensusRequired: number
   monitorCount: number
   status: SLAStatus
@@ -80,11 +79,10 @@ export interface CreateSLAInput {
   endpoint: string
   customerWallet: string
   providerWallet: string
-  escrowSol: number
+  customerPaymentSol: number
+  providerGuaranteeSol: number
   requiredUptime: number
   durationDays: number
-  checkIntervalMinutes: number
-  timeoutMs: number
   consensusRequired: number
   monitorCount: number
 }

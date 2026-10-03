@@ -128,13 +128,13 @@ describe('SLADetailsPage', () => {
     load(makeSLA({ settlement: { state: 'settled', actualRecipient: 'customer', transaction: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' } }))
     setup()
     expect(await screen.findByText('Settlement request recorded')).toBeInTheDocument()
-    expect(screen.getByText('Request for 10 SOL is recorded.')).toBeInTheDocument()
+    expect(screen.getByText('Settlement request for 12 SOL is recorded.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /request settlement/i })).not.toBeInTheDocument()
     expect(screen.queryByText('DISPLAY PROJECTION')).not.toBeInTheDocument()
   })
 
   describe('settling a ready SLA', () => {
-    const ready = () => makeSLA({ endAt: new Date(Date.now() - 1000).toISOString(), settlement: { state: 'ready', projectionRecipient: 'customer', projectionAmountSol: 10 } })
+    const ready = () => makeSLA({ endAt: new Date(Date.now() - 1000).toISOString(), settlement: { state: 'ready', projectionRecipient: 'customer', projectionAmountSol: 120 } })
 
     it('opens the wallet modal when no wallet is connected', async () => {
       load(ready())

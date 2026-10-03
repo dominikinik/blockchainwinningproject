@@ -53,10 +53,10 @@ describe('DashboardPage', () => {
   it('renders rows and aggregate metrics', async () => {
     const day = 86_400_000
     getSLAs.mockResolvedValue([
-      makeSLA({ id: 'a', name: 'Alpha', escrowSol: 10, currentUptime: 100 }),
-      makeSLA({ id: 'b', name: 'Beta', escrowSol: 5, currentUptime: 98, status: 'violated', endAt: new Date(Date.now() - day).toISOString() }),
-      makeSLA({ id: 'c', name: 'Gamma', escrowSol: 20, successfulChecks: 0, failedChecks: 0, status: 'pending', settlement: { state: 'pending' } }),
-      makeSLA({ id: 'd', name: 'Delta', escrowSol: 7, settlement: { state: 'settled' } }),
+      makeSLA({ id: 'a', name: 'Alpha', customerPaymentSol: 10, providerGuaranteeSol: 2, currentUptime: 100 }),
+      makeSLA({ id: 'b', name: 'Beta', customerPaymentSol: 5, providerGuaranteeSol: 1, currentUptime: 98, status: 'violated', endAt: new Date(Date.now() - day).toISOString() }),
+      makeSLA({ id: 'c', name: 'Gamma', customerPaymentSol: 20, providerGuaranteeSol: 4, successfulChecks: 0, failedChecks: 0, status: 'pending', settlement: { state: 'pending' } }),
+      makeSLA({ id: 'd', name: 'Delta', customerPaymentSol: 7, providerGuaranteeSol: 1, settlement: { state: 'settled' } }),
     ])
     setup()
     expect(await screen.findByRole('link', { name: 'Alpha' })).toHaveAttribute('href', '/sla/a')
@@ -76,7 +76,7 @@ describe('DashboardPage', () => {
   it('counts short agreements down by the second and drops them from active when they end', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
-    getSLAs.mockResolvedValue([makeSLA({ id: 'short', escrowSol: 3, endAt: '2026-01-01T00:00:30Z' })])
+    getSLAs.mockResolvedValue([makeSLA({ id: 'short', customerPaymentSol: 3, providerGuaranteeSol: 1, endAt: '2026-01-01T00:00:30Z' })])
     setup()
     expect(await screen.findByText('30s')).toBeInTheDocument()
     expect(screen.getByText('3 SOL', { selector: '.metric-card strong' })).toBeInTheDocument()
