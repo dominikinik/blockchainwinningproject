@@ -1,9 +1,12 @@
-//! `uptime_deal`: a simple uptime-conditioned payment between two accounts.
+//! `uptime_deal`: an uptime SLA whose outcome is decided on chain.
 //!
-//! A payer locks lamports in a `Deal` account and names a recipient and an uptime oracle.
-//! When the oracle settles the deal with the measured uptime, the recipient receives the
-//! locked amount if uptime is strictly above 99%; otherwise the payer gets it back. If the oracle
-//! never settles, the payer can cancel the deal once its window and a timeout have passed.
+//! A customer (payer) locks a payment in a `Deal` account and names a provider (recipient), an
+//! uptime monitor (oracle), the window, the monitoring interval and the required uptime. The
+//! provider may have to lock a guarantee too. The monitor only reports, round by round, whether
+//! the service was UP or DOWN; the program keeps the counters. Once the window is over, anyone can
+//! call `settle_deal`, and the program itself compares the counters with the threshold and pays
+//! the whole escrow to the provider (SLA met) or to the customer (breach).
+//! Monitors observe; the program decides.
 use anchor_lang::prelude::*;
 
 pub mod constants;
@@ -22,52 +25,109 @@ declare_id!("EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r");
 pub mod uptime_deal {
     use super::*;
 
-    /// Opens a deal and locks the payment in escrow.
+    /// Opens a deal and locks the customer payment in escrow.
     ///
-    /// Moves `amount_lamports` from the payer into the new `Deal` PDA, which records the
-    /// payer, the recipient and the oracle that may later settle it.
+    /// Moves `amount_lamports` from the payer into the new `Deal` PDA, which records the parties,
+    /// the terms and an empty set of monitoring counters. Without a provider guarantee the window
+    /// starts now; with one it starts when the recipient calls `accept_deal`.
     ///
     /// # Arguments
     ///
-    /// * `ctx` - accounts: `payer` (signer, funds the escrow and the rent), `recipient`
-    ///   (paid when uptime is above 99%), `oracle` (the only key allowed to settle), the
-    ///   `deal` PDA to create (seeds `["deal", payer, deal_id]`) and the system program.
+    /// * `ctx` - accounts: `payer` (signer, funds the payment and the rent), `recipient` (the
+    ///   provider), `oracle` (the only key allowed to record observations), the `deal` PDA to
+    ///   create (seeds `["deal", payer, deal_id]`) and the system program.
     /// * `deal_id` - payer-chosen number that makes the deal address unique per payer.
-    /// * `amount_lamports` - lamports to lock; at least `MIN_DEAL_LAMPORTS`.
-    /// * `duration_seconds` - length of the uptime window, which starts at the current chain
-    ///   time; 1 to `MAX_DEAL_DURATION_SECONDS`.
+    /// * `amount_lamports` - the customer payment; at least `MIN_DEAL_LAMPORTS`.
+    /// * `provider_stake_lamports` - the provider guarantee to lock with `accept_deal`; 0 for none.
+    /// * `duration_seconds` - length of the uptime window; 1 to `MAX_DEAL_DURATION_SECONDS`.
+    /// * `check_interval_seconds` - length of one monitoring round; must divide the window into 1
+    ///   to `MAX_ROUNDS` rounds.
+    /// * `min_uptime_bps` - required uptime in basis points (1 to 10,000).
     ///
     /// # Returns
     ///
-    /// `Ok(())` once the deal exists and holds the escrow; emits `DealCreated`.
+    /// `Ok(())` once the deal exists and holds the payment; emits `DealCreated`, and `DealStarted`
+    /// when there is no guarantee.
     ///
     /// # Errors
     ///
     /// * `DealError::AmountTooSmall` - `amount_lamports` is below `MIN_DEAL_LAMPORTS`.
     /// * `DealError::RecipientIsPayer` - the recipient is the payer.
     /// * `DealError::InvalidDuration` - `duration_seconds` is out of range.
+    /// * `DealError::InvalidCheckInterval` - the interval doesn't fit the window.
+    /// * `DealError::InvalidThreshold` - `min_uptime_bps` is out of range.
     /// * Anchor/system errors if the deal already exists or the payer cannot pay.
     pub fn create_deal(
         ctx: Context<CreateDeal>,
         deal_id: u64,
         amount_lamports: u64,
+        provider_stake_lamports: u64,
         duration_seconds: u64,
+        check_interval_seconds: u64,
+        min_uptime_bps: u16,
     ) -> Result<()> {
-        instructions::create_deal::handle_create_deal(ctx, deal_id, amount_lamports, duration_seconds)
+        instructions::create_deal::handle_create_deal(
+            ctx,
+            deal_id,
+            amount_lamports,
+            provider_stake_lamports,
+            duration_seconds,
+            check_interval_seconds,
+            min_uptime_bps,
+        )
     }
 
-    /// Settles a deal from the measured uptime and closes it.
-    ///
-    /// Pays the escrow to the recipient when `up_seconds / total_seconds` is strictly above
-    /// 99%; otherwise refunds it to the payer. The `Deal` account is closed and its rent
-    /// returns to the payer either way.
+    /// Locks the provider guarantee and starts the window.
     ///
     /// # Arguments
     ///
-    /// * `ctx` - accounts: `oracle` (signer, must be the deal's oracle), the `deal` PDA, and
-    ///   the deal's `payer` and `recipient` wallets (both writable).
-    /// * `up_seconds` - seconds the application was up during the measured period.
-    /// * `total_seconds` - length of the measured period in seconds; must be positive.
+    /// * `ctx` - accounts: `recipient` (signer, must be the deal's recipient), the `deal` PDA and
+    ///   the system program.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once the guarantee is locked; emits `DealStarted`.
+    ///
+    /// # Errors
+    ///
+    /// * `DealError::DealAlreadyActive` - the deal has already started.
+    /// * Anchor constraint errors if the signer isn't the deal's recipient.
+    pub fn accept_deal(ctx: Context<AcceptDeal>) -> Result<()> {
+        instructions::accept_deal::handle_accept_deal(ctx)
+    }
+
+    /// Records the monitor's UP/DOWN observation of one round in the deal's counters.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - accounts: `oracle` (signer, must be the deal's oracle) and the `deal` PDA.
+    /// * `round` - the zero-based round, `0..total_rounds`.
+    /// * `up` - whether the service was up for the whole round.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once the round is counted; emits `ObservationRecorded`.
+    ///
+    /// # Errors
+    ///
+    /// * `DealError::UnauthorizedOracle` - the signer is not the deal's oracle.
+    /// * `DealError::DealNotActive` - the window hasn't started.
+    /// * `DealError::RoundOutOfRange`, `DealError::RoundNotEnded`, `DealError::ObservationsClosed`,
+    ///   `DealError::RoundAlreadyRecorded` - the round can't be recorded now.
+    pub fn record_observation(ctx: Context<RecordObservation>, round: u32, up: bool) -> Result<()> {
+        instructions::record_observation::handle_record_observation(ctx, round, up)
+    }
+
+    /// Settles a deal from its on-chain counters and closes it. Anyone may call it.
+    ///
+    /// Pays the whole escrow (payment plus guarantee) to the recipient when
+    /// `up_checks * 10_000 >= min_uptime_bps * total_rounds`; otherwise to the payer. The `Deal`
+    /// account is closed and its rent returns to the payer either way.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - accounts: `caller` (signer, pays the fee), the `deal` PDA, and the deal's
+    ///   `payer` and `recipient` wallets (both writable).
     ///
     /// # Returns
     ///
@@ -75,14 +135,14 @@ pub mod uptime_deal {
     ///
     /// # Errors
     ///
-    /// * `DealError::InvalidUptime` - `total_seconds` is 0 or `up_seconds > total_seconds`.
-    /// * `DealError::UnauthorizedOracle` - the signer is not the deal's oracle.
+    /// * `DealError::DealNotActive` - the window never started.
+    /// * `DealError::SettleTooEarly` - the window plus `OBSERVATION_GRACE_SECONDS` hasn't passed.
     /// * Anchor constraint errors if `payer`/`recipient` don't match the deal.
-    pub fn settle_deal(ctx: Context<SettleDeal>, up_seconds: u64, total_seconds: u64) -> Result<()> {
-        instructions::settle_deal::handle_settle_deal(ctx, up_seconds, total_seconds)
+    pub fn settle_deal(ctx: Context<SettleDeal>) -> Result<()> {
+        instructions::settle_deal::handle_settle_deal(ctx)
     }
 
-    /// Returns the escrow of a deal the oracle never settled to its payer and closes it.
+    /// Returns the payment of a deal the provider never accepted to its payer and closes it.
     ///
     /// # Arguments
     ///
@@ -90,12 +150,11 @@ pub mod uptime_deal {
     ///
     /// # Returns
     ///
-    /// `Ok(())` once the escrow and the rent are back with the payer; emits `DealCancelled`.
+    /// `Ok(())` once the payment and the rent are back with the payer; emits `DealCancelled`.
     ///
     /// # Errors
     ///
-    /// * `DealError::CancelTooEarly` - the chain time is before
-    ///   `starts_at + duration_seconds + CANCEL_TIMEOUT_SECONDS`.
+    /// * `DealError::DealAlreadyActive` - the provider has accepted; settle the deal instead.
     /// * Anchor constraint errors if the signer isn't the deal's payer.
     pub fn cancel_deal(ctx: Context<CancelDeal>) -> Result<()> {
         instructions::cancel_deal::handle_cancel_deal(ctx)

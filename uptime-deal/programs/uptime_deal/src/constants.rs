@@ -4,11 +4,11 @@ use anchor_lang::prelude::*;
 #[constant]
 pub const DEAL_SEED: &[u8] = b"deal";
 
-/// Uptime must be strictly above this many percent for the recipient to be paid.
+/// Uptime thresholds are in basis points: 10,000 bps = 100%.
 #[constant]
-pub const UPTIME_THRESHOLD_PERCENT: u64 = 99;
+pub const BPS_DENOMINATOR: u64 = 10_000;
 
-/// Smallest escrow accepted. It is above the rent-exempt minimum of an empty wallet
+/// Smallest customer payment accepted. It is above the rent-exempt minimum of an empty wallet
 /// (890,880 lamports), so paying a recipient that doesn't exist yet always succeeds.
 #[constant]
 pub const MIN_DEAL_LAMPORTS: u64 = 1_000_000;
@@ -17,7 +17,12 @@ pub const MIN_DEAL_LAMPORTS: u64 = 1_000_000;
 #[constant]
 pub const MAX_DEAL_DURATION_SECONDS: u64 = 86_400;
 
-/// How long after its window ends a deal can still only be settled by the oracle. After that the
-/// payer may `cancel_deal` and take the escrow back, so a missing oracle never locks it forever.
+/// Most monitoring rounds one deal may have. The deal stores one bit per round (1 KiB at most), so
+/// `duration_seconds / check_interval_seconds` must stay at or below this.
 #[constant]
-pub const CANCEL_TIMEOUT_SECONDS: i64 = 600;
+pub const MAX_ROUNDS: u64 = 8_192;
+
+/// How long after its window ends a deal still accepts observations (for the last rounds to land).
+/// Settlement opens exactly when observations close, so the outcome can't depend on who acts first.
+#[constant]
+pub const OBSERVATION_GRACE_SECONDS: i64 = 10;
