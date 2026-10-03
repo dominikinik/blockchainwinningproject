@@ -31,3 +31,6 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Uptime deal oracle key (created on first start) ###
+.oracle-keypair.json

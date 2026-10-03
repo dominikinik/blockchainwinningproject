@@ -1,6 +1,10 @@
 package com.example.uptime;
 
+import static com.example.uptime.support.DealFixtures.PROGRAM_ID;
+import static com.example.uptime.support.DealFixtures.dealData;
+import static com.example.uptime.support.DealFixtures.newAddress;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -17,12 +21,19 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationContext;
+import org.springframework.http.MediaType;
 import org.springframework.scheduling.config.ScheduledTask;
 import org.springframework.scheduling.config.ScheduledTaskHolder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import com.example.uptime.deal.DealService;
 import com.example.uptime.monitor.UptimeSampler;
+import com.example.uptime.solana.OracleKey;
+import com.example.uptime.solana.SolanaRpc;
+import com.example.uptime.solana.SolanaRpc.AccountInfo;
+import com.example.uptime.solana.SolanaRpc.SolanaRpcException;
 import com.example.uptime.state.ApplicationStateService;
 import com.example.uptime.uptime.UptimeQueryService;
 import com.example.uptime.uptime.UptimeRecord;
@@ -49,6 +60,12 @@ class UptimeServiceApplicationTests {
 	@Autowired
 	ApplicationContext context;
 
+	@Autowired
+	OracleKey oracle;
+
+	@MockitoBean
+	SolanaRpc rpc;
+
 	@AfterEach
 	void reset() {
 		state.start();
@@ -58,6 +75,7 @@ class UptimeServiceApplicationTests {
 	void applicationStartsWithAllComponentsAndUp() {
 		assertThat(context.getBean(UptimeSampler.class)).isNotNull();
 		assertThat(context.getBean(UptimeQueryService.class)).isNotNull();
+		assertThat(context.getBean(DealService.class).oracleAddress()).isEqualTo(oracle.address());
 		assertThat(context.getBean(Clock.class).getZone()).isEqualTo(Clock.systemUTC().getZone());
 		UptimeProperties properties = context.getBean(UptimeProperties.class);
 		assertThat(properties.sampleIntervalMs()).isEqualTo(10);
@@ -78,6 +96,58 @@ class UptimeServiceApplicationTests {
 			.toList();
 		assertThat(tasks).anyMatch(t -> t.contains("UptimeSampler.sample"));
 		assertThat(tasks).anyMatch(t -> t.contains("UptimeSampler.flush"));
+		assertThat(tasks).anyMatch(t -> t.contains("DealService.settleDue"));
+	}
+
+	@Test
+	void dealConfigNamesTheProgramAndThisServicesOracle() throws Exception {
+		mvc.perform(get("/api/deals/config"))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.programId").value(PROGRAM_ID))
+			.andExpect(jsonPath("$.oracle").value(oracle.address()))
+			.andExpect(jsonPath("$.rpcUrl").value("http://127.0.0.1:8899"));
+	}
+
+	@Test
+	void registersAndReadsADeal() throws Exception {
+		String deal = newAddress();
+		String recipient = newAddress();
+		when(rpc.getAccountInfo(deal))
+			.thenReturn(new AccountInfo(PROGRAM_ID, 1, dealData(newAddress(), recipient, oracle.address(), 1, 5_000_000)));
+
+		mvc.perform(registerDeal(deal, 10))
+			.andExpect(status().isCreated())
+			.andExpect(jsonPath("$.address").value(deal))
+			.andExpect(jsonPath("$.recipient").value(recipient))
+			.andExpect(jsonPath("$.amountLamports").value(5_000_000))
+			.andExpect(jsonPath("$.durationSeconds").value(10))
+			.andExpect(jsonPath("$.status").value("ACTIVE"));
+		mvc.perform(get("/api/deals/" + deal)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ACTIVE"));
+		mvc.perform(get("/api/deals")).andExpect(status().isOk()).andExpect(jsonPath("$[?(@.address == '" + deal + "')]").exists());
+
+		mvc.perform(registerDeal(deal, 10)).andExpect(status().isConflict());
+	}
+
+	@Test
+	void dealErrorsAreProblems() throws Exception {
+		String failing = newAddress();
+		when(rpc.getAccountInfo(failing)).thenThrow(new SolanaRpcException("getAccountInfo failed: connection refused"));
+
+		mvc.perform(get("/api/deals/" + newAddress())).andExpect(status().isNotFound());
+		mvc.perform(registerDeal(newAddress(), 0))
+			.andExpect(status().isBadRequest())
+			.andExpect(jsonPath("$.detail").value("durationSeconds must be between 1 and 3600"));
+		mvc.perform(registerDeal(newAddress(), 10))
+			.andExpect(status().isBadRequest())
+			.andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.startsWith("No uptime_deal account")));
+		mvc.perform(registerDeal(failing, 10)).andExpect(status().isBadGateway());
+		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON).content("not json"))
+			.andExpect(status().isBadRequest());
+	}
+
+	private static org.springframework.test.web.servlet.RequestBuilder registerDeal(String address, long seconds) {
+		return post("/api/deals").contentType(MediaType.APPLICATION_JSON)
+			.content("{\"address\":\"" + address + "\",\"durationSeconds\":" + seconds + "}");
 	}
 
 	@Test
@@ -169,7 +239,9 @@ class UptimeServiceApplicationTests {
 			.andExpect(jsonPath("$.paths['/api/uptime/at']").exists())
 			.andExpect(jsonPath("$.paths['/api/application/stop']").exists())
 			.andExpect(jsonPath("$.paths['/api/application/start']").exists())
-			.andExpect(jsonPath("$.paths['/api/application/state']").exists());
+			.andExpect(jsonPath("$.paths['/api/application/state']").exists())
+			.andExpect(jsonPath("$.paths['/api/deals']").exists())
+			.andExpect(jsonPath("$.paths['/api/deals/config']").exists());
 		mvc.perform(get("/swagger-ui/index.html")).andExpect(status().isOk());
 	}
 

@@ -34,6 +34,8 @@ The mock service assigns an ID and start/end timestamps, then returns the create
 
 ## Available now
 
+- **Uptime deal, end to end (`/deal`):** the wallet signs the real `uptime_deal` `create_deal` instruction and locks SOL. `POST /api/deals` registers the deal with `uptime-service`, which is the program's oracle. After the window (for example 10 s), the service sends `settle_deal` with its own recorded up/total seconds. The program pays the recipient when uptime is above 99% and refunds the payer otherwise. The page shows the verdict and the recipient's on-chain balance. Covered by `frontend/e2e` (Playwright) and runnable by hand with `scripts/run-deal-demo.sh`. What it measures is the Java service's own health, not a customer endpoint. Tracked deals live in the service's memory, so a restart before settlement leaves the escrow locked.
+
 - The Monitoring page reads the Java service's own `GET /api/application/state` and `GET /api/uptime?from=...&to=...` endpoints. The timeline shows recorded `UP` or `DOWN` seconds for the **Java service**, refreshing every 10 seconds. It does not measure customer API endpoints.
 - Vite proxies relative `/api` requests to `uptime-service` during development, so the browser does not need CORS. The target is `http://localhost:8080` by default, or `SLANA_UPTIME_SERVICE_TARGET`.
 - The Create SLA page calls `frontend/src/services/solana/slaService.ts#createSLA`. That method only saves a demo agreement in browser `localStorage`. It does not call a backend, create a Solana account, or lock SOL.

@@ -15,3 +15,8 @@ dist/
 
 # Local Claude Code workspace (plans, notes)
 /.claude/
+
+# Playwright e2e output and validator ledger
+frontend/e2e/.ledger/
+frontend/test-results/
+frontend/playwright-report/
