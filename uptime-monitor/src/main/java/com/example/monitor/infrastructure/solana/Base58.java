@@ -3,7 +3,11 @@ package com.example.monitor.infrastructure.solana;
 import java.math.BigInteger;
 import java.util.Arrays;
 
-/** Bitcoin-alphabet Base58, the text form of Solana addresses and transaction signatures. */
+/**
+ * Bitcoin-alphabet Base58, the text form of Solana addresses and transaction signatures. This is an
+ * encoding, not encryption: it hides nothing, and the alphabet is fixed by Solana, so changing it would
+ * produce addresses no node accepts. Secrecy comes from {@link OracleKey}'s Ed25519 signatures.
+ */
 public final class Base58 {
 
 	private static final String ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";

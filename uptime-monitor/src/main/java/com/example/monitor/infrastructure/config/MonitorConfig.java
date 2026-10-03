@@ -8,13 +8,15 @@ import java.time.Duration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestClient;
 
 import com.example.monitor.application.TrackingService;
 import com.example.monitor.domain.DowntimePublisher;
 import com.example.monitor.domain.HealthProbe;
 import com.example.monitor.domain.TrackingEventStore;
-import com.example.monitor.infrastructure.persistence.InMemoryTrackingEventStore;
+import com.example.monitor.infrastructure.persistence.JdbcTrackingEventStore;
 import com.example.monitor.infrastructure.probe.HttpHealthProbe;
 import com.example.monitor.infrastructure.solana.HttpSolanaRpc;
 import com.example.monitor.infrastructure.solana.LoggingDowntimePublisher;
@@ -32,8 +34,8 @@ public class MonitorConfig {
 	}
 
 	@Bean
-	TrackingEventStore trackingEventStore() {
-		return new InMemoryTrackingEventStore();
+	TrackingEventStore trackingEventStore(JdbcClient jdbc, TransactionTemplate transactions) {
+		return new JdbcTrackingEventStore(jdbc, transactions);
 	}
 
 	@Bean

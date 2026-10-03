@@ -29,7 +29,7 @@ import com.example.monitor.domain.TrackingEvent.TrackingFinished;
 import com.example.monitor.domain.TrackingEvent.TrackingStarted;
 import com.example.monitor.domain.TrackingEventStore;
 import com.example.monitor.domain.TrackingException;
-import com.example.monitor.infrastructure.persistence.InMemoryTrackingEventStore;
+import com.example.monitor.support.InMemoryTrackingEventStore;
 import com.example.monitor.support.MutableClock;
 
 class TrackingServiceTest {

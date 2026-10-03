@@ -26,6 +26,7 @@ This repository is a monorepo that will hold multiple independent modules, each 
 - `uptime-service/` (Java 21, Spring Boot): the health **provider**. It exposes health endpoints (including `/api/health` for `uptime-monitor`) and start/stop, records its own per-second uptime history, and is the `uptime-deal` oracle. See [uptime-service/CLAUDE.md](uptime-service/CLAUDE.md).
 - `uptime-monitor/` (Java 21, Spring Boot, DDD): the data **collector**. It subscribes to a provider's health endpoint, checks it every 2 s, records `TrackingStarted` / `Downtime` / `InternalErrorHappened` / `TrackingFinished` events, aggregates the total downtime, and publishes it to Solana. See [uptime-monitor/CLAUDE.md](uptime-monitor/CLAUDE.md).
 - `uptime-db/` (PostgreSQL 17, Docker Compose): the local database for `uptime-service`, which owns its schema and data. See [uptime-db/CLAUDE.md](uptime-db/CLAUDE.md).
+- `monitor-db/` (PostgreSQL 17, Docker Compose, port 5433): the event store database for `uptime-monitor`, which owns its schema and data. See [monitor-db/CLAUDE.md](monitor-db/CLAUDE.md).
 - `frontend/` (React, TypeScript, Vite): the SLAna dashboard and Solana wallet UI. See [frontend/CLAUDE.md](frontend/CLAUDE.md).
 - `uptime-deal/` (Rust, Anchor 1.1.2): a Solana program that pays one account from another's escrow when reported uptime is above 99%, otherwise refunds. See [uptime-deal/CLAUDE.md](uptime-deal/CLAUDE.md).
 

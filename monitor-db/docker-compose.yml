@@ -1,0 +1,27 @@
+# Monitor database module: PostgreSQL for uptime-monitor's tracking events, running locally in Docker.
+#   start:  docker compose -f monitor-db/docker-compose.yml up -d
+#   stop:   docker compose -f monitor-db/docker-compose.yml down
+# Data is persisted in monitor-db/data/ (git-ignored). Scripts in init/ run only when data/ is empty;
+# to re-initialise the schema, stop the container and delete data/.
+# Port 5433 so it runs next to uptime-db (5432).
+name: monitor-db
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: monitor-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: monitor
+      POSTGRES_DB: monitor
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d monitor"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

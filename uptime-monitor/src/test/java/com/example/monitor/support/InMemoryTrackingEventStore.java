@@ -1,4 +1,4 @@
-package com.example.monitor.infrastructure.persistence;
+package com.example.monitor.support;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -9,7 +9,7 @@ import com.example.monitor.domain.ServiceId;
 import com.example.monitor.domain.TrackingEvent;
 import com.example.monitor.domain.TrackingEventStore;
 
-/** {@link TrackingEventStore} in memory: events are lost on restart. */
+/** Test fake of {@link TrackingEventStore}; {@code TrackingEventStoreContract} keeps it in step with the JDBC store. */
 public class InMemoryTrackingEventStore implements TrackingEventStore {
 
 	private final Map<ServiceId, List<TrackingEvent>> streams = new LinkedHashMap<>();
