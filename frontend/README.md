@@ -15,6 +15,14 @@ npm run dev
 Open the URL printed by Vite (normally `http://localhost:5173`). Run `npm run build` for the TypeScript and production build check.
 The devcontainer forwards port `5173` for Vite and `8899` for Surfpool.
 
+The Monitoring page reads the Java service's own state through Vite's `/api` proxy. Start `uptime-db` and `uptime-service` to see a live `UP` or `DOWN` value. The proxy targets `http://localhost:8080` by default; set `SLANA_UPTIME_SERVICE_TARGET=http://host.docker.internal:8080` if Vite runs in the devcontainer and Java runs on the host. SLA uptime data remains mocked. Production deployment needs a same-origin `/api` reverse proxy.
+
+For that devcontainer setup, start Vite with:
+
+```bash
+SLANA_UPTIME_SERVICE_TARGET=http://host.docker.internal:8080 npm run dev
+```
+
 ## Current behavior
 
 - Dashboard, SLA details, and monitoring are browseable without a wallet.
@@ -23,6 +31,7 @@ The devcontainer forwards port `5173` for Vite and `8899` for Surfpool.
 - The ended Email API agreement demonstrates the settlement request state. Its mock settlement is handled by the service and stored locally; no SOL moves.
 - New agreements and mock settlements persist in browser `localStorage`. Seed agreements, monitors, observations, and uptime history live in `src/mocks/data.ts`.
 - Mock observation signatures are visual placeholders and do not link to Explorer.
+- The Monitoring page displays live backend service state separately from mock monitor readings.
 
 ## Anchor integration boundary
 

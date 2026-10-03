@@ -1,8 +1,9 @@
-import { Activity, ArrowDown, ArrowRight, CheckCircle2, CircleDot, Database, FileCheck2, Globe2, Radio, ShieldCheck } from 'lucide-react'
+import { Activity, ArrowDown, ArrowRight, CheckCircle2, CircleDot, Database, FileCheck2, Globe2, Radio, RefreshCw, Server, ShieldCheck } from 'lucide-react'
 import { EmptyState, ErrorState, LoadingState, SectionHeading } from '../components/UI'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { shortAddress, timeAgo } from '../lib/format'
 import { slaService } from '../services/solana/slaService'
+import { uptimeService } from '../services/uptime/uptimeService'
 
 const steps = [
   { icon: Globe2, title: 'Your API', detail: 'Endpoint health' },
@@ -15,11 +16,13 @@ const steps = [
 
 export function MonitoringPage() {
   const { data: monitors, loading, error, reload } = useAsyncData(() => slaService.getMonitors(), [])
+  const { data: backendState, loading: backendLoading, error: backendError, reload: reloadBackend } = useAsyncData(() => uptimeService.getState(), [])
   const online = monitors?.filter((monitor) => monitor.status === 'online').length ?? 0
   const totalObservations = monitors?.reduce((sum, monitor) => sum + monitor.observations, 0) ?? 0
   const agreementRate = monitors?.length ? monitors.reduce((sum, monitor) => sum + monitor.agreementRate, 0) / monitors.length : 0
   return <div className="page-stack">
-    <div className="page-heading monitoring-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> NETWORK <span className="eyebrow-slash">/</span> MONITORING</div><h1>Independent by design.</h1><p>Distributed observers provide the signed evidence behind every agreement.</p></div><div className="monitoring-live"><span className="pulse-dot" /> Network operational</div></div>
+    <div className="page-heading monitoring-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> NETWORK <span className="eyebrow-slash">/</span> MONITORING</div><h1>Independent by design.</h1><p>Distributed observers provide the signed evidence behind every agreement.</p></div><div className={`monitoring-live ${backendError ? 'is-unavailable' : backendState === 'DOWN' ? 'is-down' : ''}`}><span className="pulse-dot" /> {backendLoading ? 'Checking backend' : backendError ? 'Backend unavailable' : `Uptime service ${backendState}`}</div></div>
+    <section className="surface backend-state-panel"><span className="backend-state-icon"><Server size={19} /></span><div><span className="backend-state-kicker">LIVE BACKEND CONNECTION</span><h2>Uptime service</h2><p>{backendLoading ? 'Checking the service state...' : backendError ? 'The backend is unavailable. Demo SLA monitoring remains visible below.' : backendState === 'DOWN' ? 'The service reports DOWN. Demo SLA monitoring remains visible below.' : 'The service reports UP. SLA monitors and observations below remain demo data.'}</p></div><button type="button" onClick={() => void reloadBackend()} disabled={backendLoading} aria-label="Refresh uptime service state"><RefreshCw size={16} /></button></section>
     {error && <ErrorState message={error} retry={() => void reload()} />}
     {loading && <LoadingState label="Loading monitors" />}
     {!loading && monitors && <>
