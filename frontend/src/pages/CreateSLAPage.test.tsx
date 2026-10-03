@@ -24,7 +24,7 @@ function setup() {
     </MemoryRouter>,
   )
 }
-const submit = () => userEvent.click(screen.getByRole('button', { name: /create sla & lock funds/i }))
+const submit = () => userEvent.click(screen.getByRole('button', { name: /create demo sla/i }))
 async function fillValid() {
   await userEvent.type(screen.getByLabelText('Agreement name'), '  My API  ')
   await userEvent.type(screen.getByLabelText('API endpoint'), 'https://api.example.com/health')
@@ -114,7 +114,7 @@ describe('CreateSLAPage', () => {
     await fillValid()
     await submit()
     expect(await screen.findByText('Storage full')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /create sla & lock funds/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /create demo sla/i })).toBeEnabled()
   })
 
   it('uses a generic submit error for non-Error rejections', async () => {
