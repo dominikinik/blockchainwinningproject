@@ -1,10 +1,11 @@
-//! Every rejected `create_deal` and `settle_deal`, and that a rejection moves no lamports.
+//! Every rejected `create_deal`, `settle_deal` and `cancel_deal`, and that a rejection moves no
+//! lamports.
 mod common;
 
 use common::*;
 use solana_keypair::Keypair;
 use solana_signer::Signer;
-use uptime_deal::{error::DealError, MIN_DEAL_LAMPORTS};
+use uptime_deal::{error::DealError, CANCEL_TIMEOUT_SECONDS, MAX_DEAL_DURATION_SECONDS, MIN_DEAL_LAMPORTS};
 
 // Anchor error codes.
 const ACCOUNT_ALREADY_IN_USE: u32 = 0; // system program: account already exists
@@ -27,7 +28,7 @@ fn create_rejects_amount_below_minimum() {
 fn create_rejects_payer_as_recipient() {
     let mut env = Env::new();
     let payer = env.payer.insecure_clone();
-    let ix = Env::create_ix(&payer.pubkey(), &payer.pubkey(), &env.oracle.pubkey(), 1, AMOUNT);
+    let ix = Env::create_ix(&payer.pubkey(), &payer.pubkey(), &env.oracle.pubkey(), 1, AMOUNT, DURATION);
     assert_err(env.send(&[ix], &payer, &[]), DealError::RecipientIsPayer);
 }
 
@@ -44,7 +45,7 @@ fn create_fails_when_payer_cannot_fund() {
     let mut env = Env::new();
     let poor = Keypair::new();
     env.svm.airdrop(&poor.pubkey(), SOL).unwrap();
-    let ix = Env::create_ix(&poor.pubkey(), &env.recipient.pubkey(), &env.oracle.pubkey(), 1, 5 * SOL);
+    let ix = Env::create_ix(&poor.pubkey(), &env.recipient.pubkey(), &env.oracle.pubkey(), 1, 5 * SOL, DURATION);
     assert!(env.send(&[ix], &poor, &[]).is_err());
     assert!(!env.exists(&deal_pda(&poor.pubkey(), 1)));
 }
@@ -53,7 +54,7 @@ fn create_fails_when_payer_cannot_fund() {
 fn create_requires_payer_signature() {
     let mut env = Env::new();
     let oracle = env.oracle.insecure_clone();
-    let mut ix = Env::create_ix(&env.payer.pubkey(), &env.recipient.pubkey(), &oracle.pubkey(), 1, AMOUNT);
+    let mut ix = Env::create_ix(&env.payer.pubkey(), &env.recipient.pubkey(), &oracle.pubkey(), 1, AMOUNT, DURATION);
     ix.accounts[0].is_signer = false; // try to spend the payer's lamports without its signature
     assert!(env.send(&[ix], &oracle, &[]).is_err());
 }
@@ -106,4 +107,70 @@ fn settle_unknown_deal_fails() {
     let mut env = Env::new();
     // AccountNotInitialized (3012).
     assert_anchor_code(env.settle(42, 100, 100), 3012);
+}
+
+#[test]
+fn create_rejects_invalid_duration() {
+    let mut env = Env::new();
+    assert_err(env.create_for(1, AMOUNT, 0), DealError::InvalidDuration);
+    assert_err(env.create_for(1, AMOUNT, MAX_DEAL_DURATION_SECONDS + 1), DealError::InvalidDuration);
+    assert!(!env.exists(&deal_pda(&env.payer.pubkey(), 1)));
+
+    assert_ok(env.create_for(1, AMOUNT, 1));
+    assert_ok(env.create_for(2, AMOUNT, MAX_DEAL_DURATION_SECONDS));
+}
+
+#[test]
+fn cancel_rejects_before_timeout() {
+    let mut env = Env::new();
+    env.set_time(1_000_000);
+    assert_ok(env.create(1, AMOUNT));
+    let deal = deal_pda(&env.payer.pubkey(), 1);
+    let window_end = 1_000_000 + DURATION as i64;
+
+    for now in [1_000_000, window_end, window_end + CANCEL_TIMEOUT_SECONDS - 1] {
+        env.set_time(now);
+        assert_err(env.cancel(1), DealError::CancelTooEarly);
+    }
+    assert_eq!(env.deal(&deal).amount_lamports, AMOUNT);
+}
+
+#[test]
+fn cancel_rejects_anyone_but_the_payer() {
+    let mut env = Env::new();
+    env.set_time(1_000_000);
+    assert_ok(env.create(1, AMOUNT));
+    env.set_time(1_000_000 + DURATION as i64 + CANCEL_TIMEOUT_SECONDS);
+
+    let mallory = Keypair::new();
+    env.svm.airdrop(&mallory.pubkey(), SOL).unwrap();
+    let recipient = env.recipient.insecure_clone();
+    env.svm.airdrop(&recipient.pubkey(), SOL).unwrap();
+    let oracle = env.oracle.insecure_clone();
+    for signer in [&mallory, &recipient, &oracle] {
+        let before = env.balance(&signer.pubkey());
+        assert_anchor_code(env.cancel_as(signer, 1), CONSTRAINT_HAS_ONE);
+        assert!(env.balance(&signer.pubkey()) <= before, "the signer only pays the fee");
+    }
+    assert_eq!(env.deal(&deal_pda(&env.payer.pubkey(), 1)).amount_lamports, AMOUNT);
+}
+
+#[test]
+fn cancel_requires_payer_signature() {
+    let mut env = Env::new();
+    env.set_time(1_000_000);
+    assert_ok(env.create(1, AMOUNT));
+    env.set_time(1_000_000 + DURATION as i64 + CANCEL_TIMEOUT_SECONDS);
+    let oracle = env.oracle.insecure_clone();
+    let mut ix = Env::cancel_ix(&env.payer.pubkey(), &deal_pda(&env.payer.pubkey(), 1));
+    ix.accounts[0].is_signer = false; // try to close the deal without the payer's signature
+    assert!(env.send(&[ix], &oracle, &[]).is_err());
+    assert!(env.exists(&deal_pda(&env.payer.pubkey(), 1)));
+}
+
+#[test]
+fn cancel_unknown_deal_fails() {
+    let mut env = Env::new();
+    // AccountNotInitialized (3012).
+    assert_anchor_code(env.cancel(42), 3012);
 }

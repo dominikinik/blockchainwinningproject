@@ -31,6 +31,7 @@ pub struct CreateDeal<'info> {
 /// * `ctx` - the `CreateDeal` accounts; `deal` has just been created by Anchor.
 /// * `deal_id` - payer-chosen id stored in the deal (already used in its seeds).
 /// * `amount_lamports` - lamports to move from the payer into the deal.
+/// * `duration_seconds` - length of the uptime window, which starts now (chain time).
 ///
 /// # Returns
 ///
@@ -40,9 +41,16 @@ pub struct CreateDeal<'info> {
 ///
 /// * `DealError::AmountTooSmall` - `amount_lamports < MIN_DEAL_LAMPORTS`.
 /// * `DealError::RecipientIsPayer` - the payer would pay itself.
+/// * `DealError::InvalidDuration` - `duration_seconds` is 0 or above `MAX_DEAL_DURATION_SECONDS`.
 /// * A system program error if the payer lacks the lamports.
-pub fn handle_create_deal(ctx: Context<CreateDeal>, deal_id: u64, amount_lamports: u64) -> Result<()> {
+pub fn handle_create_deal(
+    ctx: Context<CreateDeal>,
+    deal_id: u64,
+    amount_lamports: u64,
+    duration_seconds: u64,
+) -> Result<()> {
     require!(logic::amount_is_valid(amount_lamports), DealError::AmountTooSmall);
+    require!(logic::duration_is_valid(duration_seconds), DealError::InvalidDuration);
     let payer = ctx.accounts.payer.key();
     let recipient = ctx.accounts.recipient.key();
     require_keys_neq!(payer, recipient, DealError::RecipientIsPayer);
@@ -64,6 +72,8 @@ pub fn handle_create_deal(ctx: Context<CreateDeal>, deal_id: u64, amount_lamport
     deal.oracle = ctx.accounts.oracle.key();
     deal.deal_id = deal_id;
     deal.amount_lamports = amount_lamports;
+    deal.starts_at = Clock::get()?.unix_timestamp;
+    deal.duration_seconds = duration_seconds;
     deal.bump = ctx.bumps.deal;
 
     emit!(DealCreated {
@@ -72,6 +82,8 @@ pub fn handle_create_deal(ctx: Context<CreateDeal>, deal_id: u64, amount_lamport
         recipient,
         oracle: deal.oracle,
         amount_lamports,
+        starts_at: deal.starts_at,
+        duration_seconds,
     });
     Ok(())
 }

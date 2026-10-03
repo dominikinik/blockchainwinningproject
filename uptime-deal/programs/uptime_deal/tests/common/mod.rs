@@ -2,7 +2,7 @@
 #![allow(dead_code, clippy::result_large_err)]
 
 use anchor_lang::{
-    prelude::Pubkey, solana_program::instruction::Instruction, solana_program::system_program,
+    prelude::{Clock, Pubkey}, solana_program::instruction::Instruction, solana_program::system_program,
     AccountDeserialize, InstructionData, ToAccountMetas,
 };
 use litesvm::{
@@ -19,6 +19,8 @@ use uptime_deal::{error::DealError, state::Deal, DEAL_SEED};
 pub const SOL: u64 = 1_000_000_000;
 /// Escrow used by most tests.
 pub const AMOUNT: u64 = 2 * SOL;
+/// Uptime window used by most tests, in seconds.
+pub const DURATION: u64 = 60;
 
 pub type TxResult = Result<TransactionMetadata, FailedTransactionMetadata>;
 
@@ -184,11 +186,19 @@ impl Env {
     /// * `oracle` - the key allowed to settle.
     /// * `deal_id` - the payer-chosen id.
     /// * `amount` - lamports to escrow.
+    /// * `duration` - uptime window in seconds.
     ///
     /// # Returns
     ///
     /// The instruction, with the `deal` PDA derived from `payer` and `deal_id`.
-    pub fn create_ix(payer: &Pubkey, recipient: &Pubkey, oracle: &Pubkey, deal_id: u64, amount: u64) -> Instruction {
+    pub fn create_ix(
+        payer: &Pubkey,
+        recipient: &Pubkey,
+        oracle: &Pubkey,
+        deal_id: u64,
+        amount: u64,
+        duration: u64,
+    ) -> Instruction {
         Instruction {
             program_id: uptime_deal::ID,
             accounts: uptime_deal::accounts::CreateDeal {
@@ -199,7 +209,7 @@ impl Env {
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
-            data: uptime_deal::instruction::CreateDeal { deal_id, amount_lamports: amount }.data(),
+            data: uptime_deal::instruction::CreateDeal { deal_id, amount_lamports: amount, duration_seconds: duration }.data(),
         }
     }
 
@@ -231,7 +241,45 @@ impl Env {
         }
     }
 
-    /// Creates a deal between this env's payer, recipient and oracle.
+    /// Builds a `cancel_deal` instruction.
+    ///
+    /// # Arguments
+    ///
+    /// * `payer` - the signer claiming to be the deal's payer.
+    /// * `deal` - the deal address.
+    ///
+    /// # Returns
+    ///
+    /// The instruction.
+    pub fn cancel_ix(payer: &Pubkey, deal: &Pubkey) -> Instruction {
+        Instruction {
+            program_id: uptime_deal::ID,
+            accounts: uptime_deal::accounts::CancelDeal { payer: *payer, deal: *deal }.to_account_metas(None),
+            data: uptime_deal::instruction::CancelDeal {}.data(),
+        }
+    }
+
+    /// Reads the chain clock.
+    ///
+    /// # Returns
+    ///
+    /// The current `unix_timestamp` of the in-process chain.
+    pub fn now(&self) -> i64 {
+        self.svm.get_sysvar::<Clock>().unix_timestamp
+    }
+
+    /// Moves the chain clock.
+    ///
+    /// # Arguments
+    ///
+    /// * `unix_timestamp` - the new chain time in unix seconds.
+    pub fn set_time(&mut self, unix_timestamp: i64) {
+        let mut clock = self.svm.get_sysvar::<Clock>();
+        clock.unix_timestamp = unix_timestamp;
+        self.svm.set_sysvar::<Clock>(&clock);
+    }
+
+    /// Creates a deal between this env's payer, recipient and oracle with a `DURATION` window.
     ///
     /// # Arguments
     ///
@@ -242,9 +290,61 @@ impl Env {
     ///
     /// The transaction result, signed and paid by the payer.
     pub fn create(&mut self, deal_id: u64, amount: u64) -> TxResult {
-        let ix = Self::create_ix(&self.payer.pubkey(), &self.recipient.pubkey(), &self.oracle.pubkey(), deal_id, amount);
+        self.create_for(deal_id, amount, DURATION)
+    }
+
+    /// Creates a deal between this env's payer, recipient and oracle.
+    ///
+    /// # Arguments
+    ///
+    /// * `deal_id` - the payer-chosen id.
+    /// * `amount` - lamports to escrow.
+    /// * `duration` - uptime window in seconds.
+    ///
+    /// # Returns
+    ///
+    /// The transaction result, signed and paid by the payer.
+    pub fn create_for(&mut self, deal_id: u64, amount: u64, duration: u64) -> TxResult {
+        let ix = Self::create_ix(
+            &self.payer.pubkey(),
+            &self.recipient.pubkey(),
+            &self.oracle.pubkey(),
+            deal_id,
+            amount,
+            duration,
+        );
         let payer = self.payer.insecure_clone();
         self.send(&[ix], &payer, &[])
+    }
+
+    /// Cancels one of this env's deals, signed and paid by the payer.
+    ///
+    /// # Arguments
+    ///
+    /// * `deal_id` - the id the payer used.
+    ///
+    /// # Returns
+    ///
+    /// The transaction result.
+    pub fn cancel(&mut self, deal_id: u64) -> TxResult {
+        let payer = self.payer.insecure_clone();
+        self.cancel_as(&payer, deal_id)
+    }
+
+    /// Cancels one of this env's deals with an arbitrary signer.
+    ///
+    /// # Arguments
+    ///
+    /// * `signer` - the key claiming to be the payer; also pays the fee.
+    /// * `deal_id` - the id the payer used.
+    ///
+    /// # Returns
+    ///
+    /// The transaction result.
+    pub fn cancel_as(&mut self, signer: &Keypair, deal_id: u64) -> TxResult {
+        let deal = deal_pda(&self.payer.pubkey(), deal_id);
+        let ix = Self::cancel_ix(&signer.pubkey(), &deal);
+        self.send(&[ix], signer, &[])
     }
 
     /// Settles one of this env's deals, signed and paid by the oracle.

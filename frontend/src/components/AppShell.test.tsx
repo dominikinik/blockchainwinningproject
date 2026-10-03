@@ -24,6 +24,7 @@ describe('AppShell', () => {
     expect(within(nav).getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', '/')
     expect(within(nav).getByRole('link', { name: 'Create SLA' })).toHaveAttribute('href', '/create')
     expect(within(nav).getByRole('link', { name: 'Monitoring' })).toHaveAttribute('href', '/monitoring')
+    expect(within(nav).getByRole('link', { name: 'Uptime deal' })).toHaveAttribute('href', '/deal')
     expect(screen.getByRole('button', { name: 'Wallet' })).toBeInTheDocument()
     expect(screen.getByText('Solana Devnet')).toBeInTheDocument()
     expect(screen.getByText('page body')).toBeInTheDocument()

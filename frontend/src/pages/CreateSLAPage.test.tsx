@@ -105,7 +105,7 @@ describe('CreateSLAPage', () => {
     expect(createSLA).not.toHaveBeenCalled()
   })
 
-  it.each(['0', '10001', '0.0000000001', ''])('rejects customer payment %j', async (amount) => {
+  it.each(['0', '10001', '0.0000000001', '1.2345678901', '1e-10', '1e', ''])('rejects customer payment %j', async (amount) => {
     wallet.publicKey = { toBase58: () => WALLET }
     setup()
     await fillValid()
@@ -116,7 +116,7 @@ describe('CreateSLAPage', () => {
     expect(createSLA).not.toHaveBeenCalled()
   })
 
-  it.each(['0.000000001', '10000', '.5'])('accepts customer payment %j', async (amount) => {
+  it.each(['0.000000001', '1e-9', '2.5e-3', '10000', '.5'])('accepts customer payment %j', async (amount) => {
     wallet.publicKey = { toBase58: () => WALLET }
     createSLA.mockResolvedValue({ id: 'sla-1' } as Awaited<ReturnType<typeof slaService.createSLA>>)
     setup()

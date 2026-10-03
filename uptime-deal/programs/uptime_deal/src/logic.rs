@@ -1,6 +1,6 @@
 //! Pure deal rules with no Solana types, unit-tested below.
 
-use crate::constants::{MIN_DEAL_LAMPORTS, UPTIME_THRESHOLD_PERCENT};
+use crate::constants::{CANCEL_TIMEOUT_SECONDS, MAX_DEAL_DURATION_SECONDS, MIN_DEAL_LAMPORTS, UPTIME_THRESHOLD_PERCENT};
 
 /// Why an uptime measurement was rejected.
 #[derive(Debug, PartialEq, Eq)]
@@ -53,6 +53,35 @@ pub fn amount_is_valid(amount_lamports: u64) -> bool {
     amount_lamports >= MIN_DEAL_LAMPORTS
 }
 
+/// Checks that an uptime window length is allowed.
+///
+/// # Arguments
+///
+/// * `duration_seconds` - the window length the payer asked for.
+///
+/// # Returns
+///
+/// `true` when `1 <= duration_seconds <= MAX_DEAL_DURATION_SECONDS`, otherwise `false`.
+pub fn duration_is_valid(duration_seconds: u64) -> bool {
+    (1..=MAX_DEAL_DURATION_SECONDS).contains(&duration_seconds)
+}
+
+/// Decides whether the payer may cancel a deal and take the escrow back.
+///
+/// # Arguments
+///
+/// * `starts_at` - chain time (unix seconds) when the window started.
+/// * `duration_seconds` - window length in seconds (at most `MAX_DEAL_DURATION_SECONDS`).
+/// * `now` - the current chain time (unix seconds).
+///
+/// # Returns
+///
+/// `true` once `now >= starts_at + duration_seconds + CANCEL_TIMEOUT_SECONDS`, otherwise `false`.
+pub fn cancel_allowed(starts_at: i64, duration_seconds: u64, now: i64) -> bool {
+    // i128 keeps the sum exact for any stored values.
+    now as i128 >= starts_at as i128 + duration_seconds as i128 + CANCEL_TIMEOUT_SECONDS as i128
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +130,30 @@ mod tests {
         assert!(!amount_is_valid(MIN_DEAL_LAMPORTS - 1));
         assert!(amount_is_valid(MIN_DEAL_LAMPORTS));
         assert!(amount_is_valid(u64::MAX));
+    }
+
+    #[test]
+    fn duration_boundary() {
+        assert!(!duration_is_valid(0));
+        assert!(duration_is_valid(1));
+        assert!(duration_is_valid(MAX_DEAL_DURATION_SECONDS));
+        assert!(!duration_is_valid(MAX_DEAL_DURATION_SECONDS + 1));
+        assert!(!duration_is_valid(u64::MAX));
+    }
+
+    #[test]
+    fn cancel_opens_after_window_and_timeout() {
+        let end = 1_000 + 60;
+        assert!(!cancel_allowed(1_000, 60, 1_000));
+        assert!(!cancel_allowed(1_000, 60, end));
+        assert!(!cancel_allowed(1_000, 60, end + CANCEL_TIMEOUT_SECONDS - 1));
+        assert!(cancel_allowed(1_000, 60, end + CANCEL_TIMEOUT_SECONDS));
+        assert!(cancel_allowed(1_000, 60, i64::MAX));
+    }
+
+    #[test]
+    fn cancel_math_does_not_overflow() {
+        assert!(!cancel_allowed(i64::MAX, u64::MAX, i64::MAX));
+        assert!(cancel_allowed(i64::MIN, 0, 0));
     }
 }
