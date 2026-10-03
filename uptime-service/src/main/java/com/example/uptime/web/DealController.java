@@ -45,16 +45,19 @@ public class DealController {
 	}
 
 	/**
-	 * Registers a deal created on chain; its uptime window is the one stored in the deal account.
+	 * Registers a deal created on chain, usually while it is still a proposal; its uptime window is the one
+	 * stored in the deal account once the recipient accepts it.
 	 *
 	 * @param request the deal address
-	 * @return the tracked deal (201)
+	 * @return the tracked deal (201), {@code PROPOSED} or {@code ACTIVE}
 	 */
 	@PostMapping
 	@ResponseStatus(HttpStatus.CREATED)
 	@Operation(summary = "Watch a deal and settle it when its window ends",
-			description = "The deal must already exist on chain and name this service's oracle. The uptime window "
-					+ "([starts_at, starts_at + duration_seconds)) is read from the deal account, not from the request. "
+			description = "The deal must already exist on chain and name this service's oracle. A proposal is "
+					+ "tracked as PROPOSED until its recipient accepts it on chain. The uptime window "
+					+ "([starts_at, starts_at + duration_seconds), starting at acceptance) is read from the deal "
+					+ "account, not from the request. "
 					+ "400 for an invalid request or deal (including an on-chain duration above the maximum), "
 					+ "409 if already registered, 502 if the RPC node fails.")
 	public TrackedDeal register(@RequestBody RegisterRequest request) {

@@ -8,10 +8,14 @@ pub const DEAL_SEED: &[u8] = b"deal";
 #[constant]
 pub const UPTIME_THRESHOLD_PERCENT: u64 = 99;
 
-/// Smallest escrow accepted. It is above the rent-exempt minimum of an empty wallet
-/// (890,880 lamports), so paying a recipient that doesn't exist yet always succeeds.
+/// Smallest payment and smallest guarantee accepted. It is above the rent-exempt minimum of an
+/// empty wallet (890,880 lamports), so no payout can leave a wallet below that minimum.
 #[constant]
 pub const MIN_DEAL_LAMPORTS: u64 = 1_000_000;
+
+/// How long after `create_deal` the recipient may still accept the proposal, in seconds (one day).
+#[constant]
+pub const ACCEPT_TIMEOUT_SECONDS: i64 = 86_400;
 
 /// Longest uptime window a deal may run, in seconds (one day).
 #[constant]

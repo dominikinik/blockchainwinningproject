@@ -1,10 +1,12 @@
 package com.example.uptime.deal;
 
+import static com.example.uptime.support.DealFixtures.GUARANTEE;
 import static com.example.uptime.support.DealFixtures.PROGRAM_ID;
 import static com.example.uptime.support.DealFixtures.dealCancelledLog;
 import static com.example.uptime.support.DealFixtures.dealData;
 import static com.example.uptime.support.DealFixtures.dealSettledLog;
 import static com.example.uptime.support.DealFixtures.newAddress;
+import static com.example.uptime.support.DealFixtures.proposalData;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -84,9 +86,95 @@ class DealServiceTest {
 		assertThat(tracked.payer()).isEqualTo(payer);
 		assertThat(tracked.recipient()).isEqualTo(recipient);
 		assertThat(tracked.amountLamports()).isEqualTo(AMOUNT);
+		assertThat(tracked.guaranteeLamports()).isEqualTo(GUARANTEE);
 		assertThat(service.get(deal)).isEqualTo(tracked);
 		assertThat(service.list()).containsExactly(tracked);
 		assertThat(service.oracleAddress()).isEqualTo(oracle.address());
+	}
+
+	@Test
+	void registersAProposalWithoutAWindowAndNeverSettlesItUnaccepted() {
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+
+		TrackedDeal tracked = service.register(deal);
+
+		assertThat(tracked.status()).isEqualTo(Status.PROPOSED);
+		assertThat(tracked.startsAt()).isNull();
+		assertThat(tracked.endsAt()).isNull();
+		assertThat(tracked.guaranteeLamports()).isEqualTo(GUARANTEE);
+		assertThat(tracked.acceptDeadline()).isEqualTo(T0.plusSeconds(86_400));
+
+		clock.set(T0.plusSeconds(10_000));
+		service.settleDue();
+		service.settleDue();
+		assertThat(service.get(deal).status()).isEqualTo(Status.PROPOSED);
+		verify(uptime, never()).range(any(), any());
+		verify(rpc, never()).sendTransaction(any());
+	}
+
+	@Test
+	void takesTheWindowFromTheAcceptanceThenSettlesIt() {
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+		service.register(deal);
+		clock.set(T0.plusSeconds(4));
+		service.settleDue();
+		assertThat(service.get(deal).status()).isEqualTo(Status.PROPOSED);
+
+		// The recipient accepts at T0 + 5; the window runs from there, not from the proposal.
+		when(rpc.getAccountInfo(deal)).thenReturn(dealAccount(oracle.address(), T0.plusSeconds(5), 10));
+		service.settleDue();
+		TrackedDeal accepted = service.get(deal);
+		assertThat(accepted.status()).isEqualTo(Status.ACTIVE);
+		assertThat(accepted.startsAt()).isEqualTo(T0.plusSeconds(5));
+		assertThat(accepted.endsAt()).isEqualTo(T0.plusSeconds(15));
+		verify(rpc, never()).sendTransaction(any());
+
+		when(uptime.range(T0.plusSeconds(5), T0.plusSeconds(14))).thenReturn(points(10, 0));
+		clock.set(T0.plusSeconds(17));
+		service.settleDue();
+		ArgumentCaptor<byte[]> tx = ArgumentCaptor.forClass(byte[].class);
+		verify(rpc).sendTransaction(tx.capture());
+		assertSignedSettlement(tx.getValue(), 10, 10);
+	}
+
+	@Test
+	void aWithdrawnOrRejectedProposalIsMarkedCancelled() {
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+		service.register(deal);
+		when(rpc.getAccountInfo(deal)).thenReturn(null);
+		when(rpc.getSignaturesForAddress(deal, 10)).thenReturn(List.of("rejectTx"));
+		when(rpc.getTransactionLogs("rejectTx")).thenReturn(List.of(dealCancelledLog(deal, payer, AMOUNT)));
+
+		service.settleDue();
+
+		assertThat(service.get(deal).status()).isEqualTo(Status.CANCELLED);
+		assertThat(service.get(deal).signature()).isEqualTo("rejectTx");
+		verify(rpc, never()).sendTransaction(any());
+	}
+
+	@Test
+	void anRpcFailureWhileCheckingAProposalKeepsItWaiting() {
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+		service.register(deal);
+		when(rpc.getAccountInfo(deal)).thenThrow(new SolanaRpcException("down"));
+
+		service.settleDue();
+		service.settleDue();
+
+		assertThat(service.get(deal).status()).isEqualTo(Status.PROPOSED);
+		assertThat(service.get(deal).attempts()).isZero();
+		assertThat(service.get(deal).error()).isNull();
+	}
+
+	@Test
+	void listsTheMostRecentProposalFirst() {
+		String older = newAddress();
+		when(rpc.getAccountInfo(older)).thenReturn(proposalAccount(T0.plusSeconds(100)));
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(200)));
+		service.register(older);
+		service.register(deal);
+
+		assertThat(service.list()).extracting(TrackedDeal::address).containsExactly(deal, older);
 	}
 
 	@Test
@@ -399,8 +487,13 @@ class DealServiceTest {
 	}
 
 	private AccountInfo dealAccount(String dealOracle, Instant startsAt, long durationSeconds) {
-		return new AccountInfo(PROGRAM_ID, AMOUNT + 2_000_000,
+		return new AccountInfo(PROGRAM_ID, AMOUNT + GUARANTEE + 2_000_000,
 				dealData(payer, recipient, dealOracle, 1, AMOUNT, startsAt.getEpochSecond(), durationSeconds));
+	}
+
+	private AccountInfo proposalAccount(Instant acceptDeadline) {
+		return new AccountInfo(PROGRAM_ID, AMOUNT + 2_000_000, proposalData(payer, recipient, oracle.address(), 1,
+				AMOUNT, GUARANTEE, 10, acceptDeadline.getEpochSecond()));
 	}
 
 	private static List<UptimePoint> points(int up, int down) {
