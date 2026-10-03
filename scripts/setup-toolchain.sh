@@ -108,8 +108,10 @@ install_missing() {
 	if is_missing anchor; then
 		echo "==> anchor $ANCHOR_VERSION"
 		# avm verifies the prebuilt binary's build provenance via the GitHub API; if that check can't
-		# run (e.g. rate-limited, 403) it refuses the binary. Building from source is the safe fallback.
-		avm install "$ANCHOR_VERSION" || avm install "$ANCHOR_VERSION" --from-source
+		# run (unauthenticated limit is 60 requests/hour, then 403) it refuses the binary. Building
+		# from source is the safe fallback. LTO is off because macOS's Xcode linker cannot read the
+		# newer LLVM bitcode that rustc emits for LTO ("could not parse bitcode object file").
+		avm install "$ANCHOR_VERSION" || CARGO_PROFILE_RELEASE_LTO=off avm install "$ANCHOR_VERSION" --from-source
 		avm use "$ANCHOR_VERSION"
 	fi
 
