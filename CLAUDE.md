@@ -16,7 +16,8 @@ This repository is a monorepo that will hold multiple independent modules, each 
 
 - `uptime-service/` (Java 21, Spring Boot): a service that monitors its own health and records per-second uptime history. See [uptime-service/CLAUDE.md](uptime-service/CLAUDE.md).
 - `uptime-db/` (PostgreSQL 17, Docker Compose): the local database for `uptime-service`, which owns its schema and data. See [uptime-db/CLAUDE.md](uptime-db/CLAUDE.md).
+- `frontend/` (React, TypeScript, Vite): the SLAna dashboard and Solana wallet UI. See [frontend/CLAUDE.md](frontend/CLAUDE.md).
 
 ## Shared environment
 
-`Dockerfile` + `.devcontainer/` provide a Solana/Anchor bootcamp dev environment (OtterSec Anchor image, Node 24, Rust 1.95, Surfpool on port 8899). Its comments and the root `.gitignore` refer to `scripts/` and `diamond-hands/` (TypeScript snapshots and an Anchor workspace); neither module exists in the repo yet. The image has no JDK.
+`Dockerfile` + `.devcontainer/` provide a Solana/Anchor environment (OtterSec Anchor image, Node 24, Rust 1.95, Surfpool on port 8899) and forward Vite on port 5173. The image has no JDK; run `uptime-service` on a Java 21 host or extend the container. The frontend proxies `/api` to that service during development. See [INTEGRATION_GAPS.md](INTEGRATION_GAPS.md) for the current frontend/backend boundary and remaining work.

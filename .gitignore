@@ -4,6 +4,10 @@
 **/.anchor/
 **/test-ledger/
 **/.surfpool/
+dist/
+.playwright-mcp/
+.vite/
+*.tsbuildinfo
 
 # Local secret keypairs
 /scripts/keypair.json
