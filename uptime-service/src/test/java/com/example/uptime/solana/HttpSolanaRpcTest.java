@@ -2,12 +2,16 @@ package com.example.uptime.solana;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
 
@@ -17,6 +21,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
+import com.example.uptime.deal.DealConfig;
 import com.example.uptime.solana.SolanaRpc.SignatureStatus;
 import com.example.uptime.solana.SolanaRpc.SolanaRpcException;
 
@@ -70,6 +75,38 @@ class HttpSolanaRpcTest {
 		assertThat(rpc.getBalance("Addr")).isEqualTo(42);
 		assertThat(rpc.requestAirdrop("Addr", 5)).isEqualTo("AirSig");
 		server.verify();
+	}
+
+	@Test
+	void listsRecentSignaturesNewestFirst() {
+		server.expect(requestTo(URL))
+			.andExpect(jsonPath("$.method").value("getSignaturesForAddress"))
+			.andExpect(jsonPath("$.params[0]").value("Addr"))
+			.andExpect(jsonPath("$.params[1].limit").value(10))
+			.andExpect(jsonPath("$.params[1].commitment").value("confirmed"))
+			.andRespond(withSuccess("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":[{\"signature\":\"S2\",\"err\":null},"
+					+ "{\"signature\":\"S1\"}]}", MediaType.APPLICATION_JSON));
+		expect("getSignaturesForAddress", "[]");
+		expect("getSignaturesForAddress", "null");
+
+		assertThat(rpc.getSignaturesForAddress("Addr", 10)).containsExactly("S2", "S1");
+		assertThat(rpc.getSignaturesForAddress("Addr", 10)).isEmpty();
+		assertThat(rpc.getSignaturesForAddress("Addr", 10)).isEmpty();
+		server.verify();
+	}
+
+	@Test
+	void aNodeThatNeverAnswersTimesOutInsteadOfHanging() throws Exception {
+		try (ServerSocket silent = new ServerSocket(0, 5, InetAddress.getLoopbackAddress())) {
+			RestClient.Builder slow = RestClient.builder()
+				.baseUrl("http://127.0.0.1:" + silent.getLocalPort())
+				.requestFactory(DealConfig.timeouts(Duration.ofMillis(200)));
+			HttpSolanaRpc stalled = new HttpSolanaRpc(slow);
+
+			assertTimeoutPreemptively(Duration.ofSeconds(5), () -> assertThatThrownBy(() -> stalled.getBalance("Addr"))
+				.isInstanceOf(SolanaRpcException.class)
+				.hasMessageStartingWith("getBalance failed"));
+		}
 	}
 
 	@Test

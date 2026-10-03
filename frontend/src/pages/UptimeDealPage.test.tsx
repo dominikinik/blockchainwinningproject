@@ -4,7 +4,7 @@ import { PublicKey } from '@solana/web3.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { dealApi, type TrackedDeal } from '../services/deal/dealApi'
-import { openDeal, requestAirdrop } from '../services/deal/dealService'
+import { cancelDeal, openDeal, requestAirdrop } from '../services/deal/dealService'
 import { uptimeService } from '../services/uptime/uptimeService'
 import { renderAt, PROVIDER, WALLET } from '../test/utils'
 import { dealVerdict, formatLamports, UptimeDealPage } from './UptimeDealPage'
@@ -18,7 +18,12 @@ const sendTransaction = vi.fn()
 vi.mock('@solana/wallet-adapter-react', () => ({ useWallet: vi.fn(), useConnection: () => ({ connection }) }))
 vi.mock('@solana/wallet-adapter-react-ui', () => ({ WalletMultiButton: () => <button>Wallet</button> }))
 vi.mock('../services/deal/dealApi', () => ({ dealApi: { getConfig: vi.fn(), get: vi.fn(), setServiceUp: vi.fn() } }))
-vi.mock('../services/deal/dealService', () => ({ openDeal: vi.fn(), requestAirdrop: vi.fn() }))
+vi.mock('../services/deal/dealService', () => ({ openDeal: vi.fn(), requestAirdrop: vi.fn(), cancelDeal: vi.fn() }))
+const cluster = vi.hoisted(() => ({ url: 'http://localhost:8899' }))
+vi.mock('../config/solana', async (importActual) => ({
+  ...(await importActual<typeof import('../config/solana')>()),
+  get SOLANA_RPC_URL() { return cluster.url },
+}))
 vi.mock('../services/uptime/uptimeService', () => ({ uptimeService: { getState: vi.fn() } }))
 
 const config = { programId: 'EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r', oracle: ORACLE, rpcUrl: 'http://127.0.0.1:8899' }
@@ -44,6 +49,8 @@ describe('UptimeDealPage', () => {
     vi.mocked(dealApi.get).mockReset()
     vi.mocked(dealApi.setServiceUp).mockReset()
     vi.mocked(openDeal).mockReset()
+    vi.mocked(cancelDeal).mockReset().mockResolvedValue()
+    cluster.url = 'http://localhost:8899'
     vi.mocked(requestAirdrop).mockReset().mockResolvedValue()
     vi.mocked(uptimeService.getState).mockReset().mockResolvedValue('UP')
   })
@@ -118,6 +125,76 @@ describe('UptimeDealPage', () => {
     expect(screen.queryByTestId('deal-verdict')).not.toBeInTheDocument()
   })
 
+  it('blocks deal creation when the app and the service use different clusters', async () => {
+    cluster.url = 'https://api.devnet.solana.com'
+    renderAt(<UptimeDealPage />)
+    const alert = await screen.findByText(/settles on http:\/\/127\.0\.0\.1:8899, but this app is connected to https:\/\/api\.devnet\.solana\.com/)
+    expect(alert).toHaveTextContent('VITE_SOLANA_RPC_URL=http://127.0.0.1:8899')
+    expect(screen.getByRole('button', { name: /Create deal/ })).toBeDisabled()
+  })
+
+  it('does not warn when localhost and 127.0.0.1 are the same cluster', async () => {
+    renderAt(<UptimeDealPage />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /Create deal/ })).toBeEnabled())
+    expect(screen.queryByText(/VITE_SOLANA_RPC_URL/)).not.toBeInTheDocument()
+  })
+
+  async function openDealPanel(deal: TrackedDeal) {
+    vi.mocked(openDeal).mockResolvedValue(deal)
+    vi.mocked(dealApi.get).mockResolvedValue(deal)
+    renderAt(<UptimeDealPage />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /Create deal/ })).toBeEnabled())
+    await userEvent.type(screen.getByLabelText('Recipient address'), PROVIDER)
+    await userEvent.click(screen.getByRole('button', { name: /Create deal/ }))
+    await screen.findByTestId('deal-verdict')
+  }
+
+  it('offers a disabled reclaim button for a failed deal until the timeout has passed', async () => {
+    const now = Date.now()
+    await openDealPanel(trackedDeal({ status: 'FAILED', error: 'rpc down', startsAt: new Date(now - 20_000).toISOString(), endsAt: new Date(now - 10_000).toISOString() }))
+    expect(screen.getByRole('button', { name: 'Reclaim escrow' })).toBeDisabled()
+    expect(screen.getByText(/Reclaim available/)).toBeInTheDocument()
+  })
+
+  it('reclaims the escrow of a failed deal once the timeout has passed', async () => {
+    const now = Date.now()
+    await openDealPanel(trackedDeal({ status: 'FAILED', error: 'rpc down', startsAt: new Date(now - 700_000).toISOString(), endsAt: new Date(now - 690_000).toISOString() }))
+    const button = screen.getByRole('button', { name: 'Reclaim escrow' })
+    expect(button).toBeEnabled()
+    await userEvent.click(button)
+    expect(cancelDeal).toHaveBeenCalledWith({
+      connection, payer: new PublicKey(WALLET), sendTransaction, programId: new PublicKey(config.programId), deal: new PublicKey(DEAL),
+    })
+    expect(await screen.findByText('Cancelled · escrow returned to payer')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reclaim escrow' })).not.toBeInTheDocument()
+  })
+
+  it('offers reclaim for an active deal that is long past its window', async () => {
+    const now = Date.now()
+    await openDealPanel(trackedDeal({ startsAt: new Date(now - 700_000).toISOString(), endsAt: new Date(now - 690_000).toISOString() }))
+    expect(screen.getByRole('button', { name: 'Reclaim escrow' })).toBeEnabled()
+  })
+
+  it('does not offer reclaim for a running, settled or cancelled deal', async () => {
+    await openDealPanel(trackedDeal())
+    expect(screen.queryByRole('button', { name: 'Reclaim escrow' })).not.toBeInTheDocument()
+  })
+
+  it('does not offer reclaim to a wallet that is not the payer', async () => {
+    const now = Date.now()
+    await openDealPanel(trackedDeal({ payer: PROVIDER, status: 'FAILED', startsAt: new Date(now - 700_000).toISOString(), endsAt: new Date(now - 690_000).toISOString() }))
+    expect(screen.queryByRole('button', { name: 'Reclaim escrow' })).not.toBeInTheDocument()
+  })
+
+  it('shows why the reclaim failed', async () => {
+    vi.mocked(cancelDeal).mockRejectedValue(new Error('Transaction failed: too early'))
+    const now = Date.now()
+    await openDealPanel(trackedDeal({ status: 'FAILED', startsAt: new Date(now - 700_000).toISOString(), endsAt: new Date(now - 690_000).toISOString() }))
+    await userEvent.click(screen.getByRole('button', { name: 'Reclaim escrow' }))
+    expect(await screen.findByText('Transaction failed: too early')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reclaim escrow' })).toBeEnabled()
+  })
+
   it('switches the service off and on to simulate an outage', async () => {
     vi.mocked(dealApi.setServiceUp).mockResolvedValueOnce('DOWN').mockResolvedValueOnce('UP')
     renderAt(<UptimeDealPage />)
@@ -150,6 +227,7 @@ describe('dealVerdict', () => {
     [at({ status: 'SETTLED', paidToRecipient: true }), 'Paid to recipient'],
     [at({ status: 'SETTLED', paidToRecipient: false }), 'Refunded to payer'],
     [at({ status: 'SETTLED', paidToRecipient: null }), 'Settled'],
+    [at({ status: 'CANCELLED' }), 'Cancelled · escrow returned to payer'],
     [at({ status: 'FAILED', error: 'insufficient funds' }), 'Settlement failed: insufficient funds'],
     [at({ status: 'FAILED' }), 'Settlement failed: unknown error'],
   ])('describes %#', (deal, text) => {

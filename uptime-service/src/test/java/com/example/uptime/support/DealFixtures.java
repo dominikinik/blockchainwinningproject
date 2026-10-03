@@ -25,9 +25,16 @@ public final class DealFixtures {
 		return OracleKey.generate().address();
 	}
 
-	/** {@code Deal} account data: discriminator, payer, recipient, oracle, deal_id, amount, bump. */
-	public static byte[] dealData(String payer, String recipient, String oracle, long dealId, long amount) {
-		return ByteBuffer.allocate(8 + 96 + 8 + 8 + 1)
+	private static final byte[] DEAL_CANCELLED = { (byte) 229, (byte) 189, 86, (byte) 176, (byte) 134, (byte) 151, 43,
+			(byte) 152 };
+
+	/**
+	 * {@code Deal} account data (137 bytes): discriminator, payer, recipient, oracle, deal_id, amount,
+	 * starts_at, duration_seconds, bump.
+	 */
+	public static byte[] dealData(String payer, String recipient, String oracle, long dealId, long amount,
+			long startsAt, long durationSeconds) {
+		return ByteBuffer.allocate(8 + 96 + 8 + 8 + 8 + 8 + 1)
 			.order(ByteOrder.LITTLE_ENDIAN)
 			.put(DEAL)
 			.put(Base58.decodePublicKey(payer))
@@ -35,8 +42,22 @@ public final class DealFixtures {
 			.put(Base58.decodePublicKey(oracle))
 			.putLong(dealId)
 			.putLong(amount)
+			.putLong(startsAt)
+			.putLong(durationSeconds)
 			.put((byte) 254)
 			.array();
+	}
+
+	/** The {@code Program data:} log line of a {@code DealCancelled} event. */
+	public static String dealCancelledLog(String deal, String payer, long amount) {
+		byte[] event = ByteBuffer.allocate(8 + 32 + 32 + 8)
+			.order(ByteOrder.LITTLE_ENDIAN)
+			.put(DEAL_CANCELLED)
+			.put(Base58.decodePublicKey(deal))
+			.put(Base58.decodePublicKey(payer))
+			.putLong(amount)
+			.array();
+		return "Program data: " + Base64.getEncoder().encodeToString(event);
 	}
 
 	/** The {@code Program data:} log line of a {@code DealSettled} event. */

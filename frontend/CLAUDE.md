@@ -49,13 +49,15 @@ The frontend remains usable when the Java service is stopped: the Monitoring pag
 The `/deal` page (`src/pages/UptimeDealPage.tsx`) is the one flow that uses no mocks. It works against the `uptime_deal` program (`../uptime-deal`) and `uptime-service` as follows:
 
 1. `GET /api/deals/config` returns the program id and the service's oracle key.
-2. The connected wallet signs `create_deal`. `src/services/deal/dealProgram.ts` builds the instruction by hand from the IDL layout: discriminator, u64 LE `deal_id` (= `Date.now()`) and amount, with the PDA `["deal", payer, deal_id]`. `dealService.openDeal` sends it and polls `getSignatureStatuses` until it confirms. Polling avoids the websocket that `confirmTransaction` needs.
-3. `POST /api/deals {address, durationSeconds}` registers the deal. The service measures its own per-second uptime over the window and sends `settle_deal` as the oracle.
+2. The connected wallet signs `create_deal`. `src/services/deal/dealProgram.ts` builds the instruction by hand from the IDL layout: discriminator, u64 LE `deal_id` (= `Date.now()`), amount and `duration_seconds` (1..86,400; 32 bytes), with the PDA `["deal", payer, deal_id]`. `dealService.openDeal` sends it and polls `getSignatureStatuses` until it confirms. Polling avoids the websocket that `confirmTransaction` needs.
+3. `POST /api/deals {address}` registers the deal; the window (`starts_at` + duration) comes from the chain. If registration fails after `create_deal` confirmed, `openDeal` throws an error naming the deal address and the `cancel_deal` fallback. The service measures its own per-second uptime over the window and sends `settle_deal` as the oracle.
 4. The page polls `GET /api/deals/{address}` every second. It shows a countdown, the measured up/total seconds, the program's verdict ("Paid to recipient" / "Refunded to payer", read from the `DealSettled` event) and the recipient's on-chain balance. "Simulate outage" / "Restore service" call `POST /api/application/{stop,start}`, so a manual test can force a refund.
+5. "Reclaim escrow": when the deal is FAILED, or ACTIVE past `endsAt` + 600 s, and the connected wallet is the payer, the page shows a button that sends `cancel_deal` (`dealService.cancelDeal`). It is enabled once `endsAt` + 600 s (`CANCEL_TIMEOUT_SECONDS`) has passed, and on success the deal shows as CANCELLED ("Cancelled · escrow returned to payer"). The window input stays at 1..3600 (the backend's default maximum).
 
 Configuration comes from `src/config/solana.ts`:
 - `VITE_SOLANA_RPC_URL` sets the cluster (default Devnet).
 - `VITE_SOLANA_BURNER_WALLET=true` replaces Phantom/Solflare with `UnsafeBurnerWalletAdapter`. That adapter holds a throwaway in-browser key, so tests need no wallet extension. Each connect makes a new key; fund it with the page's "Airdrop 2 SOL" button (localnet/devnet faucet).
+- `sameCluster(a, b)` compares RPC URLs (`localhost` = `127.0.0.1`, default ports, trailing slash ignored). The deal page compares `config.rpcUrl` from `/api/deals/config` with `SOLANA_RPC_URL`; on a mismatch it shows an error naming both URLs and `VITE_SOLANA_RPC_URL=<rpcUrl>`, and disables "Create deal". The devnet default is unchanged, so set `VITE_SOLANA_RPC_URL=http://127.0.0.1:8899` for a local service.
 - The header pill shows Devnet, Localnet or Custom RPC.
 
 To test by hand, run `../scripts/run-deal-demo.sh`. It starts a validator on :8899 with the program, the service on :8080 and Vite on :5173 in burner mode. Then open `http://localhost:5173/deal`.

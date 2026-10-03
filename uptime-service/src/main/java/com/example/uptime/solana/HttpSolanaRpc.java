@@ -77,6 +77,16 @@ public class HttpSolanaRpc implements SolanaRpc {
 	}
 
 	@Override
+	public List<String> getSignaturesForAddress(String address, int limit) {
+		List<?> entries = result("getSignaturesForAddress",
+				List.of(address, Map.of("limit", limit, "commitment", "confirmed")), List.class);
+		if (entries == null) {
+			return List.of();
+		}
+		return entries.stream().map(e -> (String) ((Map<?, ?>) e).get("signature")).toList();
+	}
+
+	@Override
 	public long getBalance(String address) {
 		Map<?, ?> response = result("getBalance", List.of(address, CONFIRMED), Map.class);
 		return ((Number) response.get("value")).longValue();

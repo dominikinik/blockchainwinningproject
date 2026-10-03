@@ -2,9 +2,11 @@ package com.example.uptime.solana;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.HexFormat;
 
 import org.junit.jupiter.api.Test;
@@ -47,6 +49,15 @@ class OracleKeyTest {
 		assertThat(json).startsWith("[").endsWith("]");
 		assertThat(json.split(",")).hasSize(64);
 		assertThat(OracleKey.loadOrCreate(file).address()).isEqualTo(created.address());
+	}
+
+	@Test
+	void loadOrCreateCreatesTheKeyFileReadableByItsOwnerOnly(@TempDir Path dir) throws Exception {
+		Path file = dir.resolve("oracle.json");
+		OracleKey.loadOrCreate(file);
+
+		assumeTrue(file.getFileSystem().supportedFileAttributeViews().contains("posix"));
+		assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(file))).isEqualTo("rw-------");
 	}
 
 	@Test

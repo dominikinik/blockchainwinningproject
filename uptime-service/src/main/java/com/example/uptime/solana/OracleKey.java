@@ -3,6 +3,7 @@ package com.example.uptime.solana;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
@@ -55,8 +56,19 @@ public final class OracleKey {
 		if (path.toAbsolutePath().getParent() != null) {
 			Files.createDirectories(path.toAbsolutePath().getParent());
 		}
-		Files.writeString(path, key.toKeypairJson());
+		writeOwnerOnly(path, key.toKeypairJson());
 		return key;
+	}
+
+	/** Creates the file readable by its owner only where the filesystem has POSIX permissions. */
+	private static void writeOwnerOnly(Path path, String content) throws IOException {
+		if (path.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+			Files.createFile(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+			Files.writeString(path, content);
+		}
+		else {
+			Files.writeString(path, content);
+		}
 	}
 
 	/**

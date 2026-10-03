@@ -113,9 +113,9 @@ class UptimeServiceApplicationTests {
 		String deal = newAddress();
 		String recipient = newAddress();
 		when(rpc.getAccountInfo(deal))
-			.thenReturn(new AccountInfo(PROGRAM_ID, 1, dealData(newAddress(), recipient, oracle.address(), 1, 5_000_000)));
+			.thenReturn(new AccountInfo(PROGRAM_ID, 1, dealData(newAddress(), recipient, oracle.address(), 1, 5_000_000, Instant.now().getEpochSecond(), 10)));
 
-		mvc.perform(registerDeal(deal, 10))
+		mvc.perform(registerDeal(deal))
 			.andExpect(status().isCreated())
 			.andExpect(jsonPath("$.address").value(deal))
 			.andExpect(jsonPath("$.recipient").value(recipient))
@@ -125,7 +125,33 @@ class UptimeServiceApplicationTests {
 		mvc.perform(get("/api/deals/" + deal)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ACTIVE"));
 		mvc.perform(get("/api/deals")).andExpect(status().isOk()).andExpect(jsonPath("$[?(@.address == '" + deal + "')]").exists());
 
-		mvc.perform(registerDeal(deal, 10)).andExpect(status().isConflict());
+		mvc.perform(registerDeal(deal)).andExpect(status().isConflict());
+	}
+
+	@Test
+	void registerIgnoresACallerDurationAndRejectsOutOfRangeOnChainOnes() throws Exception {
+		String deal = newAddress();
+		when(rpc.getAccountInfo(deal))
+			.thenReturn(new AccountInfo(PROGRAM_ID, 1, dealData(newAddress(), newAddress(), oracle.address(), 1, 5, 1_000, 7)));
+		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
+			.content("{\"address\":\"" + deal + "\",\"durationSeconds\":1}"))
+			.andExpect(status().isCreated())
+			.andExpect(jsonPath("$.durationSeconds").value(7))
+			.andExpect(jsonPath("$.startsAt").exists());
+
+		String tooLong = newAddress();
+		when(rpc.getAccountInfo(tooLong))
+			.thenReturn(new AccountInfo(PROGRAM_ID, 1, dealData(newAddress(), newAddress(), oracle.address(), 1, 5, 1_000, 3601)));
+		mvc.perform(registerDeal(tooLong)).andExpect(status().isBadRequest());
+	}
+
+	@Test
+	void unexpectedIllegalStateExceptionsAreNotMappedToConflicts() {
+		String deal = newAddress();
+		when(rpc.getAccountInfo(deal)).thenThrow(new IllegalStateException("boom"));
+		// No handler maps it, so MockMvc surfaces it as the container's 500 would.
+		org.assertj.core.api.Assertions.assertThatThrownBy(() -> mvc.perform(registerDeal(deal)))
+			.hasRootCauseInstanceOf(IllegalStateException.class);
 	}
 
 	@Test
@@ -134,20 +160,17 @@ class UptimeServiceApplicationTests {
 		when(rpc.getAccountInfo(failing)).thenThrow(new SolanaRpcException("getAccountInfo failed: connection refused"));
 
 		mvc.perform(get("/api/deals/" + newAddress())).andExpect(status().isNotFound());
-		mvc.perform(registerDeal(newAddress(), 0))
-			.andExpect(status().isBadRequest())
-			.andExpect(jsonPath("$.detail").value("durationSeconds must be between 1 and 3600"));
-		mvc.perform(registerDeal(newAddress(), 10))
+		mvc.perform(registerDeal(newAddress()))
 			.andExpect(status().isBadRequest())
 			.andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.startsWith("No uptime_deal account")));
-		mvc.perform(registerDeal(failing, 10)).andExpect(status().isBadGateway());
+		mvc.perform(registerDeal(failing)).andExpect(status().isBadGateway());
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON).content("not json"))
 			.andExpect(status().isBadRequest());
 	}
 
-	private static org.springframework.test.web.servlet.RequestBuilder registerDeal(String address, long seconds) {
+	private static org.springframework.test.web.servlet.RequestBuilder registerDeal(String address) {
 		return post("/api/deals").contentType(MediaType.APPLICATION_JSON)
-			.content("{\"address\":\"" + address + "\",\"durationSeconds\":" + seconds + "}");
+			.content("{\"address\":\"" + address + "\"}");
 	}
 
 	@Test

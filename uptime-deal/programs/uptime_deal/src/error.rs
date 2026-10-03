@@ -11,4 +11,8 @@ pub enum DealError {
     UnauthorizedOracle,
     #[msg("Uptime needs total_seconds > 0 and up_seconds <= total_seconds")]
     InvalidUptime,
+    #[msg("Deal duration must be between 1 second and MAX_DEAL_DURATION_SECONDS")]
+    InvalidDuration,
+    #[msg("The deal can be cancelled only CANCEL_TIMEOUT_SECONDS after its window ends")]
+    CancelTooEarly,
 }

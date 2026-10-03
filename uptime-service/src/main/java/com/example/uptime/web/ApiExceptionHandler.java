@@ -7,6 +7,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+import com.example.uptime.deal.DealAlreadyRegisteredException;
 import com.example.uptime.solana.SolanaRpc.SolanaRpcException;
 
 @RestControllerAdvice
@@ -22,8 +23,8 @@ public class ApiExceptionHandler {
 		return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
 	}
 
-	@ExceptionHandler(IllegalStateException.class)
-	ProblemDetail conflict(IllegalStateException e) {
+	@ExceptionHandler(DealAlreadyRegisteredException.class)
+	ProblemDetail conflict(DealAlreadyRegisteredException e) {
 		return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
 	}
 

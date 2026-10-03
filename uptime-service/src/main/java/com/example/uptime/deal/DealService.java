@@ -2,7 +2,6 @@ package com.example.uptime.deal;
 
 import java.time.Clock;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -27,19 +26,23 @@ import com.example.uptime.uptime.UptimeQueryService;
 
 /**
  * Acts as the oracle of the {@code uptime_deal} program. A wallet creates a deal on chain naming this
- * service's key as its oracle, then registers it here with a window length. The window starts at the
- * next whole second. Once it has ended (plus a grace period for the last second to be flushed), the
+ * service's key as its oracle, then registers it here. The window comes from the deal account itself
+ * ({@code starts_at} and {@code duration_seconds}, set by the chain at creation), never from the caller.
+ * Once it has ended (plus a grace period for the last second to be flushed), the
  * service counts this service's own recorded up seconds in the window and sends {@code settle_deal}.
  * The program decides who gets the escrow; the service reads that verdict back from the
  * {@code DealSettled} event.
  * <p>
  * Tracked deals live in memory only: after a restart, deals registered before it are no longer
- * settled, and their escrow stays locked.
+ * settled, and their escrow stays in the deal until the payer cancels it.
  */
 @Service
 public class DealService {
 
 	private static final Logger log = LoggerFactory.getLogger(DealService.class);
+
+	/** How many recent transactions of a vanished deal account are searched for its closing event. */
+	private static final int HISTORY_LIMIT = 10;
 
 	private final SolanaRpc rpc;
 
@@ -74,26 +77,23 @@ public class DealService {
 	/**
 	 * Starts watching an on-chain deal.
 	 *
-	 * @param address         Base58 address of the {@code Deal} account, already created on chain
-	 * @param durationSeconds length of the uptime window, 1 to {@code deal.max-duration-seconds}
-	 * @return the tracked deal, {@code ACTIVE}, whose window starts at the next whole second
-	 * @throws IllegalArgumentException if the duration is out of range, the address is invalid, or the
-	 *                                  account is missing, isn't a deal of this program, or names
-	 *                                  another oracle
-	 * @throws IllegalStateException    if the deal is already registered
+	 * @param address Base58 address of the {@code Deal} account, already created on chain
+	 * @return the tracked deal, {@code ACTIVE}, whose window is {@code [starts_at, starts_at +
+	 *         duration_seconds)} from the account; if that window is already over it settles on the next
+	 *         tick
+	 * @throws IllegalArgumentException if the address is invalid, the account is missing, isn't a deal of
+	 *                                  this program, names another oracle, or has a duration of 0 or
+	 *                                  above {@code deal.max-duration-seconds}
+	 * @throws DealAlreadyRegisteredException if the deal is already registered
 	 * @throws SolanaRpc.SolanaRpcException if the RPC node can't be read
 	 */
-	public TrackedDeal register(String address, long durationSeconds) {
-		if (durationSeconds < 1 || durationSeconds > properties.maxDurationSeconds()) {
-			throw new IllegalArgumentException(
-					"durationSeconds must be between 1 and " + properties.maxDurationSeconds());
-		}
+	public TrackedDeal register(String address) {
 		if (address == null || address.isBlank()) {
 			throw new IllegalArgumentException("address is required");
 		}
 		Base58.decodePublicKey(address);
 		if (deals.containsKey(address)) {
-			throw new IllegalStateException("Deal " + address + " is already registered");
+			throw new DealAlreadyRegisteredException(address);
 		}
 		DealAccount deal = readDeal(address);
 		if (deal == null) {
@@ -103,14 +103,18 @@ public class DealService {
 			throw new IllegalArgumentException(
 					"Deal names oracle " + deal.oracle() + ", but this service is " + oracle.address());
 		}
+		if (deal.durationSeconds() < 1 || deal.durationSeconds() > properties.maxDurationSeconds()) {
+			throw new IllegalArgumentException("Deal's on-chain duration of " + deal.durationSeconds()
+					+ " seconds must be between 1 and " + properties.maxDurationSeconds());
+		}
 		ensureOracleFunded();
 
-		Instant start = clock.instant().truncatedTo(ChronoUnit.SECONDS).plusSeconds(1);
+		Instant start = deal.startsAt();
 		TrackedDeal tracked = new TrackedDeal(address, deal.payer(), deal.recipient(), deal.amountLamports(),
-				durationSeconds, start, start.plusSeconds(durationSeconds), Status.ACTIVE, null, null, null, null,
-				null, 0, null);
+				deal.durationSeconds(), start, start.plusSeconds(deal.durationSeconds()), Status.ACTIVE, null, null,
+				null, null, null, 0, null);
 		if (deals.putIfAbsent(address, tracked) != null) {
-			throw new IllegalStateException("Deal " + address + " is already registered");
+			throw new DealAlreadyRegisteredException(address);
 		}
 		log.info("Watching deal {} from {} to {}", address, tracked.startsAt(), tracked.endsAt());
 		return tracked;
@@ -168,9 +172,7 @@ public class DealService {
 	private TrackedDeal send(TrackedDeal deal, Instant now) {
 		DealAccount account = readDeal(deal.address());
 		if (account == null) {
-			// A settlement sent earlier may have landed after its confirmation timed out.
-			return deal.upSeconds() != null ? deal.settled(null)
-					: deal.failed("The deal account no longer exists; it was settled elsewhere");
+			return closedOnChain(deal);
 		}
 		List<UptimePoint> points = uptime.range(deal.startsAt(), deal.endsAt().minusSeconds(1));
 		long up = points.stream().filter(p -> !p.down()).count();
@@ -182,6 +184,29 @@ public class DealService {
 		String signature = rpc.sendTransaction(tx);
 		log.info("Settling deal {} with {}/{} up seconds: {}", deal.address(), up, total, signature);
 		return deal.sent(up, total, signature, now);
+	}
+
+	/**
+	 * The deal account is gone: find out from the address's recent transactions whether it was settled
+	 * (for instance by a send that threw after the node accepted it) or cancelled by the payer.
+	 */
+	private TrackedDeal closedOnChain(TrackedDeal deal) {
+		for (String signature : rpc.getSignaturesForAddress(deal.address(), HISTORY_LIMIT)) {
+			List<String> logs = rpc.getTransactionLogs(signature);
+			DealProgram.Outcome outcome = logs == null ? null : DealProgram.closedBy(logs, deal.address());
+			if (outcome == null) {
+				continue;
+			}
+			if (outcome.cancelled()) {
+				log.info("Deal {} was cancelled by its payer: {}", deal.address(), signature);
+				return deal.cancelled(signature);
+			}
+			log.info("Deal {} was settled by {}, paid to recipient: {}", deal.address(), signature,
+					outcome.paidToRecipient());
+			return deal.settledBy(signature, outcome.paidToRecipient(), outcome.upSeconds(), outcome.totalSeconds());
+		}
+		return deal.failed("The deal account no longer exists and no DealSettled or DealCancelled event for it "
+				+ "was found in its last " + HISTORY_LIMIT + " transactions");
 	}
 
 	/** Checks a sent settlement: done, failed, still pending, or lost and to be sent again. */
@@ -198,7 +223,8 @@ public class DealService {
 			return deal.failed("Settlement transaction failed: " + status.error());
 		}
 		List<String> logs = rpc.getTransactionLogs(deal.signature());
-		Boolean paid = logs == null ? null : DealProgram.paidToRecipient(logs);
+		DealProgram.Outcome outcome = logs == null ? null : DealProgram.closedBy(logs, deal.address());
+		Boolean paid = outcome == null || outcome.cancelled() ? null : outcome.paidToRecipient();
 		log.info("Deal {} settled, paid to recipient: {}", deal.address(), paid);
 		return deal.settled(paid);
 	}

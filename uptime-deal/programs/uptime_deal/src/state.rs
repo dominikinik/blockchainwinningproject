@@ -15,5 +15,9 @@ pub struct Deal {
     pub deal_id: u64,
     /// Escrowed lamports.
     pub amount_lamports: u64,
+    /// Chain time (unix seconds) when the deal was created; the uptime window starts here.
+    pub starts_at: i64,
+    /// Length of the uptime window in seconds; it ends (exclusive) at `starts_at + duration_seconds`.
+    pub duration_seconds: u64,
     pub bump: u8,
 }

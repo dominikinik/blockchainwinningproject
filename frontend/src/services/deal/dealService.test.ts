@@ -1,10 +1,10 @@
 // @vitest-environment node
 // PDA hashing rejects jsdom's cross-realm Uint8Array; these tests need no DOM.
-import { Keypair, type Connection, type Transaction } from '@solana/web3.js'
+import { Keypair, PublicKey, type Connection, type Transaction } from '@solana/web3.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { dealApi } from './dealApi'
 import { dealAddress } from './dealProgram'
-import { openDeal, requestAirdrop, waitForConfirmation } from './dealService'
+import { cancelDeal, openDeal, requestAirdrop, waitForConfirmation } from './dealService'
 
 vi.mock('./dealApi', () => ({ dealApi: { register: vi.fn() } }))
 
@@ -70,7 +70,9 @@ describe('openDeal', () => {
     expect(tx.instructions[0].keys[1].pubkey.toBase58()).toBe(recipient)
     expect(tx.instructions[0].keys[2].pubkey.toBase58()).toBe(config.oracle)
     expect(tx.instructions[0].data.readBigUInt64LE(16)).toBe(500_000_000n)
-    expect(dealApi.register).toHaveBeenCalledWith(dealAddress(tx.instructions[0].programId, payer, 5n).toBase58(), 10)
+    expect(dealApi.register).toHaveBeenCalledWith(dealAddress(tx.instructions[0].programId, payer, 5n).toBase58())
+    expect(tx.instructions[0].data.readBigUInt64LE(24)).toBe(10n)
+    expect(tx.instructions[0].data).toHaveLength(32)
   })
 
   it.each([
@@ -82,6 +84,25 @@ describe('openDeal', () => {
     await expect(openDeal({ connection: connectionWith(), payer, sendTransaction, config, recipient: to, amountLamports, durationSeconds: 10 }))
       .rejects.toThrow(message)
     expect(sendTransaction).not.toHaveBeenCalled()
+  })
+
+  it.each([0, -5, 1.5, 86_401, Number.NaN])('rejects a window of %s before sending', async (durationSeconds) => {
+    const sendTransaction = vi.fn()
+    await expect(openDeal({ connection: connectionWith(), payer, sendTransaction, config, recipient, amountLamports: 1_000_000n, durationSeconds }))
+      .rejects.toThrow('The window must be a whole number of 1 to 86400 seconds.')
+    expect(sendTransaction).not.toHaveBeenCalled()
+  })
+
+  it('names the deal address and the cancel_deal fallback when registration fails', async () => {
+    const connection = connectionWith({ confirmationStatus: 'confirmed', err: null })
+    vi.mocked(dealApi.register).mockRejectedValue(new Error('Deal names oracle X'))
+    const error = await openDeal({ connection, payer, sendTransaction: vi.fn().mockResolvedValue('sig'), config, recipient, amountLamports: 1_000_000n, durationSeconds: 10, dealId: 9n })
+      .catch((e: Error) => e)
+    expect(error).toBeInstanceOf(Error)
+    const address = dealAddress(new PublicKey(programId), payer, 9n).toBase58()
+    expect((error as Error).message).toContain(address)
+    expect((error as Error).message).toContain('Deal names oracle X')
+    expect((error as Error).message).toContain('cancel_deal 10 minutes after the window ends')
   })
 
   it('does not register when the wallet rejects or the transaction fails', async () => {
@@ -101,5 +122,30 @@ describe('requestAirdrop', () => {
     await requestAirdrop(connection, payer, 2_000_000_000)
     expect(connection.requestAirdrop).toHaveBeenCalledWith(payer, 2_000_000_000)
     expect(connection.getSignatureStatuses).toHaveBeenCalledWith(['air'])
+  })
+})
+
+describe('cancelDeal', () => {
+  const deal = Keypair.generate().publicKey
+
+  it('sends cancel_deal signed by the payer and waits for confirmation', async () => {
+    const connection = connectionWith({ confirmationStatus: 'confirmed', err: null })
+    const sendTransaction = vi.fn().mockResolvedValue('sig')
+    await expect(cancelDeal({ connection, payer, sendTransaction, programId: new PublicKey(programId), deal })).resolves.toBeUndefined()
+    const tx: Transaction = sendTransaction.mock.calls[0][0]
+    expect(sendTransaction.mock.calls[0][1]).toBe(connection)
+    expect(tx.instructions).toHaveLength(1)
+    expect([...tx.instructions[0].data]).toEqual([158, 86, 193, 45, 168, 111, 48, 29])
+    expect(tx.instructions[0].keys.map((k) => k.pubkey.toBase58())).toEqual([payer.toBase58(), deal.toBase58()])
+    expect(connection.getSignatureStatuses).toHaveBeenCalledWith(['sig'])
+  })
+
+  it('surfaces a rejected wallet and a failed transaction', async () => {
+    const programKey = new PublicKey(programId)
+    await expect(cancelDeal({ connection: connectionWith(), payer, sendTransaction: vi.fn().mockRejectedValue(new Error('User rejected the request.')), programId: programKey, deal }))
+      .rejects.toThrow('User rejected')
+    const failing = connectionWith({ confirmationStatus: 'confirmed', err: { InstructionError: [0, { Custom: 6005 }] } })
+    await expect(cancelDeal({ connection: failing, payer, sendTransaction: vi.fn().mockResolvedValue('sig'), programId: programKey, deal }))
+      .rejects.toThrow('Transaction failed')
   })
 })

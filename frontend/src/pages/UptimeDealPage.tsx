@@ -2,14 +2,16 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { ArrowRight, Coins, Droplets, LockKeyhole, Server, ShieldCheck, Timer } from 'lucide-react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
-import { LAMPORTS_PER_SOL } from '@solana/web3.js'
+import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js'
 import { ErrorState } from '../components/UI'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { useBalance } from '../hooks/useBalance'
 import { useNow } from '../hooks/useNow'
+import { sameCluster, SOLANA_RPC_URL } from '../config/solana'
 import { shortAddress } from '../lib/format'
 import { dealApi, type TrackedDeal } from '../services/deal/dealApi'
-import { openDeal, requestAirdrop } from '../services/deal/dealService'
+import { CANCEL_TIMEOUT_SECONDS } from '../services/deal/dealProgram'
+import { cancelDeal, openDeal, requestAirdrop } from '../services/deal/dealService'
 import { uptimeService, type UptimeServiceState } from '../services/uptime/uptimeService'
 
 const AIRDROP_LAMPORTS = 2 * LAMPORTS_PER_SOL
@@ -33,6 +35,7 @@ export function formatLamports(lamports: number | null): string {
  * @returns a short status line for the deal panel
  */
 export function dealVerdict(deal: TrackedDeal, now: number): string {
+  if (deal.status === 'CANCELLED') return 'Cancelled · escrow returned to payer'
   if (deal.status === 'FAILED') return `Settlement failed: ${deal.error ?? 'unknown error'}`
   if (deal.status === 'SETTLED') {
     if (deal.paidToRecipient === true) return 'Paid to recipient'
@@ -42,6 +45,16 @@ export function dealVerdict(deal: TrackedDeal, now: number): string {
   const left = Math.ceil((Date.parse(deal.endsAt) - now) / 1000)
   if (Date.parse(deal.startsAt) > now) return 'Window starts in a moment'
   return left > 0 ? `Measuring uptime · ${left}s left` : 'Settling on chain…'
+}
+
+/**
+ * Tells when the payer may reclaim a deal's escrow.
+ *
+ * @param deal the tracked deal
+ * @returns the time in ms from which `cancel_deal` is accepted
+ */
+export function reclaimableAt(deal: TrackedDeal): number {
+  return Date.parse(deal.endsAt) + CANCEL_TIMEOUT_SECONDS * 1000
 }
 
 /** Creates a real on-chain uptime deal and follows it until the uptime service settles it. */
@@ -68,7 +81,7 @@ export function UptimeDealPage() {
   }, [])
 
   const dealAddress = deal?.address
-  const dealDone = deal?.status === 'SETTLED' || deal?.status === 'FAILED'
+  const dealDone = deal?.status === 'SETTLED' || deal?.status === 'FAILED' || deal?.status === 'CANCELLED'
   useEffect(() => {
     if (!dealAddress || dealDone) return
     const load = () => dealApi.get(dealAddress).then(setDeal, () => undefined)
@@ -83,6 +96,12 @@ export function UptimeDealPage() {
       void wallet.refresh()
     }
   }, [dealDone]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const clusterMismatch = config !== undefined && config !== null && !sameCluster(config.rpcUrl, SOLANA_RPC_URL)
+  const isPayer = Boolean(deal && publicKey && deal.payer === publicKey.toBase58())
+  const stuck = deal !== null && (deal.status === 'FAILED' || (deal.status === 'ACTIVE' && now >= reclaimableAt(deal)))
+  const reclaimAt = deal ? reclaimableAt(deal) : null
+  const canReclaim = reclaimAt !== null && now >= reclaimAt
 
   async function run(label: string, action: () => Promise<void>) {
     setBusy(label)
@@ -110,9 +129,18 @@ export function UptimeDealPage() {
     })
   }
 
+  function reclaim() {
+    if (!publicKey || !config || !deal) return
+    void run('Reclaiming escrow', async () => {
+      await cancelDeal({ connection, payer: publicKey, sendTransaction, programId: new PublicKey(config.programId), deal: new PublicKey(deal.address) })
+      setDeal({ ...deal, status: 'CANCELLED' })
+      await wallet.refresh()
+    })
+  }
+
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!publicKey || !config) return
+    if (!publicKey || !config || clusterMismatch) return
     const sol = Number(amountSol)
     const seconds = Number(durationSeconds)
     if (!Number.isFinite(sol) || sol <= 0) { setError('Enter an amount in SOL.'); return }
@@ -137,6 +165,7 @@ export function UptimeDealPage() {
     </div></div>
 
     {configError && <ErrorState message={`Uptime service unavailable: ${configError}`} retry={() => void reloadConfig()} />}
+    {config && clusterMismatch && <ErrorState message={`The uptime service settles on ${config.rpcUrl}, but this app is connected to ${SOLANA_RPC_URL}. Set VITE_SOLANA_RPC_URL=${config.rpcUrl} and restart the frontend.`} />}
     {error && <ErrorState message={error} />}
 
     <div className="form-layout">
@@ -157,7 +186,7 @@ export function UptimeDealPage() {
           </div>
         </div>
 
-        <div className="form-submit"><button className="button button-primary button-large" type="submit" disabled={!publicKey || !config || Boolean(busy)}>{busy ?? 'Create deal'}<ArrowRight size={17} /></button></div>
+        <div className="form-submit"><button className="button button-primary button-large" type="submit" disabled={!publicKey || !config || clusterMismatch || Boolean(busy)}>{busy ?? 'Create deal'}<ArrowRight size={17} /></button></div>
       </form>
 
       <aside className="summary-column">
@@ -184,6 +213,10 @@ export function UptimeDealPage() {
             <div><span><Coins size={16} /> Recipient balance</span><strong data-testid="recipient-balance">{formatLamports(recipientBalance.lamports)}</strong></div>
             {deal.signature && <div><span>Settlement tx</span><strong title={deal.signature}>{shortAddress(deal.signature, 6, 6)}</strong></div>}
           </div>
+          {stuck && isPayer && <div className="agreement-escrow">
+            <span>{canReclaim ? 'Escrow can be reclaimed' : `Reclaim available ${new Date(reclaimAt ?? 0).toLocaleTimeString()}`}</span>
+            <button type="button" className="button settle-button" onClick={reclaim} disabled={!canReclaim || Boolean(busy)}>Reclaim escrow</button>
+          </div>}
           <div className="agreement-escrow"><span><LockKeyhole size={16} /> Escrow</span><strong>{formatLamports(deal.amountLamports)}</strong></div>
         </section>}
       </aside>

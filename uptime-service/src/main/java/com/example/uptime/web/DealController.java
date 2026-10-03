@@ -45,18 +45,20 @@ public class DealController {
 	}
 
 	/**
-	 * Registers a deal created on chain; its uptime window starts at the next whole second.
+	 * Registers a deal created on chain; its uptime window is the one stored in the deal account.
 	 *
-	 * @param request the deal address and window length
+	 * @param request the deal address
 	 * @return the tracked deal (201)
 	 */
 	@PostMapping
 	@ResponseStatus(HttpStatus.CREATED)
 	@Operation(summary = "Watch a deal and settle it when its window ends",
-			description = "The deal must already exist on chain and name this service's oracle. "
-					+ "400 for an invalid request or deal, 409 if already registered, 502 if the RPC node fails.")
+			description = "The deal must already exist on chain and name this service's oracle. The uptime window "
+					+ "([starts_at, starts_at + duration_seconds)) is read from the deal account, not from the request. "
+					+ "400 for an invalid request or deal (including an on-chain duration above the maximum), "
+					+ "409 if already registered, 502 if the RPC node fails.")
 	public TrackedDeal register(@RequestBody RegisterRequest request) {
-		return deals.register(request.address(), request.durationSeconds());
+		return deals.register(request.address());
 	}
 
 	/**
@@ -91,11 +93,9 @@ public class DealController {
 	}
 
 	/**
-	 * @param address         Base58 address of the on-chain deal
-	 * @param durationSeconds length of the uptime window in seconds
+	 * @param address Base58 address of the on-chain deal
 	 */
-	public record RegisterRequest(@Schema(example = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin") String address,
-			@Schema(example = "10") long durationSeconds) {
+	public record RegisterRequest(@Schema(example = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin") String address) {
 	}
 
 }

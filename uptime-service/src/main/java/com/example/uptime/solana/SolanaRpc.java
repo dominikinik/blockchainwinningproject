@@ -69,6 +69,16 @@ public interface SolanaRpc {
 	List<String> getTransactionLogs(String signature);
 
 	/**
+	 * Lists the recent transactions that touched an address.
+	 *
+	 * @param address the Base58 account address
+	 * @param limit   the most signatures to return
+	 * @return Base58 signatures, newest first; empty if there are none
+	 * @throws SolanaRpcException if the node can't be reached or returns an error
+	 */
+	List<String> getSignaturesForAddress(String address, int limit);
+
+	/**
 	 * Reads a balance.
 	 *
 	 * @param address the Base58 account address

@@ -2,7 +2,8 @@
 //!
 //! A payer locks lamports in a `Deal` account and names a recipient and an uptime oracle.
 //! When the oracle settles the deal with the measured uptime, the recipient receives the
-//! locked amount if uptime is strictly above 99%; otherwise the payer gets it back.
+//! locked amount if uptime is strictly above 99%; otherwise the payer gets it back. If the oracle
+//! never settles, the payer can cancel the deal once its window and a timeout have passed.
 use anchor_lang::prelude::*;
 
 pub mod constants;
@@ -33,6 +34,8 @@ pub mod uptime_deal {
     ///   `deal` PDA to create (seeds `["deal", payer, deal_id]`) and the system program.
     /// * `deal_id` - payer-chosen number that makes the deal address unique per payer.
     /// * `amount_lamports` - lamports to lock; at least `MIN_DEAL_LAMPORTS`.
+    /// * `duration_seconds` - length of the uptime window, which starts at the current chain
+    ///   time; 1 to `MAX_DEAL_DURATION_SECONDS`.
     ///
     /// # Returns
     ///
@@ -42,9 +45,15 @@ pub mod uptime_deal {
     ///
     /// * `DealError::AmountTooSmall` - `amount_lamports` is below `MIN_DEAL_LAMPORTS`.
     /// * `DealError::RecipientIsPayer` - the recipient is the payer.
+    /// * `DealError::InvalidDuration` - `duration_seconds` is out of range.
     /// * Anchor/system errors if the deal already exists or the payer cannot pay.
-    pub fn create_deal(ctx: Context<CreateDeal>, deal_id: u64, amount_lamports: u64) -> Result<()> {
-        instructions::create_deal::handle_create_deal(ctx, deal_id, amount_lamports)
+    pub fn create_deal(
+        ctx: Context<CreateDeal>,
+        deal_id: u64,
+        amount_lamports: u64,
+        duration_seconds: u64,
+    ) -> Result<()> {
+        instructions::create_deal::handle_create_deal(ctx, deal_id, amount_lamports, duration_seconds)
     }
 
     /// Settles a deal from the measured uptime and closes it.
@@ -71,5 +80,24 @@ pub mod uptime_deal {
     /// * Anchor constraint errors if `payer`/`recipient` don't match the deal.
     pub fn settle_deal(ctx: Context<SettleDeal>, up_seconds: u64, total_seconds: u64) -> Result<()> {
         instructions::settle_deal::handle_settle_deal(ctx, up_seconds, total_seconds)
+    }
+
+    /// Returns the escrow of a deal the oracle never settled to its payer and closes it.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - accounts: `payer` (signer, must be the deal's payer) and the `deal` PDA.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once the escrow and the rent are back with the payer; emits `DealCancelled`.
+    ///
+    /// # Errors
+    ///
+    /// * `DealError::CancelTooEarly` - the chain time is before
+    ///   `starts_at + duration_seconds + CANCEL_TIMEOUT_SECONDS`.
+    /// * Anchor constraint errors if the signer isn't the deal's payer.
+    pub fn cancel_deal(ctx: Context<CancelDeal>) -> Result<()> {
+        instructions::cancel_deal::handle_cancel_deal(ctx)
     }
 }

@@ -11,7 +11,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
  * @param payer           Base58 wallet that funded the escrow
  * @param recipient       Base58 wallet paid when uptime is above 99%
  * @param amountLamports  the escrowed lamports
- * @param durationSeconds length of the measured window
+ * @param durationSeconds length of the measured window, from the deal account
  * @param startsAt        first second of the window (inclusive)
  * @param endsAt          end of the window (exclusive)
  * @param status          where the deal stands
@@ -35,8 +35,13 @@ public record TrackedDeal(String address, String payer, String recipient, long a
 		ACTIVE,
 		/** The program settled the deal and closed its account. */
 		SETTLED,
-		/** Settling failed for good; the escrow stays locked in the deal account. */
-		FAILED
+		/**
+		 * Settling failed for good, or the outcome couldn't be determined. The escrow stays in the deal
+		 * account until the payer calls {@code cancel_deal} after the program's timeout.
+		 */
+		FAILED,
+		/** The payer cancelled the deal on chain; the escrow went back to the payer. */
+		CANCELLED
 
 	}
 
@@ -48,6 +53,16 @@ public record TrackedDeal(String address, String payer, String recipient, long a
 	TrackedDeal settled(Boolean paid) {
 		return new TrackedDeal(address, payer, recipient, amountLamports, durationSeconds, startsAt, endsAt,
 				Status.SETTLED, upSeconds, totalSeconds, paid, signature, sentAt, attempts, null);
+	}
+
+	TrackedDeal settledBy(String sig, Boolean paid, Long up, Long total) {
+		return new TrackedDeal(address, payer, recipient, amountLamports, durationSeconds, startsAt, endsAt,
+				Status.SETTLED, up, total, paid, sig, sentAt, attempts, null);
+	}
+
+	TrackedDeal cancelled(String sig) {
+		return new TrackedDeal(address, payer, recipient, amountLamports, durationSeconds, startsAt, endsAt,
+				Status.CANCELLED, upSeconds, totalSeconds, paidToRecipient, sig, sentAt, attempts, null);
 	}
 
 	TrackedDeal failedAttempt(String message, int maxAttempts) {

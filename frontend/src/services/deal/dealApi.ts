@@ -8,7 +8,7 @@ export interface DealConfig {
   rpcUrl: string
 }
 
-export type DealStatus = 'ACTIVE' | 'SETTLED' | 'FAILED'
+export type DealStatus = 'ACTIVE' | 'SETTLED' | 'FAILED' | 'CANCELLED'
 
 /** A deal as tracked by the uptime service (`GET /api/deals/{address}`). */
 export interface TrackedDeal {
@@ -21,6 +21,7 @@ export interface TrackedDeal {
   startsAt: string
   /** End of the window, exclusive (ISO-8601). */
   endsAt: string
+  /** CANCELLED means the payer reclaimed the escrow with `cancel_deal`. */
   status: DealStatus
   upSeconds: number | null
   totalSeconds: number | null
@@ -46,12 +47,11 @@ export const dealApi = {
    * Asks the service to watch a deal already created on chain and to settle it after the window.
    *
    * @param address Base58 deal address
-   * @param durationSeconds length of the uptime window in seconds
-   * @returns the tracked deal, whose window starts at the next whole second
+   * @returns the tracked deal; its window comes from the chain (`starts_at` plus the duration)
    * @throws Error with the service's problem detail (invalid deal, wrong oracle, duplicate, RPC failure)
    */
-  register(address: string, durationSeconds: number): Promise<TrackedDeal> {
-    return request<TrackedDeal>('/api/deals', { method: 'POST', body: JSON.stringify({ address, durationSeconds }) })
+  register(address: string): Promise<TrackedDeal> {
+    return request<TrackedDeal>('/api/deals', { method: 'POST', body: JSON.stringify({ address }) })
   },
 
   /**

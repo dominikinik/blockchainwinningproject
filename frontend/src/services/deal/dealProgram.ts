@@ -4,6 +4,15 @@ import { Buffer } from 'buffer'
 /** Smallest escrow `create_deal` accepts (the program's `MIN_DEAL_LAMPORTS`). */
 export const MIN_DEAL_LAMPORTS = 1_000_000n
 
+/** Longest uptime window `create_deal` accepts, in seconds (the program's `MAX_DEAL_DURATION_SECONDS`). */
+export const MAX_DEAL_DURATION_SECONDS = 86_400n
+
+/** Seconds after the window ends before the payer may `cancel_deal` (the program's `CANCEL_TIMEOUT_SECONDS`). */
+export const CANCEL_TIMEOUT_SECONDS = 600
+
+/** First 8 bytes of sha256("global:cancel_deal"), from the program's IDL. */
+const CANCEL_DEAL_DISCRIMINATOR = [158, 86, 193, 45, 168, 111, 48, 29]
+
 /** First 8 bytes of sha256("global:create_deal"), from the program's IDL. */
 const CREATE_DEAL_DISCRIMINATOR = [198, 212, 144, 151, 97, 56, 149, 113]
 
@@ -48,19 +57,26 @@ export interface CreateDealParams {
   dealId: bigint
   /** Lamports to lock; at least `MIN_DEAL_LAMPORTS`. */
   amountLamports: bigint
+  /** Length of the uptime window in seconds, from 1 to `MAX_DEAL_DURATION_SECONDS`. */
+  durationSeconds: bigint
 }
 
 /**
  * Builds the `create_deal` instruction, which locks the escrow in a new deal account.
  *
- * @param params the deal parties, id and amount
+ * @param params the deal parties, id, amount and window length
  * @returns the instruction, with accounts in the program's order: payer, recipient, oracle, deal, system program
+ * @throws RangeError when the duration is outside 1..`MAX_DEAL_DURATION_SECONDS`
  */
 export function createDealInstruction(params: CreateDealParams): TransactionInstruction {
-  const data = new Uint8Array(24)
+  if (params.durationSeconds < 1n || params.durationSeconds > MAX_DEAL_DURATION_SECONDS) {
+    throw new RangeError(`The window must be 1 to ${MAX_DEAL_DURATION_SECONDS} seconds.`)
+  }
+  const data = new Uint8Array(32)
   data.set(CREATE_DEAL_DISCRIMINATOR, 0)
   data.set(u64le(params.dealId), 8)
   data.set(u64le(params.amountLamports), 16)
+  data.set(u64le(params.durationSeconds), 24)
   return new TransactionInstruction({
     programId: params.programId,
     keys: [
@@ -71,5 +87,32 @@ export function createDealInstruction(params: CreateDealParams): TransactionInst
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     data: Buffer.from(data),
+  })
+}
+
+export interface CancelDealParams {
+  /** The uptime_deal program. */
+  programId: PublicKey
+  /** The deal's payer; signs and receives the escrow and rent back. */
+  payer: PublicKey
+  /** The deal account to close. */
+  deal: PublicKey
+}
+
+/**
+ * Builds the `cancel_deal` instruction, which refunds the escrow and closes the deal once the
+ * window plus `CANCEL_TIMEOUT_SECONDS` has passed on chain.
+ *
+ * @param params the program, the payer and the deal address
+ * @returns the instruction, with accounts in the program's order: payer, deal
+ */
+export function cancelDealInstruction(params: CancelDealParams): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: params.programId,
+    keys: [
+      { pubkey: params.payer, isSigner: true, isWritable: true },
+      { pubkey: params.deal, isSigner: false, isWritable: true },
+    ],
+    data: Buffer.from(CANCEL_DEAL_DISCRIMINATOR),
   })
 }

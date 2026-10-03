@@ -1,12 +1,12 @@
 package com.example.uptime.deal;
 
 import static com.example.uptime.support.DealFixtures.PROGRAM_ID;
+import static com.example.uptime.support.DealFixtures.dealCancelledLog;
 import static com.example.uptime.support.DealFixtures.dealData;
 import static com.example.uptime.support.DealFixtures.dealSettledLog;
 import static com.example.uptime.support.DealFixtures.newAddress;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
-import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -64,7 +64,7 @@ class DealServiceTest {
 
 	private DealService service(long oracleMinLamports) {
 		return new DealService(rpc, oracle, uptime,
-				new DealProperties("http://rpc", PROGRAM_ID, "", 2, 500, 3600, 3, 30, oracleMinLamports, 1_000), clock);
+				new DealProperties("http://rpc", PROGRAM_ID, "", 2, 500, 3600, 3, 30, oracleMinLamports, 1_000, 10_000), clock);
 	}
 
 	@BeforeEach
@@ -75,8 +75,8 @@ class DealServiceTest {
 	}
 
 	@Test
-	void registerStartsTheWindowAtTheNextWholeSecond() {
-		TrackedDeal tracked = service.register(deal, 10);
+	void registerTakesTheWindowFromTheDealAccount() {
+		TrackedDeal tracked = service.register(deal);
 
 		assertThat(tracked.status()).isEqualTo(Status.ACTIVE);
 		assertThat(tracked.startsAt()).isEqualTo(T0.plusSeconds(1));
@@ -91,38 +91,68 @@ class DealServiceTest {
 
 	@Test
 	void registerRejectsInvalidRequests() {
-		assertThatIllegalArgumentException().isThrownBy(() -> service.register(deal, 0));
-		assertThatIllegalArgumentException().isThrownBy(() -> service.register(deal, 3601));
-		assertThatIllegalArgumentException().isThrownBy(() -> service.register(null, 10));
-		assertThatIllegalArgumentException().isThrownBy(() -> service.register("not base58 0", 10));
+		assertThatIllegalArgumentException().isThrownBy(() -> service.register(null));
+		assertThatIllegalArgumentException().isThrownBy(() -> service.register("not base58 0"));
 
 		String missing = newAddress();
-		assertThatIllegalArgumentException().isThrownBy(() -> service.register(missing, 10))
+		assertThatIllegalArgumentException().isThrownBy(() -> service.register(missing))
 			.withMessageContaining("No uptime_deal account");
 
 		String foreign = newAddress();
 		when(rpc.getAccountInfo(foreign)).thenReturn(new AccountInfo(newAddress(), 1, new byte[0]));
-		assertThatIllegalArgumentException().isThrownBy(() -> service.register(foreign, 10))
+		assertThatIllegalArgumentException().isThrownBy(() -> service.register(foreign))
 			.withMessageContaining("not owned by the uptime_deal program");
 
 		String otherOracle = newAddress();
 		when(rpc.getAccountInfo(otherOracle)).thenReturn(dealAccount(newAddress()));
-		assertThatIllegalArgumentException().isThrownBy(() -> service.register(otherOracle, 10))
+		assertThatIllegalArgumentException().isThrownBy(() -> service.register(otherOracle))
 			.withMessageContaining("names oracle");
 
 		assertThat(service.list()).isEmpty();
 	}
 
 	@Test
+	void registerRejectsOutOfRangeOnChainDurations() {
+		String zero = newAddress();
+		when(rpc.getAccountInfo(zero)).thenReturn(dealAccount(oracle.address(), T0, 0));
+		assertThatIllegalArgumentException().isThrownBy(() -> service.register(zero))
+			.withMessageContaining("between 1 and 3600");
+
+		String tooLong = newAddress();
+		when(rpc.getAccountInfo(tooLong)).thenReturn(dealAccount(oracle.address(), T0, 3601));
+		assertThatIllegalArgumentException().isThrownBy(() -> service.register(tooLong));
+
+		String longest = newAddress();
+		when(rpc.getAccountInfo(longest)).thenReturn(dealAccount(oracle.address(), T0, 3600));
+		assertThat(service.register(longest).durationSeconds()).isEqualTo(3600);
+		assertThat(service.list()).hasSize(1);
+	}
+
+	@Test
+	void aWindowThatAlreadyEndedIsAcceptedAndSettlesOnTheNextTick() {
+		String old = newAddress();
+		when(rpc.getAccountInfo(old)).thenReturn(dealAccount(oracle.address(), T0.minusSeconds(100), 10));
+		when(uptime.range(any(), any())).thenReturn(points(10, 0));
+
+		TrackedDeal tracked = service.register(old);
+		assertThat(tracked.startsAt()).isEqualTo(T0.minusSeconds(100));
+		assertThat(tracked.endsAt()).isEqualTo(T0.minusSeconds(90));
+		service.settleDue();
+
+		verify(uptime).range(T0.minusSeconds(100), T0.minusSeconds(91));
+		assertThat(service.get(old).signature()).isEqualTo("sig1");
+	}
+
+	@Test
 	void registerRejectsDuplicatesAndUnknownLookups() {
-		service.register(deal, 10);
-		assertThatIllegalStateException().isThrownBy(() -> service.register(deal, 10));
+		service.register(deal);
+		assertThatThrownBy(() -> service.register(deal)).isInstanceOf(DealAlreadyRegisteredException.class);
 		assertThatThrownBy(() -> service.get(newAddress())).isInstanceOf(NoSuchElementException.class);
 	}
 
 	@Test
 	void doesNothingUntilTheWindowAndGracePeriodAreOver() {
-		service.register(deal, 10);
+		service.register(deal);
 		clock.set(T0.plusSeconds(12).plusMillis(999));
 		service.settleDue();
 		verify(rpc, never()).sendTransaction(any());
@@ -130,7 +160,7 @@ class DealServiceTest {
 
 	@Test
 	void settlesWithMeasuredUptimeAndRecordsTheProgramsVerdict() {
-		service.register(deal, 10);
+		service.register(deal);
 		when(uptime.range(T0.plusSeconds(1), T0.plusSeconds(10))).thenReturn(points(10, 0));
 		clock.set(T0.plusSeconds(13));
 
@@ -164,7 +194,7 @@ class DealServiceTest {
 
 	@Test
 	void reportsDowntimeAndARefundVerdict() {
-		service.register(deal, 10);
+		service.register(deal);
 		when(uptime.range(any(), any())).thenReturn(points(7, 3));
 		clock.set(T0.plusSeconds(13));
 		service.settleDue();
@@ -182,7 +212,8 @@ class DealServiceTest {
 
 	@Test
 	void missingLogsStillSettleWithAnUnknownVerdict() {
-		service.register(deal, 1);
+		when(rpc.getAccountInfo(deal)).thenReturn(dealAccount(oracle.address(), T0.plusSeconds(1), 1));
+		service.register(deal);
 		when(uptime.range(any(), any())).thenReturn(points(1, 0));
 		clock.set(T0.plusSeconds(4));
 		service.settleDue();
@@ -194,7 +225,7 @@ class DealServiceTest {
 
 	@Test
 	void retriesFailedSendsThenGivesUp() {
-		service.register(deal, 10);
+		service.register(deal);
 		when(uptime.range(any(), any())).thenReturn(points(10, 0));
 		when(rpc.sendTransaction(any())).thenThrow(new SolanaRpcException("insufficient funds"));
 		clock.set(T0.plusSeconds(13));
@@ -213,7 +244,7 @@ class DealServiceTest {
 
 	@Test
 	void failedTransactionsFailTheDeal() {
-		service.register(deal, 10);
+		service.register(deal);
 		when(uptime.range(any(), any())).thenReturn(points(10, 0));
 		clock.set(T0.plusSeconds(13));
 		service.settleDue();
@@ -226,7 +257,7 @@ class DealServiceTest {
 
 	@Test
 	void resendsWhenASettlementIsNotConfirmedInTime() {
-		service.register(deal, 10);
+		service.register(deal);
 		when(uptime.range(any(), any())).thenReturn(points(10, 0));
 		clock.set(T0.plusSeconds(13));
 		service.settleDue();
@@ -241,35 +272,91 @@ class DealServiceTest {
 	}
 
 	@Test
-	void aDealThatVanishedAfterASendCountsAsSettled() {
-		service.register(deal, 10);
+	void aDealThatVanishedAfterASendThatThrewIsSettledFromHistory() {
+		service.register(deal);
 		when(uptime.range(any(), any())).thenReturn(points(10, 0));
+		when(rpc.sendTransaction(any())).thenThrow(new SolanaRpcException("timed out after the node accepted it"));
 		clock.set(T0.plusSeconds(13));
 		service.settleDue();
-		clock.set(T0.plusSeconds(44));
-		service.settleDue();
+		assertThat(service.get(deal).signature()).isNull();
 
 		when(rpc.getAccountInfo(deal)).thenReturn(null);
+		when(rpc.getSignaturesForAddress(deal, 10)).thenReturn(List.of("newer", "landed"));
+		when(rpc.getTransactionLogs("newer")).thenReturn(List.of("Program log: unrelated"));
+		when(rpc.getTransactionLogs("landed")).thenReturn(List.of(dealSettledLog(deal, 10, 10, true, AMOUNT)));
 		service.settleDue();
-		assertThat(service.get(deal).status()).isEqualTo(Status.SETTLED);
+
+		TrackedDeal settled = service.get(deal);
+		assertThat(settled.status()).isEqualTo(Status.SETTLED);
+		assertThat(settled.paidToRecipient()).isTrue();
+		assertThat(settled.signature()).isEqualTo("landed");
+		assertThat(settled.upSeconds()).isEqualTo(10);
+		assertThat(settled.totalSeconds()).isEqualTo(10);
 	}
 
 	@Test
-	void aDealClosedBeforeAnySendFails() {
-		service.register(deal, 10);
+	void aDealCancelledByItsPayerIsMarkedCancelled() {
+		service.register(deal);
 		when(rpc.getAccountInfo(deal)).thenReturn(null);
+		when(rpc.getSignaturesForAddress(deal, 10)).thenReturn(List.of("cancelTx"));
+		when(rpc.getTransactionLogs("cancelTx")).thenReturn(List.of(dealCancelledLog(deal, payer, AMOUNT)));
 		clock.set(T0.plusSeconds(13));
 		service.settleDue();
-		assertThat(service.get(deal).status()).isEqualTo(Status.FAILED);
+
+		assertThat(service.get(deal).status()).isEqualTo(Status.CANCELLED);
+		assertThat(service.get(deal).signature()).isEqualTo("cancelTx");
 		verify(rpc, never()).sendTransaction(any());
+		service.settleDue();
+		verify(rpc, times(1)).getSignaturesForAddress(deal, 10);
+	}
+
+	@Test
+	void aVanishedDealWithoutAClosingEventFails() {
+		service.register(deal);
+		when(rpc.getAccountInfo(deal)).thenReturn(null);
+		when(rpc.getSignaturesForAddress(deal, 10)).thenReturn(List.of("a", "b"));
+		when(rpc.getTransactionLogs("a")).thenReturn(List.of("Program log: nothing"));
+		when(rpc.getTransactionLogs("b")).thenReturn(null);
+		clock.set(T0.plusSeconds(13));
+		service.settleDue();
+
+		assertThat(service.get(deal).status()).isEqualTo(Status.FAILED);
+		assertThat(service.get(deal).error()).contains("no DealSettled or DealCancelled event");
+		verify(rpc, never()).sendTransaction(any());
+	}
+
+	@Test
+	void eventsOfOtherDealsAreIgnoredWhenAVanishedDealIsExplained() {
+		service.register(deal);
+		String other = newAddress();
+		when(rpc.getAccountInfo(deal)).thenReturn(null);
+		when(rpc.getSignaturesForAddress(deal, 10)).thenReturn(List.of("x", "y"));
+		when(rpc.getTransactionLogs("x")).thenReturn(List.of(dealSettledLog(other, 10, 10, true, AMOUNT)));
+		when(rpc.getTransactionLogs("y")).thenReturn(List.of(dealCancelledLog(other, payer, AMOUNT)));
+		clock.set(T0.plusSeconds(13));
+		service.settleDue();
+
+		assertThat(service.get(deal).status()).isEqualTo(Status.FAILED);
+	}
+
+	@Test
+	void anRpcFailureWhileSearchingHistoryIsRetriedNotFailed() {
+		service.register(deal);
+		when(rpc.getAccountInfo(deal)).thenReturn(null);
+		when(rpc.getSignaturesForAddress(deal, 10)).thenThrow(new SolanaRpcException("down"));
+		clock.set(T0.plusSeconds(13));
+		service.settleDue();
+
+		assertThat(service.get(deal).status()).isEqualTo(Status.ACTIVE);
+		assertThat(service.get(deal).attempts()).isEqualTo(1);
 	}
 
 	@Test
 	void oneFailingDealDoesNotBlockOthers() {
 		String other = newAddress();
 		when(rpc.getAccountInfo(other)).thenReturn(dealAccount(oracle.address()));
-		service.register(deal, 10);
-		service.register(other, 10);
+		service.register(deal);
+		service.register(other);
 		when(uptime.range(any(), any())).thenThrow(new IllegalStateException("db down")).thenReturn(points(10, 0));
 		clock.set(T0.plusSeconds(13));
 
@@ -284,13 +371,13 @@ class DealServiceTest {
 	void fundsTheOracleFromTheFaucetWhenItIsLow() {
 		service = service(100);
 		when(rpc.getBalance(oracle.address())).thenReturn(99L);
-		service.register(deal, 10);
+		service.register(deal);
 		verify(rpc).requestAirdrop(oracle.address(), 1_000);
 
 		String other = newAddress();
 		when(rpc.getAccountInfo(other)).thenReturn(dealAccount(oracle.address()));
 		when(rpc.getBalance(oracle.address())).thenReturn(100L);
-		service.register(other, 10);
+		service.register(other);
 		verify(rpc, times(1)).requestAirdrop(anyString(), anyLong());
 	}
 
@@ -298,17 +385,22 @@ class DealServiceTest {
 	void aFaucetFailureDoesNotBlockRegistration() {
 		service = service(100);
 		when(rpc.getBalance(oracle.address())).thenThrow(new SolanaRpcException("no faucet"));
-		assertThat(service.register(deal, 10).status()).isEqualTo(Status.ACTIVE);
+		assertThat(service.register(deal).status()).isEqualTo(Status.ACTIVE);
 	}
 
 	@Test
 	void noFundingWhenDisabled() {
-		service.register(deal, 10);
+		service.register(deal);
 		verify(rpc, never()).getBalance(anyString());
 	}
 
 	private AccountInfo dealAccount(String dealOracle) {
-		return new AccountInfo(PROGRAM_ID, AMOUNT + 2_000_000, dealData(payer, recipient, dealOracle, 1, AMOUNT));
+		return dealAccount(dealOracle, T0.plusSeconds(1), 10);
+	}
+
+	private AccountInfo dealAccount(String dealOracle, Instant startsAt, long durationSeconds) {
+		return new AccountInfo(PROGRAM_ID, AMOUNT + 2_000_000,
+				dealData(payer, recipient, dealOracle, 1, AMOUNT, startsAt.getEpochSecond(), durationSeconds));
 	}
 
 	private static List<UptimePoint> points(int up, int down) {

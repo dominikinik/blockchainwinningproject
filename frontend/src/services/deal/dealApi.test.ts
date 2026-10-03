@@ -18,13 +18,13 @@ describe('dealApi', () => {
     expect(init.cache).toBe('no-store')
   })
 
-  it('registers a deal with a JSON body', async () => {
+  it('registers a deal by address only', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ address: 'D', status: 'ACTIVE' }, 201))
-    await expect(dealApi.register('D', 10)).resolves.toMatchObject({ address: 'D', status: 'ACTIVE' })
+    await expect(dealApi.register('D')).resolves.toMatchObject({ address: 'D', status: 'ACTIVE' })
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/deals')
     expect(init.method).toBe('POST')
-    expect(JSON.parse(init.body)).toEqual({ address: 'D', durationSeconds: 10 })
+    expect(JSON.parse(init.body)).toEqual({ address: 'D' })
     expect(init.headers['Content-Type']).toBe('application/json')
   })
 
@@ -45,7 +45,7 @@ describe('dealApi', () => {
 
   it('surfaces the problem detail of errors', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ detail: 'Deal names oracle X' }, 400))
-    await expect(dealApi.register('D', 10)).rejects.toThrow('Deal names oracle X')
+    await expect(dealApi.register('D')).rejects.toThrow('Deal names oracle X')
   })
 
   it('falls back to the status code when the error has no detail', async () => {
