@@ -1,13 +1,20 @@
-package com.example.uptime.uptime;
+package com.example.uptime.aggregation.infrastructure.persistence;
 
 import java.time.Instant;
+import java.util.List;
+
+
+import java.util.Map;
+
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
-/** One row per second: whether the service was up for that whole second. */
+/** Persistence representation of a completed second of observations. */
 @Entity
 @Table(name = "uptime_record")
 public class UptimeRecord {
@@ -24,6 +31,13 @@ public class UptimeRecord {
 
 	private int upSamples;
 
+	@Column(name = "partial_coverage")
+	private Boolean partialCoverage;
+
+	@JdbcTypeCode(SqlTypes.JSON)
+	@Column(name = "failures", columnDefinition = "jsonb")
+	private List<Map<String, Object>> failures;
+
 	protected UptimeRecord() {
 	}
 
@@ -32,6 +46,18 @@ public class UptimeRecord {
 		this.up = up;
 		this.samples = samples;
 		this.upSamples = upSamples;
+	}
+
+
+
+	/** Null means this legacy row has no coverage details. */
+	public Boolean getPartialCoverage() {
+		return partialCoverage;
+	}
+
+	/** Null means details unavailable; an empty list means no observed failures. */
+	public List<Map<String, Object>> getFailures() {
+		return failures == null ? null : List.copyOf(failures);
 	}
 
 	public Instant getTimestamp() {

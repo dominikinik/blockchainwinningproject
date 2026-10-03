@@ -1,4 +1,4 @@
-package com.example.uptime.uptime;
+package com.example.uptime.aggregation.infrastructure.persistence;
 
 import java.time.Instant;
 import java.util.List;

@@ -14,8 +14,8 @@ This repository is a monorepo that will hold multiple independent modules, each 
 
 ## Modules
 
-- `uptime-service/` (Java 21, Spring Boot): a service that monitors its own health and records per-second uptime history. See [uptime-service/CLAUDE.md](uptime-service/CLAUDE.md).
-- `uptime-db/` (PostgreSQL 17, Docker Compose): the local database for `uptime-service`, which owns its schema and data. See [uptime-db/CLAUDE.md](uptime-db/CLAUDE.md).
+- `uptime-service/` (Java 21, Spring Boot): a modular monolith with checking, aggregation/history and explicit tracking lifecycle modules, recording session-scoped uptime summaries and typed bad-event runs. See [uptime-service/CLAUDE.md](uptime-service/CLAUDE.md).
+- `uptime-db/` (PostgreSQL 17, Docker Compose): manages the local database, schema migrations and data for `uptime-service`. See [uptime-db/CLAUDE.md](uptime-db/CLAUDE.md).
 
 ## Shared environment
 

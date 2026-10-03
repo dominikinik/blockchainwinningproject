@@ -1,19 +1,3 @@
-#!/bin/sh
-# Creates the uptime schema in both the main and the test database.
-set -e
-for db in uptime uptime_test; do
-  psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$db" <<'SQL'
--- Legacy table retained unchanged; strict tracked history uses the new tables.
-CREATE TABLE IF NOT EXISTS uptime_record (
-    ts         TIMESTAMP(6) WITH TIME ZONE PRIMARY KEY,
-    up         BOOLEAN NOT NULL,
-    samples    INTEGER NOT NULL,
-    up_samples INTEGER NOT NULL,
-    partial_coverage BOOLEAN,
-    failures JSONB,
-    CONSTRAINT uptime_record_failures_array CHECK (failures IS NULL OR jsonb_typeof(failures) = 'array'),
-    CONSTRAINT uptime_record_details_pair CHECK ((partial_coverage IS NULL) = (failures IS NULL))
-);
 BEGIN;
 
 -- Exact instants are ISO-8601 strings/JSON. Integer seconds are broad-selection indexes only.
@@ -63,5 +47,3 @@ CREATE TABLE IF NOT EXISTS bad_event (
 CREATE INDEX IF NOT EXISTS bad_event_parent ON bad_event (uptime_event_id);
 
 COMMIT;
-SQL
-done

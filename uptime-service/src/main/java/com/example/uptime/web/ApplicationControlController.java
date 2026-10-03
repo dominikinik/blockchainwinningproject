@@ -23,7 +23,8 @@ public class ApplicationControlController {
 
 	@PostMapping("/stop")
 	@Operation(summary = "Mark the application as down",
-			description = "/actuator/health starts returning DOWN and subsequent seconds are recorded as down.")
+			description = "Marks the local application health DOWN without stopping tracking or the process. "
+								+ "An active local-probe tracking session records downtime bad events.")
 	public StateResponse stop() {
 		state.stop();
 		return current();
@@ -31,7 +32,8 @@ public class ApplicationControlController {
 
 	@PostMapping("/start")
 	@Operation(summary = "Mark the application as up",
-			description = "/actuator/health returns UP again and subsequent seconds are recorded as up.")
+			description = "Marks the local application health UP without starting or stopping tracking. "
+								+ "Composite Actuator health may still be DOWN because of other contributors.")
 	public StateResponse start() {
 		state.start();
 		return current();
