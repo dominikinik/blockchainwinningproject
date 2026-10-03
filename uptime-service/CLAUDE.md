@@ -46,6 +46,8 @@ There is one data flow. A logical switch drives health, health is sampled, sampl
    - On localnet/devnet the service asks the faucet for `deal.oracle-airdrop-lamports` when the oracle holds less than `deal.oracle-min-lamports` (0 disables this).
    - Errors map to problems: `IllegalArgumentException` → 400, `NoSuchElementException` → 404, `DealAlreadyRegisteredException` (duplicate) → 409, `SolanaRpcException` → 502. Any other exception, including `IllegalStateException`, is an unhandled 500.
 
+Lombok is available (`optional`, version managed by Spring Boot, wired as an explicit annotation processor in `maven-compiler-plugin`, and excluded from the boot jar). `lombok.config` marks generated code `@lombok.Generated` so coverage tools skip it. Your IDE needs the Lombok plugin or annotation processing turned on.
+
 Configuration is bound through the `UptimeProperties` record (`uptime.*` in `application.properties`). Time comes from an injected `Clock` bean (`ClockConfig`). Use that bean instead of calling `Instant.now()` in production code.
 
 Persistence uses PostgreSQL from the sibling **`uptime-db`** module (Docker Compose, `postgres:17-alpine`, user/password `uptime`). That module owns the schema (`uptime-db/init/`, which runs only when `uptime-db/data/` is empty) and the data files (`uptime-db/data/`, gitignored). The service runs with `ddl-auto=validate`, so if you change the schema, update both `init/02-schema.sh` and `UptimeRecord`, then recreate the data directory. History survives restarts. You can override the connection with `UPTIME_DB_URL`, `UPTIME_DB_USER`, and `UPTIME_DB_PASSWORD`. Tests use the `test` profile, which runs on in-memory H2 instead (see Testing notes).

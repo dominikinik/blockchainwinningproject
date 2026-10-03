@@ -54,6 +54,8 @@ Packages under `com.example.monitor`. Dependencies point inward: `interfaces` an
   - `GET` lists all services. `GET /{id}` returns `active`, `startedAt`, `finishedAt`, `totalDowntimeMs`, `downtimeChecks`, `internalErrors` and `eventCount`. `GET /{id}/events` returns `{type, serviceId, occurredAt, httpStatus, detail}`, oldest first.
   - `ApiExceptionHandler` maps errors: `IllegalArgumentException` (including a bad UUID) → 400, `NoSuchElementException` → 404, `TrackingException` → 409.
 
+Lombok is available (`optional`, version managed by Spring Boot, wired as an explicit annotation processor in `maven-compiler-plugin`, and excluded from the boot jar). `lombok.config` marks generated code `@lombok.Generated` so coverage tools skip it. Your IDE needs the Lombok plugin or annotation processing turned on.
+
 Configuration (`application.properties`, bound to the `MonitorProperties` record): `monitor.check-interval-ms` (2000), `monitor.probe-timeout-ms` (1500; keep it below the interval), and `monitor.blockchain.{enabled, rpc-url (SOLANA_RPC_URL), rpc-timeout-ms, oracle-keypair (MONITOR_ORACLE_KEYPAIR, default .oracle-keypair.json, gitignored; blank = new key per start), oracle-min-lamports, oracle-airdrop-lamports}`. Time comes from the injected `Clock` bean.
 
 ## Testing notes
