@@ -6,6 +6,12 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FAILED=""
 
+# Git hooks run without the login shell's PATH; add the toolchain dirs scripts/setup-toolchain.sh uses.
+for dir in "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin"; do
+	[ -d "$dir" ] && PATH="$dir:$PATH"
+done
+export PATH
+
 run() {
 	name=$1
 	shift
@@ -19,14 +25,21 @@ run() {
 	fi
 }
 
-frontend_tests() {
+npm_tests() {
 	[ -d node_modules ] || npm ci --no-audit --no-fund || return 1
 	npm test --silent
 }
 
+# LiteSVM tests load target/deploy/sla.so, so build before testing.
+sla_program_tests() {
+	anchor build && cargo test
+}
+
 run uptime-db sh test/run-tests.sh
 run uptime-service ./mvnw -q test
-run frontend frontend_tests
+run frontend npm_tests
+run sla-program sla_program_tests
+run sla-monitor npm_tests
 
 if [ -n "$FAILED" ]; then
 	echo "Tests failed in:$FAILED" >&2

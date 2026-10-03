@@ -42,6 +42,42 @@ Persistence uses PostgreSQL from the sibling **`uptime-db`** module (Docker Comp
 
 Handling of rejected DB transactions is an open TODO on both paths: writes in `UptimeSampler.flush()` (drained buckets are lost on failure) and reads in `UptimeQueryService` (currently a 500).
 
+## Monitoring targets
+
+> **Status:** contract only, frozen in Phase 0. Task T3 implements it. Until then, none of these endpoints exist.
+
+The service also checks customer SLA endpoints and serves a per-check timeline with latency. This is the informational, off-chain path. It never decides payouts (the `sla` program does). A target is keyed by the SLA's on-chain account address.
+
+```
+POST   /api/monitoring/targets
+       body {slaAccount, endpoint, checkIntervalSeconds, timeoutMs}
+       201 Target                     created
+       200 Target                     a target for this slaAccount already exists; it is returned
+                                      unchanged and the rest of the body is ignored (idempotent)
+GET    /api/monitoring/targets?slaAccount={base58}   200 Target | 404
+GET    /api/monitoring/targets/{targetId}            200 Target | 404
+DELETE /api/monitoring/targets/{targetId}            204 | 404
+GET    /api/monitoring/targets/{targetId}/uptime?from=&to=
+       200 [{time, down, latencyMs, statusCode}]    one entry per check, oldest first | 404
+```
+
+- **`Target`:** `{targetId, slaAccount, endpoint, checkIntervalSeconds, timeoutMs, createdAt}`. `targetId` is a server-generated UUID string, and `createdAt` is an ISO-8601 UTC instant.
+- **Validation (400):**
+  - `slaAccount` must be a base58 string that decodes to 32 bytes.
+  - `endpoint` must be an absolute `https://` URL of at most 200 characters.
+  - `checkIntervalSeconds` must be ≥ 10.
+  - `timeoutMs` must be in `100..30000` and less than `checkIntervalSeconds · 1000`.
+
+  These match `create_sla` in `sla-program/SPEC.md`.
+- **Check:** a GET to `endpoint` every `checkIntervalSeconds`. It is **up** when it returns a 2xx within `timeoutMs`.
+- **Check entries:**
+  - `time` is the ISO-8601 UTC instant when the check started.
+  - `down` is a boolean.
+  - `latencyMs` is the response time, or `null` on timeout or connection error.
+  - `statusCode` is the HTTP status, or `null` when there was no response.
+- **Uptime range:** `from` and `to` are optional ISO-8601 instants, inclusive. The defaults and range cap follow `GET /api/uptime`: `uptime.default-range-seconds` and `uptime.max-range-seconds`. An invalid or over-cap range is a 400. Unlike `/api/uptime`, gaps aren't filled. Only checks that ran are returned.
+- **Errors:** every 400 is a `ProblemDetail` from `web/ApiExceptionHandler`, the same as the existing endpoints. An unknown `targetId` or `slaAccount` returns 404.
+
 ## Testing notes
 
 Tests are self-contained and run on in-memory H2 in PostgreSQL mode (`src/test/resources/application-test.properties`), so they need no `uptime-db` container. `src/test/resources/schema.sql` copies the table from `uptime-db/init/02-schema.sh`, and `ddl-auto=validate` still checks `UptimeRecord` against it. If you change the schema, update all three.
