@@ -12,6 +12,15 @@ This repository is a monorepo that will hold multiple independent modules, each 
 - When you create a new module, write its `CLAUDE.md` as part of that change and add the module to the list below.
 - When you change a module, update its `CLAUDE.md` in the same change if the change affects anything it describes: behavior, architecture, data flow, configuration, endpoints, or commands. Keep the docs in step with the code.
 
+## Testing rules
+
+- **Run the module's existing tests whenever you change it.** Before you call a change done, run the module's full suite (the command is in its `CLAUDE.md`) and make it pass.
+- **Every new feature or bug fix comes with new tests in the same change.** Cover startup, every piece of functionality, and the edge cases (invalid input, empty or missing data, boundaries, error paths). Update existing tests when behavior changes on purpose.
+- **Every module has its own test suite** that covers starting the module, all of its functionality, and its edge cases.
+- **Tests stay inside one module.** Don't write cross-module or integration tests for now. Mock or fake the other modules, and the network, at the module boundary.
+- **Keep tests lightweight.** They must be fast (a few seconds per module), deterministic, and need no running services from other modules. Drive time with fake or controllable clocks instead of sleeping.
+- **The pre-commit pipeline must stay green.** `scripts/test-all.sh` runs every module's suite, and `.githooks/pre-commit` runs it before each commit and blocks the commit on any failure. Enable it once per clone with `git config core.hooksPath .githooks`. Don't bypass it with `--no-verify`. When you add a module, add its test command to `scripts/test-all.sh`.
+
 ## Modules
 
 - `uptime-service/` (Java 21, Spring Boot): a service that monitors its own health and records per-second uptime history. See [uptime-service/CLAUDE.md](uptime-service/CLAUDE.md).

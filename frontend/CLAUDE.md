@@ -11,9 +11,19 @@ npm install
 npm run dev       # Vite on port 5173
 npm run build     # TypeScript check and production build
 npm run preview
+npm test                                        # all tests once (Vitest, jsdom; ~3s)
+npm run test:watch                              # watch mode
+npx vitest run src/lib/format.test.ts           # single file
+npx vitest run -t "settles an ended SLA"        # single test by name
 ```
 
-There is no standalone frontend test script yet.
+## Tests
+
+- Vitest + jsdom + Testing Library, configured in the `test` block of `vite.config.ts`; setup in `src/test/setup.ts` (jest-dom matchers, cleanup, localStorage reset, TZ=UTC, silences React Router future-flag warnings). Shared helpers (`renderAt`, `makeSLA`) are in `src/test/utils.tsx`.
+- Tests sit next to the code as `*.test.ts(x)` and are typechecked by `npm run build`.
+- Page tests mock `slaService`, `uptimeService` and the wallet-adapter modules with `vi.mock`; they never touch the network. `src/App.tsx` holds the route tree (without Router/wallet providers, which stay in `main.tsx`) so it can be rendered under `MemoryRouter`.
+- `slaService` and `uptimeService` tests use fake timers (`vi.advanceTimersByTimeAsync`) for the mock delays and the 4s fetch timeout; never wait on real timers.
+- Every new feature or behavior change must come with tests, and the suite must stay fast and deterministic.
 
 ## Data flow
 

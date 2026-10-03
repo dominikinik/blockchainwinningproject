@@ -8,7 +8,7 @@ A Spring Boot 4.1 / Java 21 service that monitors its own health and records per
 
 ## Commands
 
-The database must be running first (see `../uptime-db/`):
+Running the service needs the database (see `../uptime-db/`). Tests don't:
 
 ```bash
 docker compose -f ../uptime-db/docker-compose.yml up -d --wait   # PostgreSQL on :5432
@@ -18,8 +18,9 @@ Run these from `uptime-service/`:
 
 ```bash
 ./mvnw spring-boot:run                     # start on :8080
-./mvnw test                                # all tests
-./mvnw test -Dtest=UptimeServiceApplicationTests#missingDataIsReportedAsDown   # single test
+./mvnw test                                # all tests (~5 s, no database needed)
+./mvnw test -Dtest=UptimeQueryServiceTest  # one class
+./mvnw test -Dtest=UptimeServiceApplicationTests#listReturnsEverySecondWithGapsAsDown   # single test
 ./mvnw package                             # build jar
 ```
 
@@ -37,10 +38,15 @@ There is one data flow. A logical switch drives health, health is sampled, sampl
 
 Configuration is bound through the `UptimeProperties` record (`uptime.*` in `application.properties`). Time comes from an injected `Clock` bean (`ClockConfig`). Use that bean instead of calling `Instant.now()` in production code.
 
-Persistence uses PostgreSQL from the sibling **`uptime-db`** module (Docker Compose, `postgres:17-alpine`, user/password `uptime`). That module owns the schema (`uptime-db/init/`, which runs only when `uptime-db/data/` is empty) and the data files (`uptime-db/data/`, gitignored). The service runs with `ddl-auto=validate`, so if you change the schema, update both `init/02-schema.sh` and `UptimeRecord`, then recreate the data directory. History survives restarts. You can override the connection with `UPTIME_DB_URL`, `UPTIME_DB_USER`, and `UPTIME_DB_PASSWORD`. Tests use the `test` profile, which points at the `uptime_test` database (`UPTIME_TEST_DB_URL`).
+Persistence uses PostgreSQL from the sibling **`uptime-db`** module (Docker Compose, `postgres:17-alpine`, user/password `uptime`). That module owns the schema (`uptime-db/init/`, which runs only when `uptime-db/data/` is empty) and the data files (`uptime-db/data/`, gitignored). The service runs with `ddl-auto=validate`, so if you change the schema, update both `init/02-schema.sh` and `UptimeRecord`, then recreate the data directory. History survives restarts. You can override the connection with `UPTIME_DB_URL`, `UPTIME_DB_USER`, and `UPTIME_DB_PASSWORD`. Tests use the `test` profile, which runs on in-memory H2 instead (see Testing notes).
 
 Handling of rejected DB transactions is an open TODO on both paths: writes in `UptimeSampler.flush()` (drained buckets are lost on failure) and reads in `UptimeQueryService` (currently a 500).
 
 ## Testing notes
 
-Tests need the `uptime-db` container running. `UptimeServiceApplicationTests` is a full `@SpringBootTest` with MockMvc, and the real schedulers run during it. The sampling test uses `Thread.sleep` (about 5 s) and asserts on records it reads back. Tests share the singleton `ApplicationStateService`, and `@AfterEach` calls `state.start()` to reset it. Any new test that toggles the state must leave it UP.
+Tests are self-contained and run on in-memory H2 in PostgreSQL mode (`src/test/resources/application-test.properties`), so they need no `uptime-db` container. `src/test/resources/schema.sql` copies the table from `uptime-db/init/02-schema.sh`, and `ddl-auto=validate` still checks `UptimeRecord` against it. If you change the schema, update all three.
+
+- **Unit tests** (no Spring) cover `state/`, `monitor/UptimeSampler` and `uptime/UptimeQueryService`, using a Mockito-mocked repository and `support/MutableClock`. Move the clock by hand instead of using `Thread.sleep`.
+- **`UptimeServiceApplicationTests`** is a full `@SpringBootTest` with MockMvc. It checks startup, bean wiring and the scheduled jobs, and calls every HTTP endpoint, including the error cases. The real schedulers run during it, so the records it writes use dates in 2000 to avoid collisions. Tests share the singleton `ApplicationStateService`, and `@AfterEach` calls `state.start()` to reset it. Any new test that toggles the state must leave it UP.
+
+Add tests for every new feature in the matching layer: unit tests for logic, and `UptimeServiceApplicationTests` for new endpoints or configuration.
