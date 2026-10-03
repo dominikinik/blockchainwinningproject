@@ -24,7 +24,9 @@ function setup() {
     </MemoryRouter>,
   )
 }
-const submit = () => userEvent.click(screen.getByRole('button', { name: /create demo sla/i }))
+const submitButton = () => screen.getByRole('button', { name: /^create sla$/i })
+const submit = () => userEvent.click(submitButton())
+const selected = (label: string) => (screen.getByLabelText(label) as HTMLSelectElement).selectedOptions[0].textContent
 async function fillValid() {
   await userEvent.type(screen.getByLabelText('Agreement name'), '  My API  ')
   await userEvent.type(screen.getByLabelText('API endpoint'), 'https://api.example.com/health')
@@ -44,9 +46,31 @@ describe('CreateSLAPage', () => {
     expect(screen.getByRole('heading', { name: 'Create an SLA' })).toBeInTheDocument()
     expect(screen.getByLabelText('Escrow amount')).toHaveValue(10)
     expect(screen.getByLabelText('Required uptime')).toHaveValue(99.9)
-    expect(screen.getByLabelText('SLA duration')).toHaveValue('7')
-    expect(screen.getByLabelText('Request timeout')).toHaveValue(2000)
-    expect(screen.getByText(/Demo mode/)).toBeInTheDocument()
+    expect(selected('SLA duration')).toBe('1 minute')
+    expect(selected('Check interval')).toBe('Every 10 seconds')
+    expect(screen.queryByLabelText('Request timeout')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Required monitor consensus')).not.toBeInTheDocument()
+    expect(screen.getByText('Outages between scheduled checks may be missed.')).toBeInTheDocument()
+  })
+
+  it('offers every duration and check interval option', () => {
+    setup()
+    expect(Array.from((screen.getByLabelText('SLA duration') as HTMLSelectElement).options).map((o) => o.textContent))
+      .toEqual(['30 seconds', '1 minute', '5 minutes', '15 minutes', '1 hour', '1 day', '7 days', '14 days', '30 days'])
+    expect(Array.from((screen.getByLabelText('Check interval') as HTMLSelectElement).options).map((o) => o.textContent))
+      .toEqual(['Every 10 seconds', 'Every 1 minute', 'Every 5 minutes', 'Every 10 minutes'])
+  })
+
+  it('previews the escrow and duration in the summary', async () => {
+    setup()
+    expect(screen.getByText('10 SOL')).toBeInTheDocument()
+    expect(screen.getByText('1 minute', { selector: 'strong' })).toBeInTheDocument()
+    await userEvent.clear(screen.getByLabelText('Escrow amount'))
+    expect(screen.getByText('—')).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('Escrow amount'), '2.5')
+    expect(screen.getByText('2.5 SOL')).toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByLabelText('SLA duration'), '7 days')
+    expect(screen.getByText('7 days', { selector: 'strong' })).toBeInTheDocument()
   })
 
   it('validates required fields and does not submit', async () => {
@@ -77,13 +101,47 @@ describe('CreateSLAPage', () => {
     await userEvent.type(screen.getByLabelText('Escrow amount'), '20000')
     await userEvent.clear(screen.getByLabelText('Required uptime'))
     await userEvent.type(screen.getByLabelText('Required uptime'), '101')
-    await userEvent.clear(screen.getByLabelText('Request timeout'))
-    await userEvent.type(screen.getByLabelText('Request timeout'), '50')
     await submit()
-    expect(screen.getByText('Enter an amount between 0 and 10,000 SOL.')).toBeInTheDocument()
+    expect(screen.getByText('Enter 0.001 to 10,000 SOL, with up to 3 decimals.')).toBeInTheDocument()
     expect(screen.getByText('Enter a percentage above 0 and up to 100.')).toBeInTheDocument()
-    expect(screen.getByText('Enter a timeout between 100 and 30,000 ms.')).toBeInTheDocument()
     expect(createSLA).not.toHaveBeenCalled()
+  })
+
+  it.each(['0', '0.0009', '1.2345', ''])('rejects escrow amount %j', async (amount) => {
+    wallet.publicKey = { toBase58: () => WALLET }
+    setup()
+    await fillValid()
+    await userEvent.clear(screen.getByLabelText('Escrow amount'))
+    if (amount) await userEvent.type(screen.getByLabelText('Escrow amount'), amount)
+    await submit()
+    expect(screen.getByText('Enter 0.001 to 10,000 SOL, with up to 3 decimals.')).toBeInTheDocument()
+    expect(createSLA).not.toHaveBeenCalled()
+  })
+
+  it.each(['0.001', '10000', '.5'])('accepts escrow amount %j', async (amount) => {
+    wallet.publicKey = { toBase58: () => WALLET }
+    createSLA.mockResolvedValue({ id: 'sla-1' } as Awaited<ReturnType<typeof slaService.createSLA>>)
+    setup()
+    await fillValid()
+    await userEvent.clear(screen.getByLabelText('Escrow amount'))
+    await userEvent.type(screen.getByLabelText('Escrow amount'), amount)
+    await submit()
+    expect(createSLA).toHaveBeenCalledWith(expect.objectContaining({ escrowSol: Number(amount) }))
+  })
+
+  it('warns about and rejects a check interval longer than the agreement', async () => {
+    wallet.publicKey = { toBase58: () => WALLET }
+    setup()
+    await fillValid()
+    await userEvent.selectOptions(screen.getByLabelText('SLA duration'), '30 seconds')
+    await userEvent.selectOptions(screen.getByLabelText('Check interval'), 'Every 1 minute')
+    expect(screen.getByText('Choose an interval no longer than the agreement.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Check interval')).toHaveAttribute('aria-invalid', 'true')
+    await submit()
+    expect(createSLA).not.toHaveBeenCalled()
+    await userEvent.selectOptions(screen.getByLabelText('SLA duration'), '5 minutes')
+    expect(screen.queryByText('Choose an interval no longer than the agreement.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Check interval')).toHaveAttribute('aria-invalid', 'false')
   })
 
   it('opens the wallet modal for a valid form without a connected wallet', async () => {
@@ -102,7 +160,8 @@ describe('CreateSLAPage', () => {
     await submit()
     expect(createSLA).toHaveBeenCalledWith(expect.objectContaining({
       name: 'My API', endpoint: 'https://api.example.com/health', providerWallet: VALID_PROVIDER,
-      customerWallet: WALLET, monitorCount: 5, escrowSol: 10, requiredUptime: 99.9, durationDays: 7, timeoutMs: 2000,
+      customerWallet: WALLET, monitorCount: 1, consensusRequired: 1, escrowSol: 10, requiredUptime: 99.9,
+      durationDays: 60 / 86_400, checkIntervalMinutes: 10 / 60, timeoutMs: 2000,
     }))
     expect(await screen.findByText(/created/)).toBeInTheDocument()
   })
@@ -114,7 +173,7 @@ describe('CreateSLAPage', () => {
     await fillValid()
     await submit()
     expect(await screen.findByText('Storage full')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /create demo sla/i })).toBeEnabled()
+    expect(submitButton()).toBeEnabled()
   })
 
   it('uses a generic submit error for non-Error rejections', async () => {

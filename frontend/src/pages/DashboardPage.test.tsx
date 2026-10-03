@@ -1,6 +1,6 @@
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Route, Routes, MemoryRouter } from 'react-router-dom'
 import { render } from '@testing-library/react'
 import { slaService } from '../services/solana/slaService'
@@ -23,6 +23,7 @@ function setup() {
 
 describe('DashboardPage', () => {
   beforeEach(() => { getSLAs.mockReset() })
+  afterEach(() => { vi.useRealTimers() })
 
   it('shows a loading state first', async () => {
     getSLAs.mockReturnValue(new Promise(() => {}))
@@ -70,6 +71,20 @@ describe('DashboardPage', () => {
     expect(screen.getAllByText('—')).toHaveLength(1)
     expect(screen.getAllByText('Violated').length).toBeGreaterThan(0)
     expect(screen.getAllByText(`${PROVIDER.slice(0, 4)}...${PROVIDER.slice(-4)}`)).toHaveLength(4)
+  })
+
+  it('counts short agreements down by the second and drops them from active when they end', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    getSLAs.mockResolvedValue([makeSLA({ id: 'short', escrowSol: 3, endAt: '2026-01-01T00:00:30Z' })])
+    setup()
+    expect(await screen.findByText('30s')).toBeInTheDocument()
+    expect(screen.getByText('3 SOL', { selector: '.metric-card strong' })).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(29_000) })
+    expect(screen.getByText('1s')).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(screen.getByText('Ended')).toBeInTheDocument()
+    expect(screen.getByText('0 SOL', { selector: '.metric-card strong' })).toBeInTheDocument()
   })
 
   it('navigates to the SLA details when a row is clicked', async () => {

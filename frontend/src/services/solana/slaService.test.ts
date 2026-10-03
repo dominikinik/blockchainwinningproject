@@ -48,6 +48,18 @@ describe('slaService', () => {
       expect(result.value.find((s) => s.id === mockSLAs[0].id)?.name).toBe('Overridden')
       expect(result.value.find((s) => s.id === mockSLAs[1].id)).toEqual(mockSLAs[1])
     })
+    it('marks pending SLAs as ready once their end time has passed', async () => {
+      const ended: SLA = { ...mockSLAs[0], id: 'ended', endAt: new Date(Date.now() - 1).toISOString(), settlement: { state: 'pending' } }
+      const settled: SLA = { ...ended, id: 'settled', settlement: { state: 'settled', actualRecipient: 'provider' } }
+      const active: SLA = { ...ended, id: 'active', endAt: new Date(Date.now() + 60_000).toISOString() }
+      window.localStorage.setItem(KEY, JSON.stringify([ended, settled, active]))
+      const result = (await run(slaService.getSLAs(), 280)) as { value: SLA[] }
+      const state = (id: string) => result.value.find((s) => s.id === id)?.settlement.state
+      expect([state('ended'), state('settled'), state('active')]).toEqual(['ready', 'settled', 'pending'])
+      expect(stored()[0].settlement.state).toBe('pending')
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(((await run(slaService.getSLA('active'), 280)) as { value: SLA }).value.settlement.state).toBe('ready')
+    })
     it('getSLA finds seeded, stored and missing ids', async () => {
       expect(await run(slaService.getSLA('payments-api'), 280)).toEqual({ value: mockSLAs[0] })
       window.localStorage.setItem(KEY, JSON.stringify([{ ...mockSLAs[0], id: 'custom' }]))
@@ -89,6 +101,12 @@ describe('slaService', () => {
       expect(sla.id).toMatch(/^sla-/)
       expect(stored()).toEqual([sla])
     })
+    it('rounds fractional durations to whole milliseconds', async () => {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const r = (await run(slaService.createSLA({ ...input, durationDays: 30 / 86_400 }), 550)) as { value: SLA }
+      expect(r.value.endAt).toBe('2026-01-01T00:00:30.550Z')
+      expect(new Date(r.value.endAt).getTime() - new Date(r.value.startAt).getTime()).toBe(30_000)
+    })
     it('prepends to existing stored SLAs and generates unique ids', async () => {
       const a = (await run(slaService.createSLA(input), 550)) as { value: SLA }
       const b = (await run(slaService.createSLA(input), 550)) as { value: SLA }
@@ -117,11 +135,14 @@ describe('slaService', () => {
       expect(r.error.message).toBe('This SLA has not ended yet.')
       expect(stored()).toEqual([])
     })
-    it('rejects ended SLAs without a mock settlement result', async () => {
+    it('records a request for ended SLAs without a mock settlement result, leaving recipient and transaction unset', async () => {
       const ended: SLA = { ...mockSLAs[0], id: 'ended-custom', endAt: new Date(Date.now() - 1000).toISOString() }
       window.localStorage.setItem(KEY, JSON.stringify([ended]))
-      const r = (await run(slaService.settleSLA('ended-custom'), 750)) as { error: Error }
-      expect(r.error.message).toBe('Mock settlement result is not available for this agreement.')
+      const r = (await run(slaService.settleSLA('ended-custom'), 750)) as { value: SLA }
+      expect(r.value.settlement.state).toBe('settled')
+      expect(r.value.settlement.actualRecipient).toBeUndefined()
+      expect(r.value.settlement.transaction).toBeUndefined()
+      expect(r.value.settlement.settledAt).toBeTruthy()
     })
     it('settles an ended SLA and persists the result', async () => {
       vi.setSystemTime(new Date())

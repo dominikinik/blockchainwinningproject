@@ -1,36 +1,32 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { slaService } from '../services/solana/slaService'
 import { makeSLA, WALLET } from '../test/utils'
-import type { ConsensusSnapshot, Monitor, Observation, SLA } from '../types'
+import type { Monitor, Observation, SLA } from '../types'
 import { SLADetailsPage } from './SLADetailsPage'
 
 const wallet = vi.hoisted(() => ({ publicKey: null as unknown, setVisible: vi.fn() }))
 vi.mock('@solana/wallet-adapter-react', () => ({ useWallet: () => ({ publicKey: wallet.publicKey }) }))
 vi.mock('@solana/wallet-adapter-react-ui', () => ({ useWalletModal: () => ({ setVisible: wallet.setVisible }) }))
 vi.mock('../services/solana/slaService', () => ({
-  slaService: { getSLA: vi.fn(), getObservations: vi.fn(), getConsensus: vi.fn(), getMonitors: vi.fn(), settleSLA: vi.fn() },
+  slaService: { getSLA: vi.fn(), getObservations: vi.fn(), getMonitors: vi.fn(), settleSLA: vi.fn() },
 }))
 const svc = vi.mocked(slaService)
 
-const monitors: Monitor[] = [{ id: 'a', name: 'Monitor A', wallet: WALLET, status: 'online', observations: 1, agreementRate: 99, lastObservationAt: new Date().toISOString() }]
+const monitors: Monitor[] = [{ id: 'a', name: 'Monitoring server', wallet: WALLET, status: 'online', observations: 1, agreementRate: 99, lastObservationAt: new Date().toISOString() }]
 const observations: Observation[] = [
   { id: 'o1', slaId: 'test-sla', monitorId: 'a', timestamp: '2025-03-05T14:07:00Z', result: 'up', latencyMs: 120, transaction: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' },
   { id: 'o2', slaId: 'test-sla', monitorId: 'zz', timestamp: '2025-03-05T14:08:00Z', result: 'down', latencyMs: null, transaction: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' },
 ]
-const consensus: ConsensusSnapshot = {
-  readings: [{ monitorId: 'a', result: 'up', latencyMs: 90 }, { monitorId: 'zz', result: 'down', latencyMs: null }],
-  upCount: 1, totalCount: 2, result: 'up',
-}
 
-function load(sla: SLA | undefined, opts: { obs?: Observation[]; cons?: ConsensusSnapshot } = {}) {
+function load(sla: SLA | undefined, opts: { obs?: Observation[] } = {}) {
   svc.getSLA.mockResolvedValue(sla)
   svc.getObservations.mockResolvedValue(opts.obs ?? observations)
-  svc.getConsensus.mockResolvedValue(opts.cons)
   svc.getMonitors.mockResolvedValue(monitors)
 }
+const settleButton = () => screen.findByRole('button', { name: /request settlement/i })
 const setup = () => render(
   <MemoryRouter initialEntries={['/sla/test-sla']}>
     <Routes><Route path="/sla/:id" element={<SLADetailsPage />} /></Routes>
@@ -38,6 +34,7 @@ const setup = () => render(
 )
 
 describe('SLADetailsPage', () => {
+  afterEach(() => { vi.useRealTimers() })
   beforeEach(() => {
     Object.values(svc).forEach((fn) => fn.mockReset())
     wallet.publicKey = null
@@ -47,7 +44,6 @@ describe('SLADetailsPage', () => {
   it('shows loading', () => {
     svc.getSLA.mockReturnValue(new Promise(() => {}))
     svc.getObservations.mockReturnValue(new Promise(() => {}))
-    svc.getConsensus.mockReturnValue(new Promise(() => {}))
     svc.getMonitors.mockReturnValue(new Promise(() => {}))
     setup()
     expect(screen.getByText('Loading agreement...')).toBeInTheDocument()
@@ -56,7 +52,6 @@ describe('SLADetailsPage', () => {
   it('shows an error with retry', async () => {
     svc.getSLA.mockRejectedValueOnce(new Error('kaput'))
     svc.getObservations.mockResolvedValue([])
-    svc.getConsensus.mockResolvedValue(undefined)
     svc.getMonitors.mockResolvedValue([])
     setup()
     expect(await screen.findByText('kaput')).toBeInTheDocument()
@@ -73,26 +68,51 @@ describe('SLADetailsPage', () => {
     expect(svc.getSLA).toHaveBeenCalledWith('test-sla')
   })
 
-  it('renders SLA details, consensus and observations', async () => {
-    load(makeSLA(), { cons: consensus })
+  it('renders SLA details and observations', async () => {
+    load(makeSLA())
     setup()
     expect(await screen.findByRole('heading', { name: 'Test API' })).toBeInTheDocument()
     expect(screen.getByText('https://api.test/health')).toBeInTheDocument()
     expect(screen.getByText('99.95%', { selector: 'strong' })).toBeInTheDocument()
     expect(screen.getByText('Measured so far')).toBeInTheDocument()
     expect(screen.getByText('100 checks recorded')).toBeInTheDocument()
-    expect(screen.getByText('Every 5 min')).toBeInTheDocument()
-    expect(screen.getByText('3 of 5 monitors')).toBeInTheDocument()
-    expect(screen.getByText('1 / 2')).toBeInTheDocument()
-    expect(screen.getByText('Timeout', { selector: '.reading-latency' })).toBeInTheDocument()
-    expect(screen.getByText('90ms')).toBeInTheDocument()
+    expect(screen.getByText('Every 5 minutes')).toBeInTheDocument()
+    expect(screen.getByText('7 days')).toBeInTheDocument()
+    expect(screen.getByText('One server')).toBeInTheDocument()
+    expect(screen.queryByText(/consensus/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Server' })).toBeInTheDocument()
+    expect(screen.getByText('Timeout')).toBeInTheDocument()
+    expect(screen.getByText('120ms')).toBeInTheDocument()
     expect(screen.getByText('Mar 5, 2025, 2:07 PM')).toBeInTheDocument()
-    expect(screen.getAllByText('Monitor A').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('zz').length).toBeGreaterThan(0) // unknown monitor falls back to id
+    expect(screen.getByText('Monitoring server')).toBeInTheDocument()
+    expect(screen.getByText('zz')).toBeInTheDocument() // unknown monitor falls back to id
     expect(screen.getByText('Latest 2')).toBeInTheDocument()
     expect(screen.getByText('DISPLAY PROJECTION')).toBeInTheDocument()
     expect(screen.getByText(/Settlement available after the end time/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /settle sla/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /request settlement/i })).not.toBeInTheDocument()
+  })
+
+  it('shows start and end times with seconds for agreements shorter than an hour', async () => {
+    load(makeSLA({ durationDays: 30 / 86_400, startAt: '2025-03-05T14:07:09Z', endAt: '2025-03-05T14:07:39Z' }))
+    setup()
+    expect(await screen.findByText('Mar 5, 2025, 2:07:09 PM')).toBeInTheDocument()
+    expect(screen.getByText('Mar 5, 2025, 2:07:39 PM')).toBeInTheDocument()
+    expect(screen.getByText('30 seconds')).toBeInTheDocument()
+  })
+
+  it('counts down every second and offers settlement once the end time passes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    load(makeSLA({ endAt: '2026-01-01T00:01:30Z', settlement: { state: 'pending' } }))
+    setup()
+    expect(await screen.findByText('1m 30s')).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByText('1m 29s')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /request settlement/i })).not.toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(89_000) })
+    expect(screen.getByText('Ended')).toBeInTheDocument()
+    expect(await settleButton()).toBeEnabled()
+    expect(screen.queryByText(/Settlement available after the end time/)).not.toBeInTheDocument()
   })
 
   it('shows empty states for a fresh SLA with no data', async () => {
@@ -100,7 +120,6 @@ describe('SLADetailsPage', () => {
     setup()
     expect(await screen.findByText('Awaiting observations')).toBeInTheDocument()
     expect(screen.getAllByText('No observations yet')).toHaveLength(2)
-    expect(screen.getByText('Awaiting consensus')).toBeInTheDocument()
     expect(screen.getByText(/A projection will appear/)).toBeInTheDocument()
     expect(screen.getByText('—')).toBeInTheDocument()
   })
@@ -108,9 +127,9 @@ describe('SLADetailsPage', () => {
   it('shows the settled result', async () => {
     load(makeSLA({ settlement: { state: 'settled', actualRecipient: 'customer', transaction: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' } }))
     setup()
-    expect(await screen.findByText('Mock settlement complete')).toBeInTheDocument()
-    expect(screen.getByText(/assigned to the customer/)).toBeInTheDocument()
-    expect(screen.getByText(/Mock transaction:/)).toBeInTheDocument()
+    expect(await screen.findByText('Settlement request recorded')).toBeInTheDocument()
+    expect(screen.getByText('Request for 10 SOL is recorded.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /request settlement/i })).not.toBeInTheDocument()
     expect(screen.queryByText('DISPLAY PROJECTION')).not.toBeInTheDocument()
   })
 
@@ -120,7 +139,7 @@ describe('SLADetailsPage', () => {
     it('opens the wallet modal when no wallet is connected', async () => {
       load(ready())
       setup()
-      await userEvent.click(await screen.findByRole('button', { name: /settle sla/i }))
+      await userEvent.click(await settleButton())
       expect(wallet.setVisible).toHaveBeenCalledWith(true)
       expect(svc.settleSLA).not.toHaveBeenCalled()
     })
@@ -130,11 +149,11 @@ describe('SLADetailsPage', () => {
       load(ready())
       svc.settleSLA.mockResolvedValue(ready())
       setup()
-      const button = await screen.findByRole('button', { name: /settle sla/i })
+      const button = await settleButton()
       svc.getSLA.mockResolvedValue(makeSLA({ settlement: { state: 'settled', actualRecipient: 'customer', transaction: 'tx' } }))
       await userEvent.click(button)
       expect(svc.settleSLA).toHaveBeenCalledWith('test-sla')
-      expect(await screen.findByText('Mock settlement complete')).toBeInTheDocument()
+      expect(await screen.findByText('Settlement request recorded')).toBeInTheDocument()
     })
 
     it('shows the settle error', async () => {
@@ -142,9 +161,9 @@ describe('SLADetailsPage', () => {
       load(ready())
       svc.settleSLA.mockRejectedValue(new Error('This SLA has not ended yet.'))
       setup()
-      await userEvent.click(await screen.findByRole('button', { name: /settle sla/i }))
+      await userEvent.click(await settleButton())
       expect(await screen.findByText('This SLA has not ended yet.')).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: /settle sla/i })).toBeEnabled()
+      expect(screen.getByRole('button', { name: /request settlement/i })).toBeEnabled()
     })
 
     it('falls back to a generic message for non-Error rejections', async () => {
@@ -152,7 +171,7 @@ describe('SLADetailsPage', () => {
       load(ready())
       svc.settleSLA.mockRejectedValue('x')
       setup()
-      await userEvent.click(await screen.findByRole('button', { name: /settle sla/i }))
+      await userEvent.click(await settleButton())
       expect(await screen.findByText('Could not settle SLA.')).toBeInTheDocument()
     })
   })

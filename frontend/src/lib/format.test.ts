@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { explorerTxUrl, formatDate, formatSol, shortAddress, timeAgo, timeRemaining } from './format'
+import { explorerTxUrl, formatDate, formatSol, shortAddress, timeAgo, timeRemaining, timeRemainingPrecise } from './format'
 
 describe('shortAddress', () => {
   it('truncates long addresses with defaults', () => {
@@ -37,6 +37,9 @@ describe('formatDate', () => {
   it('formats midnight', () => {
     expect(formatDate('2025-12-31T00:00:00Z')).toBe('Dec 31, 2025, 12:00 AM')
   })
+  it('includes seconds when asked', () => {
+    expect(formatDate('2025-03-05T14:07:09Z', true)).toBe('Mar 5, 2025, 2:07:09 PM')
+  })
 })
 
 describe('time helpers', () => {
@@ -65,6 +68,30 @@ describe('time helpers', () => {
     it('shows days and hours from a day up', () => {
       expect(timeRemaining(at(1440 * MIN))).toBe('1d 0h')
       expect(timeRemaining(at((4 * 1440 + 12 * 60) * MIN))).toBe('4d 12h')
+    })
+  })
+
+  describe('timeRemainingPrecise', () => {
+    const now = NOW.getTime()
+    it('returns Ended for now and the past', () => {
+      expect(timeRemainingPrecise(at(0), now)).toBe('Ended')
+      expect(timeRemainingPrecise(at(-1000), now)).toBe('Ended')
+    })
+    it('rounds partial seconds up and shows seconds only under a minute', () => {
+      expect(timeRemainingPrecise(at(1), now)).toBe('1s')
+      expect(timeRemainingPrecise(at(30_000), now)).toBe('30s')
+      expect(timeRemainingPrecise(at(59_999), now)).toBe('1m 0s')
+    })
+    it('shows minutes and seconds under an hour', () => {
+      expect(timeRemainingPrecise(at(61_000), now)).toBe('1m 1s')
+      expect(timeRemainingPrecise(at(59 * MIN + 59_000), now)).toBe('59m 59s')
+    })
+    it('falls back to timeRemaining from an hour up', () => {
+      expect(timeRemainingPrecise(at(60 * MIN), now)).toBe('1h 0m')
+      expect(timeRemainingPrecise(at(1440 * MIN), now)).toBe('1d 0h')
+    })
+    it('uses the given now instead of the clock', () => {
+      expect(timeRemainingPrecise(at(10_000), now + 4_000)).toBe('6s')
     })
   })
 
