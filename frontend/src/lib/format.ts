@@ -7,9 +7,10 @@ export function formatSol(amount: number) {
   return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 }).format(amount)} SOL`
 }
 
-export function formatDate(value: string) {
+export function formatDate(value: string, includeSeconds = false) {
   return new Intl.DateTimeFormat('en-US', {
     month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+    ...(includeSeconds ? { second: '2-digit' } : {}),
   }).format(new Date(value))
 }
 
@@ -22,6 +23,17 @@ export function timeRemaining(value: string) {
   if (days) return `${days}d ${hours}h`
   if (hours) return `${hours}h ${mins}m`
   return `${mins}m`
+}
+
+export function timeRemainingPrecise(value: string, now: number) {
+  const seconds = Math.ceil((new Date(value).getTime() - now) / 1000)
+  if (seconds <= 0) return 'Ended'
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60)
+    const remainingSeconds = seconds % 60
+    return minutes ? `${minutes}m ${remainingSeconds}s` : `${remainingSeconds}s`
+  }
+  return timeRemaining(value)
 }
 
 export function timeAgo(value: string) {

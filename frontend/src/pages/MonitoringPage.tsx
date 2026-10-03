@@ -59,6 +59,6 @@ export function MonitoringPage() {
       <div className="live-history-footer"><Clock3 size={15} /> Recorded per-second history · refreshes every 10 seconds</div>
     </section>
 
-    <div className="service-scope-note"><Server size={17} /><p>This timeline tracks the Java service itself. SLAs created in the frontend are demo agreements; their API endpoints are not monitored by this service yet.</p></div>
+    <div className="service-scope-note"><Server size={17} /><p>This timeline shows the Java uptime service's own recorded state.</p></div>
   </div>
 }
