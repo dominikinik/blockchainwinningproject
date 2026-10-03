@@ -27,8 +27,8 @@ npx vitest run -t "settles an ended SLA"        # single test by name
 
 ## Data flow
 
-- `src/services/solana/slaService.ts` is the SLA data boundary. Its agreement, monitor, observation, and settlement methods currently use fixtures in `src/mocks/data.ts` and browser `localStorage`.
-- React must not determine SLA success, consensus, or actual settlement. When the Anchor program is available, replace the mock service methods with wallet-signed instructions and program account reads.
+- `src/services/solana/slaService.ts` is the SLA data boundary. It keeps the demo data path for the browser but now applies the canonical escrow settlement rule used by the planned on-chain program: if measured availability is below `99.0%`, the customer receives a `30%` refund; otherwise the provider receives the full escrow value.
+- React must not determine SLA success, consensus, or actual settlement. When the Anchor program is available, replace the mock service methods with wallet-signed instructions and program account reads, but keep the same settlement policy and state-machine semantics.
 - `src/services/uptime/uptimeService.ts` reads `GET /api/application/state` and `GET /api/uptime` from the Java backend. The Monitoring page renders a live five-minute, per-second timeline of the backend's own health, refreshed every 10 seconds. It does not score a customer's SLA.
 - The Create SLA page remains available. `createSLA()` saves a demo agreement in browser `localStorage`; no SOL is locked. SLA uptime and monitor observations stay mocked until endpoint-specific monitoring and Solana integration exist.
 - `durationDays` and `checkIntervalMinutes` also accept fractional values for seconds/minutes in demo terms. `src/lib/agreementTerms.ts` owns the selectable values and labels. New demo agreements can expire within 30 seconds; the pages show a second-by-second countdown. The mock service makes ended agreements ready for a request, but records no payout or transaction for newly created agreements without monitor evidence.

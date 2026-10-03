@@ -1,10 +1,30 @@
 import { mockConsensus, mockMonitors, mockObservations, mockSettlementResults, mockSLAs } from '../../mocks/data'
 import type { ConsensusSnapshot, CreateSLAInput, Monitor, Observation, SLA } from '../../types'
+import { evaluateEscrowOutcome } from './escrowPolicy'
 
 // This is the sole data boundary for the UI. Replace these mock implementations
 // with account reads and Anchor instructions when the program is available.
 const STORAGE_KEY = 'slana.mock.slas.v1'
 const delay = (ms = 280) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+function settleFromEscrowPolicy(sla: SLA, id: string): SLA['settlement'] {
+  const fallback = mockSettlementResults[id]
+  const availability = Number.isFinite(sla.currentUptime) ? sla.currentUptime : 0
+  if (availability <= 0 && !fallback) {
+    throw new Error('Mock settlement result is not available for this agreement.')
+  }
+
+  const outcome = evaluateEscrowOutcome(sla.escrowSol, availability)
+  return {
+    ...sla.settlement,
+    state: 'settled',
+    projectionRecipient: outcome.recipient,
+    projectionAmountSol: outcome.amountSol,
+    actualRecipient: fallback?.recipient ?? outcome.recipient,
+    transaction: fallback?.transaction ?? `solana:${crypto.randomUUID()}`,
+    settledAt: new Date().toISOString(),
+  }
+}
 
 function readStored(): SLA[] {
   try {
@@ -69,6 +89,7 @@ export const slaService = {
       status: 'pending',
       history: [],
       timeline: [],
+      escrowState: 'created',
       settlement: { state: 'pending' },
     }
     writeStored([sla, ...readStored()])
@@ -84,17 +105,11 @@ export const slaService = {
 
     // Mock-only fixture. The real implementation must submit the settlement
     // instruction and reread the program account for its authoritative result.
-    const result = mockSettlementResults[id]
     const settled: SLA = {
       ...sla,
       status: 'completed',
-      settlement: {
-        ...sla.settlement,
-        state: 'settled',
-        actualRecipient: result?.recipient,
-        transaction: result?.transaction,
-        settledAt: new Date().toISOString(),
-      },
+      escrowState: 'settled',
+      settlement: settleFromEscrowPolicy(sla, id),
     }
     writeStored([settled, ...readStored().filter((item) => item.id !== id)])
     return settled

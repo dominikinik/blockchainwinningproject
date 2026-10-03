@@ -27,6 +27,7 @@ frontend_tests() {
 run uptime-db sh test/run-tests.sh
 run uptime-service ./mvnw -q test
 run frontend frontend_tests
+run solana-escrow anchor test
 
 if [ -n "$FAILED" ]; then
 	echo "Tests failed in:$FAILED" >&2

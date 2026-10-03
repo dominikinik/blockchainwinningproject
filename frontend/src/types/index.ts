@@ -1,4 +1,5 @@
 export type SLAStatus = 'pending' | 'healthy' | 'at-risk' | 'violated' | 'completed'
+export type EscrowState = 'created' | 'customer_funded' | 'monitoring' | 'evaluating' | 'settled'
 export type ObservationResult = 'up' | 'down'
 export type MonitorStatus = 'online' | 'offline'
 
@@ -39,6 +40,7 @@ export interface SLA {
   status: SLAStatus
   history: UptimeBucket[]
   timeline: ObservationResult[]
+  escrowState?: EscrowState
   settlement: Settlement
 }
 

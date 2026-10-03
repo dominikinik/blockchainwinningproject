@@ -26,6 +26,7 @@ This repository is a monorepo that will hold multiple independent modules, each 
 - `uptime-service/` (Java 21, Spring Boot): a service that monitors its own health and records per-second uptime history. See [uptime-service/CLAUDE.md](uptime-service/CLAUDE.md).
 - `uptime-db/` (PostgreSQL 17, Docker Compose): the local database for `uptime-service`, which owns its schema and data. See [uptime-db/CLAUDE.md](uptime-db/CLAUDE.md).
 - `frontend/` (React, TypeScript, Vite): the SLAna dashboard and Solana wallet UI. See [frontend/CLAUDE.md](frontend/CLAUDE.md).
+- `solana-escrow/` (Anchor + Rust): the on-chain escrow state machine and settlement authority for SLA agreements. See [solana-escrow/CLAUDE.md](solana-escrow/CLAUDE.md).
 
 ## Shared environment
 
