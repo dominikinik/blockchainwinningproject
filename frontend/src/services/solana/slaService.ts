@@ -3,7 +3,8 @@ import type { ConsensusSnapshot, CreateSLAInput, Monitor, Observation, SLA } fro
 
 // This is the sole data boundary for the UI. Replace these mock implementations
 // with account reads and Anchor instructions when the program is available.
-const STORAGE_KEY = 'slana.mock.slas.v1'
+// v3 records use two SOL contributions; do not interpret v1 single-SOL or v2 USDC records as this schema.
+const STORAGE_KEY = 'slana.mock.slas.v3'
 const delay = (ms = 280) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
 function readStored(): SLA[] {

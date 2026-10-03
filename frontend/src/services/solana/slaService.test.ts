@@ -6,7 +6,7 @@ import { slaService } from './slaService'
 const KEY = 'slana.mock.slas.v1'
 const input: CreateSLAInput = {
   name: 'New API', endpoint: 'https://new.example.com', customerWallet: 'cust', providerWallet: 'prov',
-  escrowSol: 3, requiredUptime: 99, durationDays: 2, checkIntervalMinutes: 5, timeoutMs: 1000,
+  customerPaymentSol: 100, providerGuaranteeSol: 20, requiredUptime: 99, durationDays: 2, checkIntervalMinutes: 5, timeoutMs: 1000,
   consensusRequired: 3, monitorCount: 5,
 }
 const stored = () => JSON.parse(window.localStorage.getItem(KEY) || '[]') as SLA[]

@@ -4,7 +4,11 @@ export function shortAddress(address: string, leading = 4, trailing = 4) {
 }
 
 export function formatSol(amount: number) {
-  return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 }).format(amount)} SOL`
+  return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 9 }).format(amount)} SOL`
+}
+
+export function totalEscrowSol(customerPaymentSol: number, providerGuaranteeSol: number) {
+  return customerPaymentSol + providerGuaranteeSol
 }
 
 export function formatDate(value: string, includeSeconds = false) {

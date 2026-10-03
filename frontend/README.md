@@ -27,7 +27,7 @@ SLANA_UPTIME_SERVICE_TARGET=http://host.docker.internal:8080 npm run dev
 
 - Dashboard, SLA details, and monitoring are browseable without a wallet.
 - Phantom and Solflare connections use Solana Devnet.
-- Creating an SLA requires a connected wallet. The current service creates a local mock agreement; it does not sign a transaction or lock SOL.
+- Creating an SLA requires a connected wallet. The current service records a customer SOL payment and provider SOL guarantee in browser storage; it does not sign transactions or transfer SOL.
 - Request timeout is fixed at 2,000 ms in the mock agreement data; it is not a form control until customer endpoint monitoring exists.
 - The current UI assumes one monitoring server. The form does not ask for monitor consensus; newly created mock agreements retain a fixed 1-of-1 value only for model compatibility.
 - The form offers 30-second, 1-minute, 5-minute, and 15-minute demo durations, plus longer terms. A countdown on the Dashboard and details page lets a demo agreement reach its end during a presentation.

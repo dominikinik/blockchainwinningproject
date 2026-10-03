@@ -24,9 +24,9 @@ describe('formatSol', () => {
     expect(formatSol(1234.5)).toBe('1,234.5 SOL')
     expect(formatSol(0)).toBe('0 SOL')
   })
-  it('rounds to at most 3 fraction digits', () => {
-    expect(formatSol(1.23456)).toBe('1.235 SOL')
-    expect(formatSol(0.0004)).toBe('0 SOL')
+  it('formats lamport precision up to 9 fraction digits', () => {
+    expect(formatSol(1.23456)).toBe('1.23456 SOL')
+    expect(formatSol(0.0004)).toBe('0.0004 SOL')
   })
 })
 

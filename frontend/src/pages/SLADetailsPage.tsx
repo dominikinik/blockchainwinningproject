@@ -7,7 +7,7 @@ import { EmptyState, ErrorState, LoadingState, ResultBadge, SectionHeading, Stat
 import { useAsyncData } from '../hooks/useAsyncData'
 import { useNow } from '../hooks/useNow'
 import { formatCheckInterval, formatDuration } from '../lib/agreementTerms'
-import { formatDate, formatSol, shortAddress, timeRemainingPrecise } from '../lib/format'
+import { formatDate, formatSol, shortAddress, timeRemainingPrecise, totalEscrowSol } from '../lib/format'
 import { slaService } from '../services/solana/slaService'
 
 export function SLADetailsPage() {
@@ -40,6 +40,7 @@ export function SLADetailsPage() {
 
   const { sla, observations, monitors } = data
   const totalChecks = sla.successfulChecks + sla.failedChecks
+  const totalEscrow = totalEscrowSol(sla.customerPaymentSol, sla.providerGuaranteeSol)
   const canSettle = sla.settlement.state !== 'settled' && new Date(sla.endAt).getTime() <= now
   return <div className="page-stack details-page">
     <div className="page-heading details-heading"><div><Link to="/" className="back-link"><ArrowLeft size={15} /> All agreements</Link><div className="details-title-row"><div><div className="eyebrow"><span className="eyebrow-line" /> AGREEMENT DETAILS <span className="eyebrow-slash">/</span> {sla.id.slice(0, 16).toUpperCase()}</div><h1>{sla.name}</h1><p className="endpoint-line"><Activity size={17} />{sla.endpoint}<ExternalLink size={14} /></p></div><StatusBadge status={sla.status} /></div></div></div>
@@ -49,7 +50,7 @@ export function SLADetailsPage() {
       <div className="metric-card small"><span>Current uptime</span><strong className={sla.status === 'violated' ? 'text-danger' : sla.status === 'at-risk' ? 'text-warning' : 'text-success'}>{totalChecks ? `${sla.currentUptime.toFixed(2)}%` : '—'}</strong><small>{totalChecks ? 'Measured so far' : 'Awaiting observations'}</small></div>
       <div className="metric-card small"><span>Successful checks</span><strong>{sla.successfulChecks.toLocaleString()}</strong><small>UP results</small></div>
       <div className="metric-card small"><span>Failed checks</span><strong>{sla.failedChecks.toLocaleString()}</strong><small>DOWN results</small></div>
-      <div className="metric-card small"><span>Escrow</span><strong>{formatSol(sla.escrowSol)}</strong><small>Agreement amount</small></div>
+      <div className="metric-card small"><span>Total escrow</span><strong>{formatSol(totalEscrow)}</strong><small>From both parties</small></div>
       <div className="metric-card small"><span>Time remaining</span><strong>{timeRemainingPrecise(sla.endAt, now)}</strong><small>Until SLA end time</small></div>
     </div>
 
@@ -76,8 +77,10 @@ export function SLADetailsPage() {
             <div><span>Required uptime</span><strong>{sla.requiredUptime}%</strong></div>
             <div><span>Check interval</span><strong>{formatCheckInterval(sla.checkIntervalMinutes)}</strong></div>
             <div><span>Monitoring</span><strong>One server</strong></div>
+            <div><span>Customer service payment</span><strong>{formatSol(sla.customerPaymentSol)}</strong></div>
+            <div><span>Provider guarantee</span><strong>{formatSol(sla.providerGuaranteeSol)}</strong></div>
           </div>
-          <div className="agreement-escrow"><span><LockKeyhole size={16} /> Escrow amount</span><strong>{formatSol(sla.escrowSol)}</strong></div>
+          <div className="agreement-escrow"><span><LockKeyhole size={16} /> Total held in escrow</span><strong>{formatSol(totalEscrow)}</strong></div>
         </section>
 
         <section className="surface settlement-card"><div className="aside-title"><span className="aside-icon purple"><Coins size={19} /></span><h2>Settlement</h2></div>
@@ -85,7 +88,7 @@ export function SLADetailsPage() {
             <div className="settled-result">
               <span className="settled-icon"><CheckCircle2 size={22} /></span>
               <strong>Settlement request recorded</strong>
-              <p>Request for {formatSol(sla.escrowSol)} is recorded.</p>
+              <p>Settlement request for {formatSol(totalEscrow)} is recorded.</p>
             </div>
           ) : <>
             <div className="projection-label">DISPLAY PROJECTION</div>
@@ -95,7 +98,7 @@ export function SLADetailsPage() {
                 <span className="projection-vs">vs</span>
                 <span>{sla.requiredUptime}%<small>Requirement</small></span>
               </div>
-              <div className="projection-result"><span>If the SLA ended now</span><strong>{formatSol(sla.settlement.projectionAmountSol ?? sla.escrowSol)} <ArrowRight size={19} /> {sla.settlement.projectionRecipient === 'provider' ? 'Provider' : 'Customer'}</strong></div>
+              <div className="projection-result"><span>If the SLA ended now</span><strong>{formatSol(sla.settlement.projectionAmountSol ?? totalEscrow)} <ArrowRight size={19} /> {sla.settlement.projectionRecipient === 'provider' ? 'Provider' : 'Customer'}</strong></div>
             </> : <p className="projection-empty">A projection will appear after observations are available.</p>}
             <div className="projection-disclaimer"><Info size={16} /><p>This is a display projection only. The Solana program will determine the actual settlement result.</p></div>
             {canSettle && <button className="button button-primary settle-button" onClick={() => void handleSettle()} disabled={settling}>{settling ? 'Recording request...' : 'Request settlement'} <ArrowRight size={16} /></button>}
