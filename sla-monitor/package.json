@@ -4,13 +4,20 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "start": "tsx --env-file-if-exists=.env src/main.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.8.0",
     "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/web3.js": "^1.99.0"
   }
 }
