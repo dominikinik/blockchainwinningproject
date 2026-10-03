@@ -116,6 +116,61 @@ public class UptimeQueryService {
 		return List.copyOf(points);
 	}
 
+	public record MeasuredSeconds(long upSeconds, long totalSeconds) {}
+
+	public static class HistoryNotReadyException extends IllegalStateException {
+		public HistoryNotReadyException() {
+			super("Tracking history is not committed yet");
+		}
+	}
+
+	/** Deal windows are half-open whole seconds; unknown evidence is never counted as healthy. */
+	public MeasuredSeconds measureSeconds(Instant from, Instant end) {
+		if (from == null || end == null || !end.isAfter(from)
+				|| from.getNano() != 0 || end.getNano() != 0) {
+			throw new IllegalArgumentException("Measurement requires a positive whole-second window");
+		}
+		Instant last = end.minusNanos(1);
+		List<UptimePoint> points = range(from, last);
+		Instant now = clock.instant();
+		for (TrackingSession session : covered(from, last, now)) {
+			Instant requiredEnd = min(end, endOf(session, now));
+			if (session.startedAt().isBefore(end) && endOf(session, now).isAfter(from)
+					&& (session.committedThrough() == null || session.committedThrough().isBefore(requiredEnd))) {
+				throw new HistoryNotReadyException();
+			}
+		}
+		if (points.stream().anyMatch(p -> p.status().equals("PENDING"))) {
+			throw new HistoryNotReadyException();
+		}
+		List<UptimeHistoryEntry> parents = reader.range(from, last).stream()
+				.filter(e -> points.stream().anyMatch(p -> p.sessionId().equals(e.sessionId())))
+				.sorted(Comparator.comparing(UptimeHistoryEntry::windowStart)).toList();
+		List<TimeRange> unhealthy = new ArrayList<>();
+		for (UptimeHistoryEntry parent : parents) {
+			unhealthy.addAll(parent.unknownIntervals());
+			reader.badEvents(parent.eventId()).forEach(b ->
+					unhealthy.add(new TimeRange(b.windowStart(), b.windowEnd())));
+		}
+		long up = 0;
+		for (Instant second = from; second.isBefore(end); second = second.plusSeconds(1)) {
+			Instant secondEnd = second.plusSeconds(1);
+			Instant cursor = second;
+			for (UptimeHistoryEntry parent : parents) {
+				if (!parent.windowEnd().isAfter(cursor)) continue;
+				if (parent.windowStart().isAfter(cursor)) break;
+				cursor = max(cursor, parent.windowEnd());
+				if (!cursor.isBefore(secondEnd)) break;
+			}
+			Instant start = second;
+			boolean bad = unhealthy.stream().anyMatch(r ->
+					r.start().isBefore(secondEnd) && (r.end().isAfter(start)
+							|| r.start().equals(r.end()) && !r.start().isBefore(start)));
+			if (!cursor.isBefore(secondEnd) && !bad) up++;
+		}
+		return new MeasuredSeconds(up, ChronoUnit.SECONDS.between(from, end));
+	}
+
 	private List<TrackingSession> covered(Instant from, Instant to, Instant now) {
 		List<TrackingSession> sessions = coverage.sessions(from, to).stream()
 				.sorted(Comparator.comparing(TrackingSession::startedAt)).toList();

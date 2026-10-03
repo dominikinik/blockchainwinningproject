@@ -6,7 +6,8 @@ process.env.TZ = 'UTC'
 
 afterEach(() => {
   cleanup()
-  window.localStorage.clear()
+  // Files marked `@vitest-environment node` have no window.
+  if (typeof window !== 'undefined') window.localStorage.clear()
 })
 
 // React Router v6 future-flag notices are noise for tests.

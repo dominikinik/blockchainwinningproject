@@ -3,7 +3,7 @@ import { mockConsensus, mockMonitors, mockObservations, mockSLAs } from '../../m
 import type { CreateSLAInput, SLA } from '../../types'
 import { slaService } from './slaService'
 
-const KEY = 'slana.mock.slas.v1'
+const KEY = 'slana.mock.slas.v3'
 const input: CreateSLAInput = {
   name: 'New API', endpoint: 'https://new.example.com', customerWallet: 'cust', providerWallet: 'prov',
   customerPaymentSol: 100, providerGuaranteeSol: 20, requiredUptime: 99, durationDays: 2,

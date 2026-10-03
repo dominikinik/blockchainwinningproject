@@ -53,7 +53,8 @@ All packages are under `com.example.uptime`:
 - **`tracking/infrastructure`**: transactional `JdbcTrackingStore`; startup recovery listens for `ApplicationReadyEvent` through the Spring transaction proxy.
 - **`monitor`**: composition, scheduling, and aggregation/lifecycle health. No business aggregation rules in schedulers.
 - **`state`**: logical application UP/DOWN switch; this is independent of tracking and does not stop the process.
-- **`web`**: application-state, tracking, and uptime HTTP adapters.
+- **`web`**: application-state, tracking, uptime, and deal HTTP adapters.
+- **`deal` / `solana`**: in-memory tracking and settlement of on-chain `uptime_deal` accounts, with a hand-rolled JSON-RPC / Ed25519 transaction client. The deal application reads session-scoped aggregation history; it never starts or stops tracking.
 
 No message broker, event sourcing, or successful-sub-event entity is introduced. Time comes from injected `Clock`; do not call `Instant.now()` in production code. A within-check backward clock step clamps observation time to its start; late/out-of-order results are rejected and counted rather than changing finalized history.
 
@@ -149,6 +150,18 @@ A remote URL sends checks to that host at the configured cadence while tracking 
 
 These are intentional API changes: legacy missing-as-down, raw failure lists, and timestamp-only event identity no longer apply.
 
+## Uptime deals
+
+This service is the oracle for `../uptime-deal`. `GET /api/deals/config` returns the program ID, oracle address and RPC URL. `POST /api/deals {address}` validates program ownership, oracle identity and the on-chain duration (1 through `deal.max-duration-seconds`, default 3600). Caller-supplied duration is ignored; the half-open window comes exclusively from the chain. Duplicate registration returns 409. `GET /api/deals` and `GET /api/deals/{address}` expose ACTIVE / SETTLED / FAILED / CANCELLED records; missing addresses return 404 and RPC failures return 502. Other unexpected exceptions remain unhandled 500s.
+
+`DealService.settleDue` polls every `deal.poll-interval-ms` (500), after `endsAt + deal.settle-grace-seconds` (2). The scheduler pool has three threads for checks, persistence and deals. Settlement waits for the complete window's committed history, including an open minute's finalization, without consuming RPC retry attempts. Tracking must already cover the entire deal window; registration does not enable tracking. Untracked windows cannot be settled from fabricated downtime and fail through the bounded attempt policy.
+
+`UptimeQueryService.measureSeconds` counts actual whole seconds, not parent count or observation count. A second is healthy only if committed parents cover it completely and no typed bad interval (including a zero-length failure observation) or unknown interval intersects it. Committed missing/unknown evidence is conservatively non-up, not a claim of physical downtime. This uses the same bounded carry-forward inference as history; a failed minute does not make every second in that minute bad. Historical second parents remain usable. The denominator is the on-chain duration.
+
+Settlement sends an oracle-signed transaction, polls signature status and reads the deal-specific `DealSettled` verdict from logs. Failed attempts retry up to `deal.max-settle-attempts` (10); unconfirmed sends retry after `deal.confirm-timeout-seconds` (30). If the account has disappeared, the last 10 address signatures are searched for this deal's `DealSettled` or `DealCancelled` event; unrelated deals are ignored. Missing closing evidence means FAILED. Failed deals leave escrow for the payer to cancel after the program's timeout. Tracked deals are in memory and lost on restart.
+
+`deal.rpc-url` defaults to `SOLANA_RPC_URL` or `http://127.0.0.1:8899`; connect/read timeouts use `deal.rpc-timeout-ms` (10000). `deal.program-id` identifies the deployed program. `deal.oracle-keypair` defaults to `DEAL_ORACLE_KEYPAIR` or gitignored `.oracle-keypair.json`, created if missing (owner-only permissions on POSIX); blank generates a new key each start. Localnet/devnet faucet funding uses `deal.oracle-min-lamports` (100000000) and `deal.oracle-airdrop-lamports` (1000000000); set the minimum to 0 to disable it. Never enable faucet funding for production. RPC requests expose deal/oracle addresses to the configured node and settlement spends transaction fees.
+
 ## Testing
 
 Database-free domain/application/controller/serializer/wiring tests cover homogeneous runs and type/error splits, boundaries/carry/gaps, explicit lifecycle records, no checks before start, continuous tracking through all failure types, stop retries, partial/same-second sessions, bounded drain/retries, concurrency during slow writes, exact query bounds, and HTTP errors. Controlled clocks replace sleeps; concurrency waits are bounded.
@@ -158,5 +171,7 @@ The default full suite (`./mvnw test`, also run by `scripts/test-all.sh` and the
 `JdbcUptimeEventStorePostgresTest` and `UptimeServiceApplicationPostgresTest` are skipped unless `RUN_PERSISTENCE_POSTGRES_TESTS=true`. The former uses an isolated JDBC Spring context; the latter exercises actual Boot persistence/transaction proxies with disabled schedulers and mocked Clock/HealthProbe inputs (real ExecuteCheck, aggregation and TrackingService). Against dedicated migrated `uptime_test`, these cover PostgreSQL JSONB, constraints, nanosecond boundaries, UUID retries, whole-batch/child rollback, committed progress, strict coverage, legacy preservation and recovery. Cleanup drains owned in-memory sessions and deletes only owned fixtures in FK order. Never run recovery tests against a shared production database.
 
 Minute fixtures retain the original classification, boundary, gap, retry, capacity and lifecycle regressions with explicit test cadence/gap values. Dedicated default-cadence tests cover six checks/minute, the exclusive minute edge and expiry after five intervals; queries cover inclusive range edges and reading historical second parents.
+
+Deal and Solana tests mock the network at the module boundary: `DealServiceTest`, `DealProgramTest`, `SolanaTransactionTest`, `OracleKeyTest`, `Base58Test`, and `HttpSolanaRpcTest`. `support/DealFixtures` generates program accounts and event logs. The Boot HTTP suite mocks `SolanaRpc`, uses an ephemeral oracle with no faucet, and checks deal endpoints/errors alongside the explicit tracking lifecycle. Query tests cover second measurement from minute/legacy parents, unknown/missing evidence, pending commits, invalid bounds and typed failure clipping. Docker/real-chain flows are outside this portable suite.
 
 Add tests with every feature or bug fix in the matching layer, including startup, invalid input, empty/missing data, boundaries and error paths. Use injected or mutable clocks instead of sleeping and mock remote modules/network at their boundaries.

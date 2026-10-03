@@ -33,7 +33,9 @@ function validate(draft: Draft): Record<string, string> {
     ['providerGuaranteeSol', draft.providerGuaranteeSol, 'Provider guarantee'],
   ] as const) {
     const amount = Number(value)
-    if (!Number.isFinite(amount) || amount < 0.000000001 || amount > 10_000 || !/^(?:\d+|\d*\.\d{1,9})$/.test(value)) {
+    // Number inputs may report tiny amounts in exponent form (0.000000001 -> "1e-9"), so check whole lamports instead of counting digits.
+    const lamports = amount * 1e9
+    if (!Number.isFinite(amount) || amount < 0.000000001 || amount > 10_000 || !/^(?:\d+|\d*\.\d+)(?:e[-+]?\d+)?$/i.test(value) || Math.abs(lamports - Math.round(lamports)) > 1e-6) {
       errors[field] = `${label} must be between 0.000000001 and 10,000 SOL, with up to 9 decimals.`
     }
   }

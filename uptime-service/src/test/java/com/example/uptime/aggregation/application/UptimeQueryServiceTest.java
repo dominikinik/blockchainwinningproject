@@ -207,6 +207,59 @@ class UptimeQueryServiceTest {
 		assertEquals(oldBucket, query.range(oldBucket, oldBucket).getFirst().time());
 	}
 
+	@Test
+	void dealMeasurementCountsSecondsNotMinuteParentsAndClipsFailures() {
+		var first = entry(session, START, START.plusSeconds(60), EventStatus.SUCCESS);
+		var second = entry(session, START.plusSeconds(60), START.plusSeconds(120), EventStatus.FAILED);
+		when(reader.range(any(), any())).thenReturn(List.of(first, second));
+		var bad = new BadEvent(UUID.randomUUID(), second.eventId(), session.id(), BadEventType.DOWNTIME,
+			START.plusSeconds(65).plusNanos(1), START.plusSeconds(67), START.plusSeconds(65).plusNanos(1),
+			START.plusSeconds(65).plusNanos(1), 1,
+			new FailureKey(BadEventType.DOWNTIME, "DOWN", "down"), "down");
+		when(reader.badEvents(second.eventId())).thenReturn(List.of(bad));
+		assertEquals(new UptimeQueryService.MeasuredSeconds(8, 10),
+			query.measureSeconds(START.plusSeconds(60), START.plusSeconds(70)));
+		assertEquals(new UptimeQueryService.MeasuredSeconds(120 - 2, 120),
+			query.measureSeconds(START, START.plusSeconds(120)));
+	}
+
+	@Test
+	void dealMeasurementNeverInventsHealthyUnknownOrMissingSeconds() {
+		var unknown = entry(session, START, START.plusSeconds(60), EventStatus.UNKNOWN);
+		when(reader.range(any(), any())).thenReturn(List.of(unknown));
+		assertEquals(new UptimeQueryService.MeasuredSeconds(0, 120),
+			query.measureSeconds(START, START.plusSeconds(120)));
+		when(reader.range(any(), any())).thenReturn(List.of());
+		assertEquals(new UptimeQueryService.MeasuredSeconds(0, 10),
+			query.measureSeconds(START, START.plusSeconds(10)));
+	}
+
+	@Test
+	void dealMeasurementWaitsForCommitAndRejectsUntrackedOrInvalidWindows() {
+		session = session(START, null, START.plusSeconds(5));
+		when(coverage.sessions(any(), any())).thenReturn(List.of(session));
+		when(reader.range(any(), any())).thenReturn(List.of(entry(session, START, START.plusSeconds(5), EventStatus.SUCCESS)));
+		assertThrows(UptimeQueryService.HistoryNotReadyException.class,
+			() -> query.measureSeconds(START, START.plusSeconds(10)));
+		assertThrows(OutsideTrackingCoverageException.class,
+			() -> query.measureSeconds(START.minusSeconds(1), START.plusSeconds(1)));
+		assertThrows(IllegalArgumentException.class, () -> query.measureSeconds(START, START));
+		assertThrows(IllegalArgumentException.class, () -> query.measureSeconds(START.plusNanos(1), START.plusSeconds(1)));
+		assertThrows(IllegalArgumentException.class, () -> query.measureSeconds(START, NOW.plusSeconds(1)));
+	}
+
+	@Test
+	void dealMeasurementJoinsAdjacentHistoricalSecondParentsAndHonorsZeroLengthFailures() {
+		var a = entry(session, START, START.plusSeconds(1), EventStatus.SUCCESS);
+		var b = entry(session, START.plusSeconds(1), START.plusSeconds(2), EventStatus.FAILED);
+		when(reader.range(any(), any())).thenReturn(List.of(a, b));
+		Instant failure = START.plusSeconds(1);
+		when(reader.badEvents(b.eventId())).thenReturn(List.of(new BadEvent(UUID.randomUUID(), b.eventId(),
+			session.id(), BadEventType.DOWNTIME, failure, failure, failure, failure, 1,
+			new FailureKey(BadEventType.DOWNTIME, "DOWN", "down"), "down")));
+		assertEquals(new UptimeQueryService.MeasuredSeconds(1, 2), query.measureSeconds(START, START.plusSeconds(2)));
+	}
+
 	private static TrackingSession session(Instant start, Instant stop, Instant committed) {
 		return new TrackingSession(UUID.randomUUID(), start, stop,
 				stop == null ? TrackingStatus.ACTIVE : TrackingStatus.STOPPED, committed);

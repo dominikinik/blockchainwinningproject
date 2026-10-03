@@ -51,7 +51,15 @@ RUN rustup toolchain install "$RUST_VERSION" --profile minimal \
     && cargo binstall -y cargo-expand cargo-edit || true
 
 # Anchor 1.1's default local validator — `anchor test` cannot start without it.
-RUN curl -sL https://run.surfpool.run/ | bash
+# Fetched directly rather than through run.surfpool.run: that installer calls
+# curl with no timeout or retry, so a dropped connection hangs the build forever.
+ARG SURFPOOL_VERSION=v1.6.0
+RUN mkdir -p /root/.local/bin \
+    && curl -fL --retry 5 --retry-all-errors --connect-timeout 20 \
+        --speed-limit 10000 --speed-time 60 \
+        "https://github.com/solana-foundation/surfpool/releases/download/${SURFPOOL_VERSION}/surfpool-linux-x64.tar.gz" \
+        | tar -xz -C /root/.local/bin surfpool \
+    && /root/.local/bin/surfpool --version
 ENV PATH=/root/.local/bin:$PATH
 
 # The Anchor provider needs a wallet keypair; it holds no real funds.
