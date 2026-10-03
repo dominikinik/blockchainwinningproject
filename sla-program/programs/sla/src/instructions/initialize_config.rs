@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, state::Config};
+use crate::{constants::*, logic, state::Config};
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct ConfigParams {
@@ -27,6 +27,18 @@ pub struct InitializeConfig<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_initialize_config(_ctx: Context<InitializeConfig>, _params: ConfigParams) -> Result<()> {
-    todo!("T1")
+pub fn handle_initialize_config(ctx: Context<InitializeConfig>, params: ConfigParams) -> Result<()> {
+    logic::validate_config(
+        params.window_secs,
+        params.report_grace_secs,
+        params.max_monitors_per_sla,
+    )?;
+    ctx.accounts.config.set_inner(Config {
+        admin: ctx.accounts.admin.key(),
+        window_secs: params.window_secs,
+        report_grace_secs: params.report_grace_secs,
+        max_monitors_per_sla: params.max_monitors_per_sla,
+        bump: ctx.bumps.config,
+    });
+    Ok(())
 }

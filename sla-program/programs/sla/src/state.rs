@@ -92,12 +92,21 @@ impl Sla {
         8 + Sla::INIT_SPACE + total_windows as usize * WindowResult::INIT_SPACE
     }
 
+    /// The schedule fields window math needs (see `logic::Schedule`).
+    pub fn schedule(&self) -> crate::logic::Schedule {
+        crate::logic::Schedule {
+            start_ts: self.start_ts,
+            end_ts: self.end_ts,
+            window_secs: self.window_secs,
+            report_grace_secs: self.report_grace_secs,
+            check_interval_secs: self.check_interval_secs,
+            total_windows: self.total_windows,
+        }
+    }
+
     /// Number of windows covering `duration_secs`; the last one may be shorter.
     pub fn window_count(duration_secs: u32, window_secs: u32) -> u32 {
-        if window_secs == 0 {
-            return 0;
-        }
-        duration_secs.div_ceil(window_secs)
+        crate::logic::window_count(duration_secs, window_secs)
     }
 }
 

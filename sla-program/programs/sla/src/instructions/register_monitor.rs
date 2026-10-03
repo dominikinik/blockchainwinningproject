@@ -3,6 +3,7 @@ use anchor_lang::prelude::*;
 use crate::{
     constants::*,
     error::SlaError,
+    logic,
     state::{Config, Monitor},
 };
 
@@ -25,6 +26,16 @@ pub struct RegisterMonitor<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_register_monitor(_ctx: Context<RegisterMonitor>, _name: String) -> Result<()> {
-    todo!("T1")
+pub fn handle_register_monitor(ctx: Context<RegisterMonitor>, name: String) -> Result<()> {
+    logic::validate_monitor_name(&name)?;
+    ctx.accounts.monitor.set_inner(Monitor {
+        authority: ctx.accounts.authority.key(),
+        name,
+        active: true,
+        reports_submitted: 0,
+        slots_voted: 0,
+        slots_agreed: 0,
+        bump: ctx.bumps.monitor,
+    });
+    Ok(())
 }

@@ -6,7 +6,9 @@ The `sla` Solana program (Rust, Anchor 1.1.2). It holds SLA escrow, keeps the pe
 
 ## Status
 
-Phase 0 is a stub. Every account, instruction signature, event and error is final, and every handler body is `todo!()`. Task T1 implements the handlers without changing the interface.
+Phase 1 (T1) is done: every instruction in SPEC.md is implemented, and the interface is unchanged from Phase 0. The generated IDL is byte-identical to the copies in `frontend/` and `sla-monitor/`. The program's doc comment in `lib.rs` still reads "Handlers are stubs until T1", because editing it changes the IDL `docs`. Update it together with the next IDL sync.
+
+Known limitation: `settle` credits the recipient by plain lamport arithmetic. If the recipient wallet doesn't exist yet and `escrow_lamports` is below the rent-exempt minimum for an empty account (890,880 lamports), the runtime rejects the transaction and the escrow can't be settled until someone funds that wallet. `create_sla` has no minimum escrow because SPEC.md doesn't define one.
 
 ## Commands
 
@@ -26,9 +28,11 @@ cargo test window_count_rounds_up         # single test by name
 
 - `programs/sla/src/lib.rs`: the `#[program]` entry points. Each one delegates to `instructions/<name>.rs::handle_<name>`.
 - `instructions/`: one file per instruction, holding its `#[derive(Accounts)]` struct, any params struct, and its handler.
-- `state.rs`: the `Config`, `Monitor`, `Sla` and `WindowReport` accounts, plus `Sla::space` and `Sla::window_count`.
+- `instructions.rs`: also holds `read_monitor`/`write_monitor`, which load and check the `Monitor` PDAs passed as remaining accounts to `create_sla` and `finalize_window`.
+- `logic.rs`: the pure rules, with no Solana types: config and `create_sla` limits, window and slot math (`Schedule`), bitmap validation, `k`-of-`n` consensus (`tally_window`), and the payout choice (`provider_is_paid`). Handlers call it, and its unit tests sit in the same file.
+- `state.rs`: the `Config`, `Monitor`, `Sla` and `WindowReport` accounts, plus `Sla::space`, `Sla::window_count`, and `Sla::schedule`.
 - `constants.rs`: seeds and limits, exported in the IDL. `error.rs`: `SlaError`. Its order fixes the 6000+ codes, so append only. `events.rs`: the events.
-- `tests/`: integration tests (LiteSVM, in-process, no validator) and layout and limit tests. Tests that load the program use `include_bytes!` on `target/deploy/sla.so`.
+- `tests/`: LiteSVM instruction tests (in-process, no validator) and layout and limit tests. `common/mod.rs` is the harness: it loads `target/deploy/sla.so` with `include_bytes!`, sets the `Clock` sysvar, and has one builder per instruction. `test_registry.rs` covers config and monitors, `test_create_sla.rs` covers `create_sla`, `test_reports.rs` covers `submit_report` and `finalize_window` (including a worst-case compute-unit check), and `test_settle.rs` covers `settle`, full lifecycles, and lamport conservation. Rerun `anchor build` before `cargo test` after you change the program, or the instruction tests run the old `.so`.
 
 ## Program ID and keys
 

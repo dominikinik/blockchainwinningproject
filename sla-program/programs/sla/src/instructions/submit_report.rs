@@ -2,7 +2,10 @@ use anchor_lang::prelude::*;
 
 use crate::{
     constants::*,
-    state::{Monitor, Sla, WindowReport},
+    error::SlaError,
+    events::ReportSubmitted,
+    logic,
+    state::{Monitor, MonitorReport, Sla, WindowReport},
 };
 
 #[derive(Accounts)]
@@ -31,10 +34,48 @@ pub struct SubmitReport<'info> {
 }
 
 pub fn handle_submit_report(
-    _ctx: Context<SubmitReport>,
-    _window_index: u32,
-    _checked: [u8; 32],
-    _up: [u8; 32],
+    ctx: Context<SubmitReport>,
+    window_index: u32,
+    checked: [u8; 32],
+    up: [u8; 32],
 ) -> Result<()> {
-    todo!("T1")
+    let sla = &ctx.accounts.sla;
+    let authority = ctx.accounts.monitor_authority.key();
+    let position = sla
+        .monitors
+        .iter()
+        .position(|m| *m == authority)
+        .ok_or(SlaError::NotAssignedMonitor)?;
+
+    let schedule = sla.schedule();
+    let now = Clock::get()?.unix_timestamp;
+    schedule.check_report_time(window_index, now)?;
+
+    let report = &mut ctx.accounts.window_report;
+    // A fresh `init_if_needed` account is all zeroes.
+    if report.sla == Pubkey::default() {
+        report.sla = sla.key();
+        report.window_index = window_index;
+        report.payer = authority;
+        report.bump = ctx.bumps.window_report;
+    }
+    require!(!report.per_monitor[position].submitted, SlaError::DuplicateReport);
+    logic::validate_bitmaps(&checked, &up, schedule.slot_count(window_index)?)?;
+    report.per_monitor[position] = MonitorReport { checked, up, submitted: true };
+
+    let monitor = &mut ctx.accounts.monitor;
+    monitor.reports_submitted = monitor
+        .reports_submitted
+        .checked_add(1)
+        .ok_or(SlaError::MathOverflow)?;
+
+    emit!(ReportSubmitted {
+        sla: sla.key(),
+        window_index,
+        monitor: authority,
+        checked,
+        up,
+        timestamp: now,
+    });
+    Ok(())
 }

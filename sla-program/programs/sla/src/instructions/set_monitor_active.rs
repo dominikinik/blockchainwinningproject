@@ -15,6 +15,7 @@ pub struct SetMonitorActive<'info> {
     pub monitor: Account<'info, Monitor>,
 }
 
-pub fn handle_set_monitor_active(_ctx: Context<SetMonitorActive>, _active: bool) -> Result<()> {
-    todo!("T1")
+pub fn handle_set_monitor_active(ctx: Context<SetMonitorActive>, active: bool) -> Result<()> {
+    ctx.accounts.monitor.active = active;
+    Ok(())
 }
