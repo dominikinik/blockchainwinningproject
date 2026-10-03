@@ -40,7 +40,7 @@ export const mockSLAs: SLA[] = [
     escrowSol: 10, requiredUptime: 99.9, currentUptime: 99.97,
     successfulChecks: 1438, failedChecks: 2, startAt: ago(2 * 24 * 60 + 12 * 60),
     endAt: ahead(4 * 24 * 60 + 12 * 60), durationDays: 7, checkIntervalMinutes: 5,
-    timeoutMs: 2000, consensusRequired: 3, monitorCount: 5, status: 'healthy',
+    timeoutMs: 2000, consensusRequired: 1, monitorCount: 1, status: 'healthy',
     history: paymentsHistory,
     timeline: Array.from({ length: 72 }, (_, i) => [19, 54].includes(i) ? 'down' : 'up'),
     settlement: { state: 'pending', projectionRecipient: 'provider', projectionAmountSol: 10 },
@@ -51,7 +51,7 @@ export const mockSLAs: SLA[] = [
     escrowSol: 25, requiredUptime: 99.99, currentUptime: 99.91,
     successfulChecks: 2902, failedChecks: 3, startAt: ago(4 * 24 * 60 + 21 * 60),
     endAt: ahead(2 * 24 * 60 + 3 * 60), durationDays: 7, checkIntervalMinutes: 2,
-    timeoutMs: 1500, consensusRequired: 4, monitorCount: 5, status: 'at-risk',
+    timeoutMs: 1500, consensusRequired: 1, monitorCount: 1, status: 'at-risk',
     history: analyticsHistory,
     timeline: Array.from({ length: 72 }, (_, i) => [7, 22, 23, 24, 41, 55, 56, 65].includes(i) ? 'down' : 'up'),
     settlement: { state: 'pending', projectionRecipient: 'customer', projectionAmountSol: 25 },
@@ -62,7 +62,7 @@ export const mockSLAs: SLA[] = [
     escrowSol: 5, requiredUptime: 99.5, currentUptime: 98.72,
     successfulChecks: 1240, failedChecks: 16, startAt: ago(7 * 24 * 60 + 47),
     endAt: ago(47), durationDays: 7, checkIntervalMinutes: 5,
-    timeoutMs: 2500, consensusRequired: 3, monitorCount: 5, status: 'violated',
+    timeoutMs: 2500, consensusRequired: 1, monitorCount: 1, status: 'violated',
     history: emailHistory,
     timeline: Array.from({ length: 72 }, (_, i) => [2, 7, 12, 16, 17, 23, 24, 25, 32, 39, 40, 41, 50, 55, 61, 66].includes(i) ? 'down' : 'up'),
     settlement: { state: 'ready', projectionRecipient: 'customer', projectionAmountSol: 5 },
@@ -70,11 +70,7 @@ export const mockSLAs: SLA[] = [
 ]
 
 export const mockMonitors: Monitor[] = [
-  { id: 'a', name: 'Monitor A', wallet: '8xF2mTtX4k9Pjrv7EQ58R8v5J74y2CVxq9HZ1jK31Qz', status: 'online', observations: 14281, agreementRate: 99.8, lastObservationAt: ago(0.2) },
-  { id: 'b', name: 'Monitor B', wallet: '3WnEUhdVZyjdwyfkRdJAsPQ9j6mD34vXNrESZ6G99VRM', status: 'online', observations: 14193, agreementRate: 99.7, lastObservationAt: ago(0.13) },
-  { id: 'c', name: 'Monitor C', wallet: '91Kq7xM4hV2nP8cA5rT6yF3jW9sL1eD4zB7uG2pH8As2', status: 'online', observations: 14302, agreementRate: 99.9, lastObservationAt: ago(0.27) },
-  { id: 'd', name: 'Monitor D', wallet: '6yT8rN2pC9wQ3mA5sF7kJ4vH1eL8xB2dZ6gR9uP5qW31', status: 'online', observations: 14087, agreementRate: 99.6, lastObservationAt: ago(0.35) },
-  { id: 'e', name: 'Monitor E', wallet: '4pR7bK2xL9qT5mW1vN8cF3jH6sY2dA7zG4uP9eQ5rC81', status: 'online', observations: 14218, agreementRate: 99.8, lastObservationAt: ago(0.4) },
+  { id: 'a', name: 'Monitoring server', wallet: '8xF2mTtX4k9Pjrv7EQ58R8v5J74y2CVxq9HZ1jK31Qz', status: 'online', observations: 14281, agreementRate: 99.8, lastObservationAt: ago(0.2) },
 ]
 
 const base58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
@@ -83,7 +79,7 @@ const mockSignature = (index: number) => Array.from({ length: 64 }, (_, position
 export const mockObservations: Observation[] = Array.from({ length: 18 }, (_, index) => ({
   id: `obs-${index}`,
   slaId: ['payments-api', 'analytics-api', 'email-api'][Math.floor(index / 6)],
-  monitorId: ['a', 'b', 'c', 'd', 'e', 'a'][index % 6],
+  monitorId: 'a',
   timestamp: ago(index % 6 * 5 + Math.floor(index / 6) * 11),
   result: index % 6 === 2 ? 'down' : 'up',
   latencyMs: index % 6 === 2 ? null : [142, 167, 0, 151, 189, 154][index % 6],
@@ -92,31 +88,16 @@ export const mockObservations: Observation[] = Array.from({ length: 18 }, (_, in
 
 export const mockConsensus: Record<string, ConsensusSnapshot> = {
   'payments-api': {
-    readings: [
-      { monitorId: 'a', result: 'up', latencyMs: 142 },
-      { monitorId: 'b', result: 'up', latencyMs: 167 },
-      { monitorId: 'c', result: 'down', latencyMs: null },
-      { monitorId: 'd', result: 'up', latencyMs: 151 },
-      { monitorId: 'e', result: 'up', latencyMs: 189 },
-    ], upCount: 4, totalCount: 5, result: 'up',
+    readings: [{ monitorId: 'a', result: 'up', latencyMs: 142 }],
+    upCount: 1, totalCount: 1, result: 'up',
   },
   'analytics-api': {
-    readings: [
-      { monitorId: 'a', result: 'up', latencyMs: 180 },
-      { monitorId: 'b', result: 'up', latencyMs: 193 },
-      { monitorId: 'c', result: 'up', latencyMs: 201 },
-      { monitorId: 'd', result: 'down', latencyMs: null },
-      { monitorId: 'e', result: 'up', latencyMs: 176 },
-    ], upCount: 4, totalCount: 5, result: 'up',
+    readings: [{ monitorId: 'a', result: 'up', latencyMs: 180 }],
+    upCount: 1, totalCount: 1, result: 'up',
   },
   'email-api': {
-    readings: [
-      { monitorId: 'a', result: 'down', latencyMs: null },
-      { monitorId: 'b', result: 'down', latencyMs: null },
-      { monitorId: 'c', result: 'up', latencyMs: 239 },
-      { monitorId: 'd', result: 'down', latencyMs: null },
-      { monitorId: 'e', result: 'up', latencyMs: 242 },
-    ], upCount: 2, totalCount: 5, result: 'down',
+    readings: [{ monitorId: 'a', result: 'down', latencyMs: null }],
+    upCount: 0, totalCount: 1, result: 'down',
   },
 }
 

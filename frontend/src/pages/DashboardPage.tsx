@@ -2,13 +2,15 @@ import { Activity, ArrowDownRight, ArrowRight, ArrowUpRight, Clock3, Coins, Plus
 import { Link, useNavigate } from 'react-router-dom'
 import { EmptyState, ErrorState, LoadingState, SectionHeading, StatusBadge } from '../components/UI'
 import { useAsyncData } from '../hooks/useAsyncData'
-import { formatSol, shortAddress, timeRemaining } from '../lib/format'
+import { useNow } from '../hooks/useNow'
+import { formatSol, shortAddress, timeRemainingPrecise } from '../lib/format'
 import { slaService } from '../services/solana/slaService'
 
 export function DashboardPage() {
   const navigate = useNavigate()
+  const now = useNow()
   const { data: slas, loading, error, reload } = useAsyncData(() => slaService.getSLAs(), [])
-  const active = slas?.filter((sla) => sla.settlement.state !== 'settled' && new Date(sla.endAt).getTime() > Date.now()) ?? []
+  const active = slas?.filter((sla) => sla.settlement.state !== 'settled' && new Date(sla.endAt).getTime() > now) ?? []
   const measured = slas?.filter((sla) => sla.successfulChecks + sla.failedChecks > 0) ?? []
   const averageUptime = measured.length ? measured.reduce((sum, sla) => sum + sla.currentUptime, 0) / measured.length : 0
   const locked = active.reduce((sum, sla) => sum + sla.escrowSol, 0)
@@ -32,12 +34,12 @@ export function DashboardPage() {
 
       <section className="surface table-surface">
         <SectionHeading title="Your agreements" subtitle="A live view of your API service commitments." action={<span className="subtle-count">{slas.length} total agreements</span>} />
-        {slas.length === 0 ? <EmptyState title="No agreements yet" description="Create an SLA to start tracking an API and its escrow." action={<Link className="button button-primary" to="/create">Create SLA <ArrowRight size={16} /></Link>} /> : <div className="table-scroll"><table className="data-table sla-table"><thead><tr><th>API / SLA</th><th>Provider</th><th>Required Uptime</th><th>Current Uptime</th><th>Escrow</th><th>Time Remaining</th><th>Status</th><th aria-label="Open" /></tr></thead><tbody>{slas.map((sla) => <tr key={sla.id} onClick={() => navigate(`/sla/${sla.id}`)} className="clickable-row"><td><Link to={`/sla/${sla.id}`} onClick={(event) => event.stopPropagation()} className="table-primary-link">{sla.name}</Link><span className="cell-subtext">{sla.endpoint}</span></td><td className="mono-cell">{shortAddress(sla.providerWallet)}</td><td>{sla.requiredUptime}%</td><td><span className={sla.status === 'violated' ? 'text-danger' : sla.status === 'at-risk' ? 'text-warning' : 'text-success'}>{sla.successfulChecks + sla.failedChecks ? `${sla.currentUptime.toFixed(2)}%` : '—'}</span></td><td className="font-semibold">{formatSol(sla.escrowSol)}</td><td><span className="time-cell"><Clock3 size={14} />{timeRemaining(sla.endAt)}</span></td><td><StatusBadge status={sla.status} /></td><td className="row-chevron"><ArrowUpRight size={16} /></td></tr>)}</tbody></table></div>}
+        {slas.length === 0 ? <EmptyState title="No agreements yet" description="Create an SLA to start tracking an API and its escrow." action={<Link className="button button-primary" to="/create">Create SLA <ArrowRight size={16} /></Link>} /> : <div className="table-scroll"><table className="data-table sla-table"><thead><tr><th>API / SLA</th><th>Provider</th><th>Required Uptime</th><th>Current Uptime</th><th>Escrow</th><th>Time Remaining</th><th>Status</th><th aria-label="Open" /></tr></thead><tbody>{slas.map((sla) => <tr key={sla.id} onClick={() => navigate(`/sla/${sla.id}`)} className="clickable-row"><td><Link to={`/sla/${sla.id}`} onClick={(event) => event.stopPropagation()} className="table-primary-link">{sla.name}</Link><span className="cell-subtext">{sla.endpoint}</span></td><td className="mono-cell">{shortAddress(sla.providerWallet)}</td><td>{sla.requiredUptime}%</td><td><span className={sla.status === 'violated' ? 'text-danger' : sla.status === 'at-risk' ? 'text-warning' : 'text-success'}>{sla.successfulChecks + sla.failedChecks ? `${sla.currentUptime.toFixed(2)}%` : '—'}</span></td><td className="font-semibold">{formatSol(sla.escrowSol)}</td><td><span className="time-cell"><Clock3 size={14} />{timeRemainingPrecise(sla.endAt, now)}</span></td><td><StatusBadge status={sla.status} /></td><td className="row-chevron"><ArrowUpRight size={16} /></td></tr>)}</tbody></table></div>}
       </section>
 
       <div className="dashboard-bottom">
-        <div className="info-panel dark-panel"><span className="panel-kicker">THE SLAna STANDARD</span><h3>Built for accountability,<br />from request to resolution.</h3><p>Independent monitors sign observations. The Solana program will verify consensus and determine the final outcome.</p><Link to="/monitoring">Explore monitoring <ArrowRight size={16} /></Link><div className="dark-panel-lines" aria-hidden="true"><span /><span /><span /></div></div>
-        <div className="info-panel light-panel"><div className="light-panel-icon"><ShieldCheck size={22} /></div><h3>Settlement belongs<br />to the program.</h3><p>Dashboard indicators and projections are for visibility. The on-chain program is the source of truth for settlement.</p><div className="light-panel-foot"><span className="mini-dot" /> Solana Devnet · Mock data</div></div>
+        <div className="info-panel dark-panel"><span className="panel-kicker">MONITORING</span><h3>Check service health,<br />second by second.</h3><p>Review the Java uptime service's recent state and per-second history.</p><Link to="/monitoring">View uptime timeline <ArrowRight size={16} /></Link><div className="dark-panel-lines" aria-hidden="true"><span /><span /><span /></div></div>
+        <div className="info-panel light-panel"><div className="light-panel-icon"><ShieldCheck size={22} /></div><h3>Settlement belongs<br />to the program.</h3><p>Dashboard indicators and projections are for visibility. The on-chain program is the source of truth for settlement.</p><div className="light-panel-foot"><span className="mini-dot" /> Solana Devnet</div></div>
       </div>
     </>}
   </div>

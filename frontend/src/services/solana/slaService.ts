@@ -22,7 +22,10 @@ function allSLAs(): SLA[] {
   const stored = readStored()
   const overrides = new Map(stored.map((sla) => [sla.id, sla]))
   return [...stored.filter((sla) => !mockSLAs.some((seed) => seed.id === sla.id)),
-    ...mockSLAs.map((seed) => overrides.get(seed.id) ?? seed)]
+    ...mockSLAs.map((seed) => overrides.get(seed.id) ?? seed)].map((sla) => {
+      if (sla.settlement.state !== 'pending' || new Date(sla.endAt).getTime() > Date.now()) return sla
+      return { ...sla, settlement: { ...sla.settlement, state: 'ready' as const } }
+    })
 }
 
 export const slaService = {
@@ -54,7 +57,7 @@ export const slaService = {
   async createSLA(input: CreateSLAInput): Promise<SLA> {
     await delay(550)
     const startAt = new Date()
-    const endAt = new Date(startAt.getTime() + input.durationDays * 86_400_000)
+    const endAt = new Date(startAt.getTime() + Math.round(input.durationDays * 86_400_000))
     const sla: SLA = {
       ...input,
       id: `sla-${crypto.randomUUID()}`,
@@ -82,15 +85,14 @@ export const slaService = {
     // Mock-only fixture. The real implementation must submit the settlement
     // instruction and reread the program account for its authoritative result.
     const result = mockSettlementResults[id]
-    if (!result) throw new Error('Mock settlement result is not available for this agreement.')
     const settled: SLA = {
       ...sla,
       status: 'completed',
       settlement: {
         ...sla.settlement,
         state: 'settled',
-        actualRecipient: result.recipient,
-        transaction: result.transaction,
+        actualRecipient: result?.recipient,
+        transaction: result?.transaction,
         settledAt: new Date().toISOString(),
       },
     }
