@@ -1,7 +1,13 @@
 #!/bin/sh
 # Checks that this machine has every tool the monorepo's modules and scripts/test-all.sh need, and
-# installs the missing Solana-side tools (Rust, Solana/Agave CLI, Anchor via avm, Surfpool, a local
-# keypair). Versions match the Dockerfile so host and devcontainer builds agree.
+# installs the missing Solana-side tools (Rust, Solana/Agave CLI, Anchor CLI, a local keypair).
+# Versions match the Dockerfile so host and devcontainer builds agree.
+#
+# Nothing is downloaded from GitHub (its unauthenticated API allows 60 requests/hour and broke
+# installs): Rust comes from static.rust-lang.org, Solana from release.anza.xyz, Anchor from
+# crates.io. So there is no avm and no Surfpool on the host; run `anchor test --validator legacy`
+# to use solana-test-validator, which ships with the Solana CLI. The one exception is outside this
+# script: cargo-build-sbf fetches Solana's platform-tools from GitHub on the first `anchor build`.
 #
 #   scripts/setup-toolchain.sh          check, then install whatever is missing
 #   scripts/setup-toolchain.sh --check  check only; exit 1 if anything is missing
@@ -13,7 +19,7 @@ set -eu
 
 RUST_VERSION=${RUST_VERSION:-1.95.0}
 ANCHOR_VERSION=${ANCHOR_VERSION:-1.1.2}
-SOLANA_CHANNEL=${SOLANA_CHANNEL:-stable}   # Agave release channel or exact version, e.g. v3.0.0
+SOLANA_VERSION=${SOLANA_VERSION:-v3.1.10}  # the Agave release Anchor 1.1.2 recommends
 JAVA_MIN=21
 NODE_MIN=24
 KEYPAIR="$HOME/.config/solana/id.json"
@@ -22,12 +28,12 @@ CHECK_ONLY=0
 case "${1:-}" in
 	--check) CHECK_ONLY=1 ;;
 	"") ;;
-	-h | --help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h | --help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "unknown option: $1 (use --check or --help)" >&2; exit 2 ;;
 esac
 
 # Installers drop binaries here; make them visible to this run even before the shell profile reloads.
-PATH="$HOME/.cargo/bin:$HOME/.avm/bin:$HOME/.local/share/solana/install/active_release/bin:$HOME/.local/bin:$PATH"
+PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
 export PATH
 
 MISSING=""
@@ -72,9 +78,8 @@ check_all() {
 	check_present cargo "Rust via rustup" cargo --version
 	check_present solana "Solana/Agave CLI" solana --version
 	check_present cargo-build-sbf "ships with the Solana/Agave CLI" cargo-build-sbf --version
-	check_present avm "Anchor version manager" avm --version
-	check_exact anchor "$ANCHOR_VERSION" "Anchor CLI via avm" anchor --version
-	check_present surfpool "local Solana validator used by anchor test" surfpool --version
+	check_present solana-test-validator "ships with the Solana/Agave CLI" solana-test-validator --version
+	check_exact anchor "$ANCHOR_VERSION" "Anchor CLI from crates.io" anchor --version
 	if [ -f "$KEYPAIR" ]; then ok keypair "$KEYPAIR"; else miss keypair "local dev wallet at $KEYPAIR"; fi
 }
 
@@ -95,29 +100,16 @@ install_missing() {
 		fi
 	fi
 
-	if is_missing solana || is_missing cargo-build-sbf; then
-		echo "==> Solana/Agave CLI ($SOLANA_CHANNEL)"
-		sh -c "$(curl -sSfL "https://release.anza.xyz/$SOLANA_CHANNEL/install")"
-	fi
-
-	if is_missing avm; then
-		echo "==> avm (builds from source, takes a few minutes)"
-		cargo install --git https://github.com/solana-foundation/anchor avm --force --locked
+	if is_missing solana || is_missing cargo-build-sbf || is_missing solana-test-validator; then
+		echo "==> Solana/Agave CLI $SOLANA_VERSION"
+		sh -c "$(curl -sSfL "https://release.anza.xyz/$SOLANA_VERSION/install")"
 	fi
 
 	if is_missing anchor; then
-		echo "==> anchor $ANCHOR_VERSION"
-		# avm verifies the prebuilt binary's build provenance via the GitHub API; if that check can't
-		# run (unauthenticated limit is 60 requests/hour, then 403) it refuses the binary. Building
-		# from source is the safe fallback. LTO is off because macOS's Xcode linker cannot read the
-		# newer LLVM bitcode that rustc emits for LTO ("could not parse bitcode object file").
-		avm install "$ANCHOR_VERSION" || CARGO_PROFILE_RELEASE_LTO=off avm install "$ANCHOR_VERSION" --from-source
-		avm use "$ANCHOR_VERSION"
-	fi
-
-	if is_missing surfpool; then
-		echo "==> surfpool"
-		curl -sL https://run.surfpool.run/ | bash
+		echo "==> anchor-cli $ANCHOR_VERSION from crates.io (builds from source, takes a few minutes)"
+		# LTO is off because macOS's Xcode linker cannot read the newer LLVM bitcode rustc emits for
+		# LTO ("could not parse bitcode object file").
+		CARGO_PROFILE_RELEASE_LTO=off cargo install anchor-cli --version "$ANCHOR_VERSION" --locked --force
 	fi
 
 	if is_missing keypair; then
@@ -140,5 +132,5 @@ if [ -n "$MISSING" ]; then
 fi
 cat <<EOF
 All tools present. Open a new shell (or add these to your profile) so they are on PATH:
-  export PATH="\$HOME/.cargo/bin:\$HOME/.avm/bin:\$HOME/.local/share/solana/install/active_release/bin:\$HOME/.local/bin:\$PATH"
+  export PATH="\$HOME/.cargo/bin:\$HOME/.local/share/solana/install/active_release/bin:\$PATH"
 EOF
