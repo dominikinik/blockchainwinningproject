@@ -1,6 +1,6 @@
 # SLAna monorepo
 
-This repository holds the SLAna frontend, uptime service, and database. A Solana program is planned. The frontend lives in [`frontend/`](frontend/README.md).
+This repository holds the SLAna frontend, uptime service, database, and an Anchor Solana program for uptime-conditioned escrow deals. The frontend lives in [`frontend/`](frontend/README.md).
 
 ## Frontend
 
@@ -13,7 +13,7 @@ npm --prefix frontend run dev
 
 Vite serves the app at `http://localhost:5173`. The devcontainer forwards that port, along with port `8899` for Surfpool. Run `npm --prefix frontend run build` to check TypeScript and create a production build.
 
-The Monitoring page displays the Java backend's service state and five-minute uptime timeline through Vite's same-origin `/api` proxy. SLA creation is a local demo; customer endpoint uptime and settlement remain mocked. See [INTEGRATION_GAPS.md](INTEGRATION_GAPS.md) for the minimum remaining work.
+The Monitoring page displays the Java backend's service state and five-minute uptime timeline through Vite's same-origin `/api` proxy. The `/deal` page creates a real on-chain uptime deal and the Java service settles it from its recorded health history. See [MANUAL_DEAL_TESTING.md](MANUAL_DEAL_TESTING.md) for the local payout/refund walkthrough and Devnet switch checklist. SLA creation elsewhere in the dashboard remains a local demo; customer endpoint uptime and settlement remain mocked. See [INTEGRATION_GAPS.md](INTEGRATION_GAPS.md) for the remaining integration work.
 
 ## Tests
 
