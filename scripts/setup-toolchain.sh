@@ -1,7 +1,9 @@
 #!/bin/sh
 # Checks that this machine has every tool the monorepo's modules and scripts/test-all.sh need, and
-# installs the missing Solana-side tools (Rust, Solana/Agave CLI, Anchor CLI, a local keypair).
-# Versions match the Dockerfile so host and devcontainer builds agree.
+# installs the missing Solana-side tools (Rust, Solana/Agave CLI, Anchor CLI, a local keypair) and
+# Maven for the Java modules. Versions match the Dockerfile so host and devcontainer builds agree.
+# Maven comes from Maven Central (repo.maven.apache.org), is checked against its published SHA-512,
+# unpacked into ~/.local/share/maven and linked as ~/.local/bin/mvn.
 #
 # Nothing is downloaded from GitHub (its unauthenticated API allows 60 requests/hour and broke
 # installs): Rust comes from static.rust-lang.org, Solana from release.anza.xyz, Anchor from
@@ -20,6 +22,8 @@ set -eu
 RUST_VERSION=${RUST_VERSION:-1.95.0}
 ANCHOR_VERSION=${ANCHOR_VERSION:-1.1.2}
 SOLANA_VERSION=${SOLANA_VERSION:-v3.1.10}  # the Agave release Anchor 1.1.2 recommends
+MAVEN_VERSION=${MAVEN_VERSION:-3.9.16}
+MAVEN_HOME_DIR="$HOME/.local/share/maven/apache-maven-$MAVEN_VERSION"
 JAVA_MIN=21
 NODE_MIN=24
 KEYPAIR="$HOME/.config/solana/id.json"
@@ -28,12 +32,12 @@ CHECK_ONLY=0
 case "${1:-}" in
 	--check) CHECK_ONLY=1 ;;
 	"") ;;
-	-h | --help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h | --help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "unknown option: $1 (use --check or --help)" >&2; exit 2 ;;
 esac
 
 # Installers drop binaries here; make them visible to this run even before the shell profile reloads.
-PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
+PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
 export PATH
 
 MISSING=""
@@ -73,6 +77,7 @@ check_all() {
 	check_present docker "install Docker Desktop (uptime-db tests run postgres in Docker)" docker --version
 	if have docker && ! docker info >/dev/null 2>&1; then miss docker-daemon "start Docker Desktop"; fi
 	check_min_major java "$JAVA_MIN" "install a JDK >= $JAVA_MIN, e.g. https://adoptium.net" java -version
+	check_exact mvn "Apache Maven $MAVEN_VERSION" "Maven for uptime-service and uptime-monitor" mvn --version
 	check_min_major node "$NODE_MIN" "install Node >= $NODE_MIN, e.g. via nvm: nvm install $NODE_MIN" node --version
 	check_exact rustc "$RUST_VERSION" "Rust via rustup" rustup run "$RUST_VERSION" rustc --version
 	check_present cargo "Rust via rustup" cargo --version
@@ -83,11 +88,37 @@ check_all() {
 	if [ -f "$KEYPAIR" ]; then ok keypair "$KEYPAIR"; else miss keypair "local dev wallet at $KEYPAIR"; fi
 }
 
+install_maven() {
+	echo "==> Apache Maven $MAVEN_VERSION from Maven Central"
+	if ! have java; then
+		echo "    skipped: Maven needs Java; install a JDK >= $JAVA_MIN first" >&2
+		return
+	fi
+	url="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/$MAVEN_VERSION/apache-maven-$MAVEN_VERSION-bin.tar.gz"
+	tmp=$(mktemp -d)
+	curl -fsSL -o "$tmp/maven.tar.gz" "$url"
+	expected=$(curl -fsSL "$url.sha512" | cut -d' ' -f1)
+	actual=$(shasum -a 512 "$tmp/maven.tar.gz" | cut -d' ' -f1)
+	if [ "$expected" != "$actual" ]; then
+		rm -rf "$tmp"
+		echo "    Maven download failed its SHA-512 check; not installed" >&2
+		return 1
+	fi
+	mkdir -p "$(dirname "$MAVEN_HOME_DIR")" "$HOME/.local/bin"
+	[ -d "$MAVEN_HOME_DIR" ] || tar -xzf "$tmp/maven.tar.gz" -C "$(dirname "$MAVEN_HOME_DIR")"
+	rm -rf "$tmp"
+	ln -sf "$MAVEN_HOME_DIR/bin/mvn" "$HOME/.local/bin/mvn"
+}
+
 is_missing() { case " $MISSING " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 install_missing() {
 	echo
-	echo "Installing missing Solana tools:"
+	echo "Installing missing tools:"
+
+	if is_missing mvn; then
+		install_maven
+	fi
 
 	if is_missing rustc || is_missing cargo; then
 		if have rustup; then
@@ -132,5 +163,5 @@ if [ -n "$MISSING" ]; then
 fi
 cat <<EOF
 All tools present. Open a new shell (or add these to your profile) so they are on PATH:
-  export PATH="\$HOME/.cargo/bin:\$HOME/.local/share/solana/install/active_release/bin:\$PATH"
+  export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$HOME/.local/share/solana/install/active_release/bin:\$PATH"
 EOF

@@ -44,7 +44,7 @@ wait_for http://127.0.0.1:8899/health
 if [ "$(docker inspect -f '{{.State.Running}}' uptime-db 2>/dev/null)" != "true" ]; then
 	docker compose -f "$ROOT/uptime-db/docker-compose.yml" up -d --wait
 fi
-(cd "$ROOT/uptime-service" && exec ./mvnw -q spring-boot:run) &
+(cd "$ROOT/uptime-service" && exec mvn -q spring-boot:run) &
 PIDS="$PIDS $!"
 wait_for http://localhost:8080/api/application/state
 

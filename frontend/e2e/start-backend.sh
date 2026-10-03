@@ -17,4 +17,4 @@ fi
 docker exec -e POSTGRES_USER=uptime uptime-db sh /docker-entrypoint-initdb.d/02-schema.sh
 
 cd uptime-service
-exec ./mvnw -q spring-boot:run -Dspring-boot.run.arguments="--server.port=$1 --deal.rpc-url=$2 --deal.oracle-keypair= --spring.datasource.url=jdbc:postgresql://localhost:5432/uptime_test"
+exec mvn -q spring-boot:run -Dspring-boot.run.arguments="--server.port=$1 --deal.rpc-url=$2 --deal.oracle-keypair= --spring.datasource.url=jdbc:postgresql://localhost:5432/uptime_test"

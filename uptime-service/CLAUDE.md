@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in the 
 
 ## Overview
 
-A Spring Boot 4.1 / Java 21 service that monitors its own health and records per-second uptime history. It is also the health **provider** of the uptime split: `../uptime-monitor` subscribes to its `GET /api/health` and tracks its downtime from outside. It builds on the host machine; the repo's devcontainer has no JDK.
+A Spring Boot 4.1 / Java 21 service that monitors its own health and records per-second uptime history. It is also the health **provider** of the uptime split: `../uptime-monitor` subscribes to its `GET /api/health` and tracks its downtime from outside. It builds on the host machine with an installed Maven 3.9 (`mvn`; `../scripts/setup-toolchain.sh` installs it) and has no Maven wrapper. The repo's devcontainer has no JDK.
 
 ## Commands
 
@@ -17,11 +17,11 @@ docker compose -f ../uptime-db/docker-compose.yml up -d --wait   # PostgreSQL on
 Run these from `uptime-service/`:
 
 ```bash
-./mvnw spring-boot:run                     # start on :8080
-./mvnw test                                # all tests (~5 s, no database needed)
-./mvnw test -Dtest=UptimeQueryServiceTest  # one class
-./mvnw test -Dtest=UptimeServiceApplicationTests#listReturnsEverySecondWithGapsAsDown   # single test
-./mvnw package                             # build jar
+mvn spring-boot:run                        # start on :8080
+mvn test                                   # all tests (~5 s, no database needed)
+mvn test -Dtest=UptimeQueryServiceTest     # one class
+mvn test -Dtest=UptimeServiceApplicationTests#listReturnsEverySecondWithGapsAsDown      # single test
+mvn package                                # build jar
 ```
 
 Swagger UI is served at `/swagger-ui.html`, OpenAPI at `/v3/api-docs`, and health at `/actuator/health`.

@@ -7,7 +7,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FAILED=""
 
 # Git hooks run without the login shell's PATH; add the toolchain dirs scripts/setup-toolchain.sh uses.
-for dir in "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin"; do
+for dir in "$HOME/.local/bin" "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin"; do
 	[ -d "$dir" ] && PATH="$dir:$PATH"
 done
 export PATH
@@ -37,8 +37,8 @@ uptime_deal_tests() {
 
 run uptime-db sh test/run-tests.sh
 run monitor-db sh test/run-tests.sh
-run uptime-service ./mvnw -q test
-run uptime-monitor ./mvnw -q test
+run uptime-service mvn -q test
+run uptime-monitor mvn -q test
 run frontend frontend_tests
 run uptime-deal uptime_deal_tests
 

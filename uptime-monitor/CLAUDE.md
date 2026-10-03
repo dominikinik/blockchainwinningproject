@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in the 
 
 ## Overview
 
-A Spring Boot 4.1 / Java 21 service that tracks the health of other services and publishes their downtime to Solana. It is the data-collecting half of the uptime split: `../uptime-service` is the **provider** (health endpoint plus start/stop), and this module **subscribes** to a provider's health endpoint, calls it every 2 s, records what it sees as events, and after each relevant event sends the aggregated downtime on chain. Its events are stored in PostgreSQL from the sibling `monitor-db` module.
+A Spring Boot 4.1 / Java 21 service that tracks the health of other services and publishes their downtime to Solana. It builds with an installed Maven 3.9 (`mvn`; `../scripts/setup-toolchain.sh` installs it) and has no Maven wrapper. It is the data-collecting half of the uptime split: `../uptime-service` is the **provider** (health endpoint plus start/stop), and this module **subscribes** to a provider's health endpoint, calls it every 2 s, records what it sees as events, and after each relevant event sends the aggregated downtime on chain. Its events are stored in PostgreSQL from the sibling `monitor-db` module.
 
 ## Commands
 
@@ -17,12 +17,12 @@ docker compose -f ../monitor-db/docker-compose.yml up -d --wait   # PostgreSQL o
 Run these from `uptime-monitor/`:
 
 ```bash
-./mvnw spring-boot:run                     # start on :8082 (UPTIME_MONITOR_PORT)
-MONITOR_BLOCKCHAIN_ENABLED=false ./mvnw spring-boot:run   # log reports instead of sending them
-./mvnw test                                # all tests (~8 s, no database, network or chain needed)
-./mvnw test -Dtest=ServiceTrackingTest     # one class
-./mvnw test -Dtest=TrackingServiceTest#unsubscribeRecordsTrackingFinishedAndPublishesTheFinalTotal   # single test
-./mvnw package                             # build jar
+mvn spring-boot:run                        # start on :8082 (UPTIME_MONITOR_PORT)
+MONITOR_BLOCKCHAIN_ENABLED=false mvn spring-boot:run      # log reports instead of sending them
+mvn test                                   # all tests (~8 s, no database, network or chain needed)
+mvn test -Dtest=ServiceTrackingTest        # one class
+mvn test -Dtest=TrackingServiceTest#unsubscribeRecordsTrackingFinishedAndPublishesTheFinalTotal      # single test
+mvn package                                # build jar
 ```
 
 Try it against the provider (`uptime-service` on :8080):
