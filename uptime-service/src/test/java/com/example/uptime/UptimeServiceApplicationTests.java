@@ -1,7 +1,7 @@
 package com.example.uptime;
 
 import static com.example.uptime.support.DealFixtures.PROGRAM_ID;
-import static com.example.uptime.support.DealFixtures.dealData;
+import static com.example.uptime.support.DealFixtures.deal;
 import static com.example.uptime.support.DealFixtures.newAddress;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
@@ -96,7 +96,9 @@ class UptimeServiceApplicationTests {
 			.toList();
 		assertThat(tasks).anyMatch(t -> t.contains("UptimeSampler.sample"));
 		assertThat(tasks).anyMatch(t -> t.contains("UptimeSampler.flush"));
-		assertThat(tasks).anyMatch(t -> t.contains("DealService.settleDue"));
+		assertThat(tasks).anyMatch(t -> t.contains("DealService.observe"));
+		assertThat(tasks).anyMatch(t -> t.contains("DealService.advance"));
+		assertThat(tasks).anyMatch(t -> t.contains("DealService.discover"));
 	}
 
 	@Test
@@ -113,7 +115,7 @@ class UptimeServiceApplicationTests {
 		String deal = newAddress();
 		String recipient = newAddress();
 		when(rpc.getAccountInfo(deal))
-			.thenReturn(new AccountInfo(PROGRAM_ID, 1, dealData(newAddress(), recipient, oracle.address(), 1, 5_000_000, Instant.now().getEpochSecond(), 10)));
+			.thenReturn(new AccountInfo(PROGRAM_ID, 1, deal(newAddress(), recipient, oracle.address(), Instant.now().getEpochSecond()).amount(5_000_000).minBps(9_900).data()));
 
 		mvc.perform(registerDeal(deal))
 			.andExpect(status().isCreated())
@@ -121,6 +123,10 @@ class UptimeServiceApplicationTests {
 			.andExpect(jsonPath("$.recipient").value(recipient))
 			.andExpect(jsonPath("$.amountLamports").value(5_000_000))
 			.andExpect(jsonPath("$.durationSeconds").value(10))
+			.andExpect(jsonPath("$.checkIntervalSeconds").value(1))
+			.andExpect(jsonPath("$.totalRounds").value(10))
+			.andExpect(jsonPath("$.minUptimeBps").value(9_900))
+			.andExpect(jsonPath("$.upChecks").value(0))
 			.andExpect(jsonPath("$.status").value("ACTIVE"));
 		mvc.perform(get("/api/deals/" + deal)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ACTIVE"));
 		mvc.perform(get("/api/deals")).andExpect(status().isOk()).andExpect(jsonPath("$[?(@.address == '" + deal + "')]").exists());
@@ -132,7 +138,7 @@ class UptimeServiceApplicationTests {
 	void registerIgnoresACallerDurationAndRejectsOutOfRangeOnChainOnes() throws Exception {
 		String deal = newAddress();
 		when(rpc.getAccountInfo(deal))
-			.thenReturn(new AccountInfo(PROGRAM_ID, 1, dealData(newAddress(), newAddress(), oracle.address(), 1, 5, 1_000, 7)));
+			.thenReturn(new AccountInfo(PROGRAM_ID, 1, deal(newAddress(), newAddress(), oracle.address(), 1_000).window(7, 1).data()));
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
 			.content("{\"address\":\"" + deal + "\",\"durationSeconds\":1}"))
 			.andExpect(status().isCreated())
@@ -141,7 +147,7 @@ class UptimeServiceApplicationTests {
 
 		String tooLong = newAddress();
 		when(rpc.getAccountInfo(tooLong))
-			.thenReturn(new AccountInfo(PROGRAM_ID, 1, dealData(newAddress(), newAddress(), oracle.address(), 1, 5, 1_000, 3601)));
+			.thenReturn(new AccountInfo(PROGRAM_ID, 1, deal(newAddress(), newAddress(), oracle.address(), 1_000).window(3601, 1).data()));
 		mvc.perform(registerDeal(tooLong)).andExpect(status().isBadRequest());
 	}
 

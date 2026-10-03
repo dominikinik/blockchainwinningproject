@@ -21,7 +21,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 
 @RestController
 @RequestMapping("/api/deals")
-@Tag(name = "Uptime deals", description = "On-chain uptime deals that this service settles as their oracle")
+@Tag(name = "Uptime deals", description = "On-chain uptime deals this service monitors; the program decides and pays the outcome")
 public class DealController {
 
 	private final DealService deals;
@@ -45,16 +45,18 @@ public class DealController {
 	}
 
 	/**
-	 * Registers a deal created on chain; its uptime window is the one stored in the deal account.
+	 * Registers a deal created on chain; its terms are the ones stored in the deal account.
 	 *
 	 * @param request the deal address
 	 * @return the tracked deal (201)
 	 */
 	@PostMapping
 	@ResponseStatus(HttpStatus.CREATED)
-	@Operation(summary = "Watch a deal and settle it when its window ends",
-			description = "The deal must already exist on chain and name this service's oracle. The uptime window "
-					+ "([starts_at, starts_at + duration_seconds)) is read from the deal account, not from the request. "
+	@Operation(summary = "Monitor a deal: report each round's UP/DOWN on chain, then trigger settle_deal",
+			description = "The deal must already exist on chain and name this service's oracle. The window, check "
+					+ "interval and threshold are read from the deal account, not from the request; the program alone "
+					+ "decides the outcome from its on-chain counters. Open deals naming this oracle are also discovered "
+					+ "automatically. "
 					+ "400 for an invalid request or deal (including an on-chain duration above the maximum), "
 					+ "409 if already registered, 502 if the RPC node fails.")
 	public TrackedDeal register(@RequestBody RegisterRequest request) {

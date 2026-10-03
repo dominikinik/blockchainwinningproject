@@ -52,7 +52,7 @@ Errors (`DealError`, codes 6000+, append only):
 - `bump`: u8;
 - `recorded`: u32 length prefix, then the bitmap. Bit `r % 8` of byte `r / 8` is set once round `r` is recorded.
 
-The account size is `Deal::space(total_rounds)`, which is `Deal::FIXED_SPACE` (183) plus `ceil(rounds / 8)`. `uptime-service` (`DealProgram.java`) and the frontend (`dealProgram.ts`) decode this layout by hand. Change all three together.
+The account size is `Deal::space(total_rounds)`, which is `Deal::FIXED_SPACE` (172) plus `ceil(rounds / 8)`. `uptime-service` (`DealProgram.java`) and the frontend (`dealProgram.ts`) decode this layout by hand. Change all three together.
 
 ## Commands
 

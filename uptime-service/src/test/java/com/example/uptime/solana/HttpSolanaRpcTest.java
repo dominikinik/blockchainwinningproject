@@ -96,6 +96,32 @@ class HttpSolanaRpcTest {
 	}
 
 	@Test
+	void listsProgramAccountsMatchingAMemcmpFilter() {
+		server.expect(requestTo(URL))
+			.andExpect(jsonPath("$.method").value("getProgramAccounts"))
+			.andExpect(jsonPath("$.params[0]").value("Prog"))
+			.andExpect(jsonPath("$.params[1].encoding").value("base64"))
+			.andExpect(jsonPath("$.params[1].commitment").value("confirmed"))
+			.andExpect(jsonPath("$.params[1].filters[0].memcmp.offset").value(72))
+			.andExpect(jsonPath("$.params[1].filters[0].memcmp.bytes").value("Oracle"))
+			.andRespond(withSuccess("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":[{\"pubkey\":\"Deal1\",\"account\":"
+					+ "{\"owner\":\"Prog\",\"lamports\":9,\"data\":[\"" + Base64.getEncoder().encodeToString(new byte[] { 3 })
+					+ "\",\"base64\"]}}]}", MediaType.APPLICATION_JSON));
+		expect("getProgramAccounts", "[]");
+		expect("getProgramAccounts", "null");
+
+		List<SolanaRpc.ProgramAccount> accounts = rpc.getProgramAccounts("Prog", 72, "Oracle");
+		assertThat(accounts).hasSize(1);
+		assertThat(accounts.get(0).address()).isEqualTo("Deal1");
+		assertThat(accounts.get(0).account().owner()).isEqualTo("Prog");
+		assertThat(accounts.get(0).account().lamports()).isEqualTo(9);
+		assertThat(accounts.get(0).account().data()).containsExactly(3);
+		assertThat(rpc.getProgramAccounts("Prog", 72, "Oracle")).isEmpty();
+		assertThat(rpc.getProgramAccounts("Prog", 72, "Oracle")).isEmpty();
+		server.verify();
+	}
+
+	@Test
 	void aNodeThatNeverAnswersTimesOutInsteadOfHanging() throws Exception {
 		try (ServerSocket silent = new ServerSocket(0, 5, InetAddress.getLoopbackAddress())) {
 			RestClient.Builder slow = RestClient.builder()

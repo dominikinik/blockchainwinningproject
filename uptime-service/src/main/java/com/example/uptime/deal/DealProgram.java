@@ -13,15 +13,18 @@ import com.example.uptime.solana.SolanaTransaction.Instruction;
 
 /**
  * Binary layout of the {@code uptime_deal} Anchor program (see {@code uptime-deal/}): the {@code Deal}
- * account, the {@code settle_deal} instruction and the {@code DealSettled} and {@code DealCancelled}
- * events. The discriminators are the first 8 bytes of {@code sha256("account:Deal")},
- * {@code sha256("global:settle_deal")}, {@code sha256("event:DealSettled")} and
- * {@code sha256("event:DealCancelled")}, as listed in the program's IDL.
+ * account, the {@code record_observation} and {@code settle_deal} instructions, and the
+ * {@code DealSettled} and {@code DealCancelled} events. The discriminators are the first 8 bytes of
+ * {@code sha256("account:Deal")}, {@code sha256("global:<instruction>")} and
+ * {@code sha256("event:<Event>")}, as listed in the program's IDL.
  */
 public final class DealProgram {
 
 	static final byte[] DEAL_DISCRIMINATOR = { 125, (byte) 223, (byte) 160, (byte) 234, 71, (byte) 162, (byte) 182,
 			(byte) 219 };
+
+	static final byte[] RECORD_OBSERVATION_DISCRIMINATOR = { 37, (byte) 148, 41, (byte) 216, 83, 104, (byte) 162,
+			96 };
 
 	static final byte[] SETTLE_DEAL_DISCRIMINATOR = { 28, 10, (byte) 168, (byte) 174, (byte) 203, (byte) 149,
 			(byte) 134, 54 };
@@ -31,8 +34,21 @@ public final class DealProgram {
 	static final byte[] DEAL_CANCELLED_DISCRIMINATOR = { (byte) 229, (byte) 189, 86, (byte) 176, (byte) 134,
 			(byte) 151, 43, (byte) 152 };
 
-	/** Discriminator, payer, recipient, oracle, deal_id, amount_lamports, starts_at, duration_seconds, bump. */
-	private static final int DEAL_ACCOUNT_SIZE = 8 + 32 * 3 + 8 + 8 + 8 + 8 + 1;
+	/**
+	 * How long after a window ends the program still accepts observations; settlement opens exactly then
+	 * (the program's {@code OBSERVATION_GRACE_SECONDS}).
+	 */
+	public static final long OBSERVATION_GRACE_SECONDS = 10;
+
+	/** Byte offset of {@code oracle} in a {@code Deal}: discriminator, payer, recipient. */
+	public static final int ORACLE_OFFSET = 8 + 32 + 32;
+
+	/**
+	 * Fixed part of a {@code Deal}: discriminator, payer, recipient, oracle, deal_id, amount_lamports,
+	 * provider_stake_lamports, status, starts_at, duration_seconds, check_interval_seconds, min_uptime_bps,
+	 * total_rounds, up_checks, down_checks, bump, and the bitmap's length prefix.
+	 */
+	private static final int DEAL_FIXED_SIZE = 8 + 32 * 3 + 8 * 3 + 1 + 8 * 3 + 2 + 4 * 3 + 1 + 4;
 
 	private static final String EVENT_LOG_PREFIX = "Program data: ";
 
@@ -40,31 +56,67 @@ public final class DealProgram {
 	}
 
 	/**
-	 * A decoded {@code Deal} account.
+	 * A decoded {@code Deal} account: the terms and the authoritative on-chain SLA counters.
 	 *
-	 * @param payer          Base58 wallet that funded the escrow
-	 * @param recipient      Base58 wallet paid when uptime is above 99%
-	 * @param oracle         Base58 key allowed to settle
-	 * @param dealId         the payer-chosen id
-	 * @param amountLamports the escrowed lamports
-	 * @param startsAt        chain time at which the deal was created; the window starts here
-	 * @param durationSeconds length of the window in seconds, as stored on chain
+	 * @param payer                 Base58 customer wallet; funded the payment and wins it all on a breach
+	 * @param recipient             Base58 provider wallet; wins it all when the SLA is met
+	 * @param oracle                Base58 key allowed to record observations
+	 * @param dealId                the payer-chosen id
+	 * @param amountLamports        the customer payment
+	 * @param providerStakeLamports the provider guarantee (0 for none)
+	 * @param active                {@code false} while the deal waits for the provider's guarantee
+	 * @param startsAt              chain time at which the window started; {@code null} until active
+	 * @param durationSeconds       length of the window in seconds
+	 * @param checkIntervalSeconds  length of one monitoring round in seconds
+	 * @param minUptimeBps          required uptime in basis points
+	 * @param totalRounds           rounds in the window; unobserved ones count as down
+	 * @param upChecks              rounds recorded UP
+	 * @param downChecks            rounds recorded DOWN
+	 * @param recorded              one bit per round, set once that round is recorded
 	 */
 	public record DealAccount(String payer, String recipient, String oracle, long dealId, long amountLamports,
-			Instant startsAt, long durationSeconds) {
+			long providerStakeLamports, boolean active, Instant startsAt, long durationSeconds,
+			long checkIntervalSeconds, int minUptimeBps, int totalRounds, int upChecks, int downChecks,
+			byte[] recorded) {
+
+		/**
+		 * Tells whether a round is already counted on chain.
+		 *
+		 * @param round the zero-based round
+		 * @return {@code true} if its bit is set; {@code false} if not, or if it lies beyond the bitmap
+		 */
+		public boolean isRecorded(int round) {
+			return round >= 0 && round / 8 < recorded.length && (recorded[round / 8] & (1 << (round % 8))) != 0;
+		}
+
+		/**
+		 * @return the end of the window (exclusive), or {@code null} until the deal is active
+		 */
+		public Instant endsAt() {
+			return startsAt == null ? null : startsAt.plusSeconds(durationSeconds);
+		}
+
+		/**
+		 * @return when observations close and settlement opens on chain, or {@code null} until active
+		 */
+		public Instant settleOpensAt() {
+			return startsAt == null ? null : endsAt().plusSeconds(OBSERVATION_GRACE_SECONDS);
+		}
+
 	}
 
 	/**
 	 * How a deal account was closed.
 	 *
-	 * @param cancelled         {@code true} if the payer cancelled it ({@code DealCancelled}), {@code false}
-	 *                          if it was settled ({@code DealSettled})
-	 * @param paidToRecipient   for a settlement, whether the recipient was paid; {@code null} if cancelled
-	 * @param upSeconds         for a settlement, the up seconds the oracle reported; {@code null} if cancelled
-	 * @param totalSeconds      for a settlement, the window length the oracle reported; {@code null} if
-	 *                          cancelled
+	 * @param cancelled       {@code true} if the payer cancelled it ({@code DealCancelled}), {@code false} if
+	 *                        it was settled ({@code DealSettled})
+	 * @param paidToRecipient for a settlement, whether the provider won; {@code null} if cancelled
+	 * @param upChecks        for a settlement, the on-chain UP rounds; {@code null} if cancelled
+	 * @param downChecks      for a settlement, the on-chain DOWN rounds; {@code null} if cancelled
+	 * @param totalRounds     for a settlement, all rounds of the window; {@code null} if cancelled
 	 */
-	public record Outcome(boolean cancelled, Boolean paidToRecipient, Long upSeconds, Long totalSeconds) {
+	public record Outcome(boolean cancelled, Boolean paidToRecipient, Integer upChecks, Integer downChecks,
+			Integer totalRounds) {
 	}
 
 	/**
@@ -75,46 +127,84 @@ public final class DealProgram {
 	 * @throws IllegalArgumentException if the data is too short or isn't a {@code Deal}
 	 */
 	public static DealAccount decodeDeal(byte[] data) {
-		if (data.length < DEAL_ACCOUNT_SIZE || !Arrays.equals(data, 0, 8, DEAL_DISCRIMINATOR, 0, 8)) {
+		if (data.length < DEAL_FIXED_SIZE || !Arrays.equals(data, 0, 8, DEAL_DISCRIMINATOR, 0, 8)) {
 			throw new IllegalArgumentException("Account is not an uptime_deal Deal");
 		}
 		ByteBuffer buf = ByteBuffer.wrap(data, 8, data.length - 8).order(ByteOrder.LITTLE_ENDIAN);
-		return new DealAccount(readKey(buf), readKey(buf), readKey(buf), buf.getLong(), buf.getLong(),
-				Instant.ofEpochSecond(buf.getLong()), buf.getLong());
+		String payer = readKey(buf);
+		String recipient = readKey(buf);
+		String oracle = readKey(buf);
+		long dealId = buf.getLong();
+		long amount = buf.getLong();
+		long stake = buf.getLong();
+		boolean active = buf.get() == 1;
+		long startsAt = buf.getLong();
+		long duration = buf.getLong();
+		long interval = buf.getLong();
+		int minBps = Short.toUnsignedInt(buf.getShort());
+		int totalRounds = buf.getInt();
+		int up = buf.getInt();
+		int down = buf.getInt();
+		buf.get(); // bump
+		int bitmapLength = buf.getInt();
+		if (bitmapLength < 0 || bitmapLength > buf.remaining()) {
+			throw new IllegalArgumentException("Deal bitmap is truncated");
+		}
+		byte[] recorded = new byte[bitmapLength];
+		buf.get(recorded);
+		return new DealAccount(payer, recipient, oracle, dealId, amount, stake, active,
+				active ? Instant.ofEpochSecond(startsAt) : null, duration, interval, minBps, totalRounds, up, down,
+				recorded);
 	}
 
 	/**
-	 * Builds the {@code settle_deal} instruction.
+	 * Builds the {@code record_observation} instruction: the oracle's UP/DOWN report of one round.
 	 *
-	 * @param programId    Base58 program id
-	 * @param oracle       Base58 oracle, which signs
-	 * @param dealAddress  Base58 deal address
-	 * @param deal         the decoded deal, for its payer and recipient
-	 * @param upSeconds    seconds the service was up in the window
-	 * @param totalSeconds length of the window in seconds
-	 * @return the instruction, with accounts in the program's order: oracle, deal, payer, recipient
+	 * @param programId   Base58 program id
+	 * @param oracle      Base58 oracle, which signs
+	 * @param dealAddress Base58 deal address
+	 * @param round       the zero-based round
+	 * @param up          whether the service was up for the whole round
+	 * @return the instruction, with accounts in the program's order: oracle, deal
 	 */
-	public static Instruction settleInstruction(String programId, String oracle, String dealAddress, DealAccount deal,
-			long upSeconds, long totalSeconds) {
-		byte[] data = ByteBuffer.allocate(24)
+	public static Instruction observationInstruction(String programId, String oracle, String dealAddress, int round,
+			boolean up) {
+		byte[] data = ByteBuffer.allocate(8 + 4 + 1)
 			.order(ByteOrder.LITTLE_ENDIAN)
-			.put(SETTLE_DEAL_DISCRIMINATOR)
-			.putLong(upSeconds)
-			.putLong(totalSeconds)
+			.put(RECORD_OBSERVATION_DISCRIMINATOR)
+			.putInt(round)
+			.put((byte) (up ? 1 : 0))
 			.array();
 		List<AccountMeta> accounts = List.of(new AccountMeta(Base58.decodePublicKey(oracle), true, false),
+				new AccountMeta(Base58.decodePublicKey(dealAddress), false, true));
+		return new Instruction(Base58.decodePublicKey(programId), accounts, data);
+	}
+
+	/**
+	 * Builds the {@code settle_deal} instruction. It carries no data besides its discriminator: the
+	 * program judges the SLA from the deal's own counters, so the caller has nothing to report.
+	 *
+	 * @param programId   Base58 program id
+	 * @param caller      Base58 signer that pays the fee; anyone may settle
+	 * @param dealAddress Base58 deal address
+	 * @param deal        the decoded deal, for its payer and recipient
+	 * @return the instruction, with accounts in the program's order: caller, deal, payer, recipient
+	 */
+	public static Instruction settleInstruction(String programId, String caller, String dealAddress,
+			DealAccount deal) {
+		List<AccountMeta> accounts = List.of(new AccountMeta(Base58.decodePublicKey(caller), true, false),
 				new AccountMeta(Base58.decodePublicKey(dealAddress), false, true),
 				new AccountMeta(Base58.decodePublicKey(deal.payer()), false, true),
 				new AccountMeta(Base58.decodePublicKey(deal.recipient()), false, true));
-		return new Instruction(Base58.decodePublicKey(programId), accounts, data);
+		return new Instruction(Base58.decodePublicKey(programId), accounts, SETTLE_DEAL_DISCRIMINATOR.clone());
 	}
 
 	/**
 	 * Finds the {@code DealSettled} event in transaction logs and reads who got the escrow.
 	 *
 	 * @param logs the transaction's log lines
-	 * @return {@code true} if the recipient was paid, {@code false} if the payer was refunded, or
-	 *         {@code null} if the logs hold no {@code DealSettled} event
+	 * @return {@code true} if the provider won, {@code false} if the customer did, or {@code null} if the
+	 *         logs hold no {@code DealSettled} event
 	 */
 	public static Boolean paidToRecipient(List<String> logs) {
 		Outcome outcome = closedBy(logs, null);
@@ -145,15 +235,18 @@ public final class DealProgram {
 				continue;
 			}
 			ByteBuffer buf = ByteBuffer.wrap(event, 8 + 32, event.length - 8 - 32).order(ByteOrder.LITTLE_ENDIAN);
-			// Discriminator, deal, up_seconds, total_seconds, paid_to_recipient, amount_lamports.
-			if (event.length >= 8 + 32 + 8 + 8 + 1 && Arrays.equals(event, 0, 8, DEAL_SETTLED_DISCRIMINATOR, 0, 8)) {
-				long up = buf.getLong();
-				long total = buf.getLong();
-				return new Outcome(false, buf.get() != 0, up, total);
+			// Discriminator, deal, up_checks, down_checks, total_rounds, min_uptime_bps, paid_to_recipient,
+			// payout_lamports.
+			if (event.length >= 8 + 32 + 4 * 3 + 2 + 1 && Arrays.equals(event, 0, 8, DEAL_SETTLED_DISCRIMINATOR, 0, 8)) {
+				int up = buf.getInt();
+				int down = buf.getInt();
+				int total = buf.getInt();
+				buf.getShort();
+				return new Outcome(false, buf.get() != 0, up, down, total);
 			}
 			// Discriminator, deal, payer, amount_lamports.
 			if (event.length >= 8 + 32 + 32 + 8 && Arrays.equals(event, 0, 8, DEAL_CANCELLED_DISCRIMINATOR, 0, 8)) {
-				return new Outcome(true, null, null, null);
+				return new Outcome(true, null, null, null, null);
 			}
 		}
 		return null;

@@ -17,6 +17,9 @@ public final class DealFixtures {
 
 	private static final byte[] DEAL_SETTLED = { 41, (byte) 213, (byte) 235, 64, 55, (byte) 168, 51, 76 };
 
+	private static final byte[] DEAL_CANCELLED = { (byte) 229, (byte) 189, 86, (byte) 176, (byte) 134, (byte) 151, 43,
+			(byte) 152 };
+
 	private DealFixtures() {
 	}
 
@@ -25,27 +28,130 @@ public final class DealFixtures {
 		return OracleKey.generate().address();
 	}
 
-	private static final byte[] DEAL_CANCELLED = { (byte) 229, (byte) 189, 86, (byte) 176, (byte) 134, (byte) 151, 43,
-			(byte) 152 };
-
 	/**
-	 * {@code Deal} account data (137 bytes): discriminator, payer, recipient, oracle, deal_id, amount,
-	 * starts_at, duration_seconds, bump.
+	 * Starts a {@code Deal} account: active, 10 one-second rounds from {@code startsAt}, 90% required, no
+	 * guarantee, nothing recorded.
 	 */
-	public static byte[] dealData(String payer, String recipient, String oracle, long dealId, long amount,
-			long startsAt, long durationSeconds) {
-		return ByteBuffer.allocate(8 + 96 + 8 + 8 + 8 + 8 + 1)
-			.order(ByteOrder.LITTLE_ENDIAN)
-			.put(DEAL)
-			.put(Base58.decodePublicKey(payer))
-			.put(Base58.decodePublicKey(recipient))
-			.put(Base58.decodePublicKey(oracle))
-			.putLong(dealId)
-			.putLong(amount)
-			.putLong(startsAt)
-			.putLong(durationSeconds)
-			.put((byte) 254)
-			.array();
+	public static Deal deal(String payer, String recipient, String oracle, long startsAt) {
+		return new Deal(payer, recipient, oracle, startsAt);
+	}
+
+	/** A {@code Deal} account under construction; every setter returns {@code this}. */
+	public static final class Deal {
+
+		private final String payer;
+
+		private final String recipient;
+
+		private final String oracle;
+
+		private long dealId = 1;
+
+		private long amount = 500_000_000L;
+
+		private long stake;
+
+		private boolean active = true;
+
+		private long startsAt;
+
+		private long duration = 10;
+
+		private long interval = 1;
+
+		private int minBps = 9_000;
+
+		private int up;
+
+		private int down;
+
+		private byte[] recorded;
+
+		private Deal(String payer, String recipient, String oracle, long startsAt) {
+			this.payer = payer;
+			this.recipient = recipient;
+			this.oracle = oracle;
+			this.startsAt = startsAt;
+		}
+
+		public Deal dealId(long dealId) {
+			this.dealId = dealId;
+			return this;
+		}
+
+		public Deal amount(long amount) {
+			this.amount = amount;
+			return this;
+		}
+
+		/** Sets a guarantee and makes the deal await the provider (starts_at 0). */
+		public Deal awaitingProvider(long stake) {
+			this.stake = stake;
+			this.active = false;
+			this.startsAt = 0;
+			return this;
+		}
+
+		public Deal window(long duration, long interval) {
+			this.duration = duration;
+			this.interval = interval;
+			return this;
+		}
+
+		public Deal minBps(int minBps) {
+			this.minBps = minBps;
+			return this;
+		}
+
+		/** Marks rounds as recorded on chain, with their UP/DOWN result. */
+		public Deal recorded(int[] rounds, boolean upResult) {
+			byte[] bits = bitmap();
+			for (int round : rounds) {
+				bits[round / 8] |= (byte) (1 << (round % 8));
+				if (upResult) {
+					up++;
+				}
+				else {
+					down++;
+				}
+			}
+			recorded = bits;
+			return this;
+		}
+
+		private byte[] bitmap() {
+			if (recorded == null) {
+				recorded = new byte[(int) ((duration / interval + 7) / 8)];
+			}
+			return recorded;
+		}
+
+		/** The raw account data, laid out like the program's {@code Deal}. */
+		public byte[] data() {
+			byte[] bits = bitmap();
+			return ByteBuffer.allocate(8 + 96 + 24 + 1 + 24 + 2 + 12 + 1 + 4 + bits.length)
+				.order(ByteOrder.LITTLE_ENDIAN)
+				.put(DEAL)
+				.put(Base58.decodePublicKey(payer))
+				.put(Base58.decodePublicKey(recipient))
+				.put(Base58.decodePublicKey(oracle))
+				.putLong(dealId)
+				.putLong(amount)
+				.putLong(stake)
+				.put((byte) (active ? 1 : 0))
+				.putLong(startsAt)
+				.putLong(duration)
+				.putLong(interval)
+				.putShort((short) minBps)
+				.putInt((int) (duration / interval))
+				.putInt(up)
+				.putInt(down)
+				.put((byte) 254)
+				.putInt(bits.length)
+				.put(bits)
+				.array();
+		}
+
 	}
 
 	/** The {@code Program data:} log line of a {@code DealCancelled} event. */
@@ -61,15 +167,17 @@ public final class DealFixtures {
 	}
 
 	/** The {@code Program data:} log line of a {@code DealSettled} event. */
-	public static String dealSettledLog(String deal, long up, long total, boolean paid, long amount) {
-		byte[] event = ByteBuffer.allocate(8 + 32 + 8 + 8 + 1 + 8)
+	public static String dealSettledLog(String deal, int up, int down, int total, boolean paid, long payout) {
+		byte[] event = ByteBuffer.allocate(8 + 32 + 4 * 3 + 2 + 1 + 8)
 			.order(ByteOrder.LITTLE_ENDIAN)
 			.put(DEAL_SETTLED)
 			.put(Base58.decodePublicKey(deal))
-			.putLong(up)
-			.putLong(total)
+			.putInt(up)
+			.putInt(down)
+			.putInt(total)
+			.putShort((short) 9_000)
 			.put((byte) (paid ? 1 : 0))
-			.putLong(amount)
+			.putLong(payout)
 			.array();
 		return "Program data: " + Base64.getEncoder().encodeToString(event);
 	}
