@@ -1,41 +1,59 @@
 import { PublicKey, Transaction, type Connection, type TransactionSignature } from '@solana/web3.js'
 import { dealApi, type DealConfig, type TrackedDeal } from './dealApi'
-import { cancelDealInstruction, createDealInstruction, dealAddress, MAX_DEAL_DURATION_SECONDS, MIN_DEAL_LAMPORTS } from './dealProgram'
+import {
+  acceptDealInstruction, BPS_DENOMINATOR, cancelDealInstruction, closedBy, createDealInstruction, dealAddress, decodeDeal,
+  MAX_DEAL_DURATION_SECONDS, MAX_ROUNDS, MIN_DEAL_LAMPORTS, settleDealInstruction, totalRounds,
+  type DealOutcome, type OnChainDeal,
+} from './dealProgram'
 
 /** The wallet adapter's `sendTransaction`: signs with the connected wallet and submits. */
 export type SendTransaction = (transaction: Transaction, connection: Connection) => Promise<TransactionSignature>
 
+/** How many recent transactions of a closed deal are searched for its closing event. */
+const HISTORY_LIMIT = 10
+
 export interface OpenDealParams {
   connection: Connection
-  /** The connected wallet; it signs and funds the escrow. */
+  /** The connected wallet; it signs and funds the customer payment. */
   payer: PublicKey
   sendTransaction: SendTransaction
   config: DealConfig
-  /** Base58 wallet paid when uptime is above 99%. */
+  /** Base58 provider wallet, paid the whole escrow when the SLA is met. */
   recipient: string
   amountLamports: bigint
+  /** The provider guarantee the recipient must lock with `accept_deal`; 0 starts the window at once. */
+  providerStakeLamports: bigint
   durationSeconds: number
+  checkIntervalSeconds: number
+  minUptimeBps: number
   /** Overrides the deal id (defaults to the current time in ms, unique per payer). */
   dealId?: bigint
 }
 
 /**
- * Locks the escrow on chain with `create_deal`, waits for confirmation, then registers the deal with
- * the uptime service, which settles it once the window has passed.
+ * Locks the customer payment on chain with `create_deal`, waits for confirmation, then registers the deal
+ * with the uptime service so it starts reporting observations at once.
  *
  * @param params the wallet, the service configuration and the deal terms
  * @returns the deal as tracked by the service
- * @throws Error for an invalid recipient, amount or duration, a rejected or failed transaction, or a refused
- *   registration (the message then names the deal address and how to reclaim the escrow)
+ * @throws Error for an invalid recipient, amount, window, interval or threshold, a rejected or failed
+ *   transaction, or a refused registration (the message then names the deal address; the service also
+ *   discovers open deals on its own)
  */
 export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
   let recipient: PublicKey
   try { recipient = new PublicKey(params.recipient) } catch { throw new Error('Enter a valid recipient address.') }
   if (recipient.equals(params.payer)) throw new Error('The recipient must be another wallet.')
-  if (params.amountLamports < MIN_DEAL_LAMPORTS) throw new Error('The escrow must be at least 0.001 SOL.')
-
+  if (params.amountLamports < MIN_DEAL_LAMPORTS) throw new Error('The payment must be at least 0.001 SOL.')
+  if (params.providerStakeLamports < 0n) throw new Error('The provider guarantee cannot be negative.')
   if (!Number.isInteger(params.durationSeconds) || params.durationSeconds < 1 || BigInt(params.durationSeconds) > MAX_DEAL_DURATION_SECONDS) {
     throw new Error(`The window must be a whole number of 1 to ${MAX_DEAL_DURATION_SECONDS} seconds.`)
+  }
+  if (totalRounds(params.durationSeconds, params.checkIntervalSeconds) === null) {
+    throw new Error(`The check interval must divide the window into 1 to ${MAX_ROUNDS} rounds.`)
+  }
+  if (!Number.isInteger(params.minUptimeBps) || params.minUptimeBps < 1 || params.minUptimeBps > BPS_DENOMINATOR) {
+    throw new Error('The minimum uptime must be between 0.01% and 100%.')
   }
 
   const programId = new PublicKey(params.config.programId)
@@ -47,7 +65,10 @@ export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
     oracle: new PublicKey(params.config.oracle),
     dealId,
     amountLamports: params.amountLamports,
+    providerStakeLamports: params.providerStakeLamports,
     durationSeconds: BigInt(params.durationSeconds),
+    checkIntervalSeconds: BigInt(params.checkIntervalSeconds),
+    minUptimeBps: params.minUptimeBps,
   }))
   const signature = await params.sendTransaction(transaction, params.connection)
   await waitForConfirmation(params.connection, signature)
@@ -58,32 +79,85 @@ export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
     const reason = cause instanceof Error ? cause.message : 'unknown error'
     throw new Error(
       `The deal ${address} was created on chain but the uptime service refused it (${reason}). ` +
-      'Your escrow is locked; reclaim it with cancel_deal 10 minutes after the window ends.',
+      'Unobserved rounds count as down, so the payer wins at settlement, which anyone can trigger after the window.',
     )
   }
 }
 
-export interface CancelDealParams {
+interface DealActionParams {
   connection: Connection
-  /** The connected wallet; it must be the deal's payer. */
-  payer: PublicKey
   sendTransaction: SendTransaction
   programId: PublicKey
-  /** The deal account to cancel. */
+  /** The deal account. */
   deal: PublicKey
 }
 
 /**
- * Sends `cancel_deal`, which refunds the escrow and closes the deal, and waits for confirmation.
- * The program only accepts it 10 minutes after the window ends.
+ * Sends `accept_deal`: the connected wallet, which must be the deal's recipient, locks the provider guarantee
+ * and the window starts.
  *
- * @param params the wallet, the program and the deal address
- * @throws Error when the wallet rejects, the program refuses (too early, not the payer) or the transaction isn't confirmed
+ * @param params the wallet (as `recipient`), the program and the deal address
+ * @throws Error when the wallet rejects, the program refuses (not the recipient, already active) or the
+ *   transaction isn't confirmed
  */
-export async function cancelDeal(params: CancelDealParams): Promise<void> {
-  const transaction = new Transaction().add(cancelDealInstruction({ programId: params.programId, payer: params.payer, deal: params.deal }))
-  const signature = await params.sendTransaction(transaction, params.connection)
-  await waitForConfirmation(params.connection, signature)
+export async function acceptDeal(params: DealActionParams & { recipient: PublicKey }): Promise<void> {
+  await sendAndConfirm(params, new Transaction().add(acceptDealInstruction({ programId: params.programId, recipient: params.recipient, deal: params.deal })))
+}
+
+/**
+ * Sends `settle_deal`. Any wallet may call it once the window and the observation grace are over; the
+ * program reads its own counters and pays the winner, so the caller only pays the fee.
+ *
+ * @param params the wallet (as `caller`), the program, the deal and its payer and recipient
+ * @throws Error when the wallet rejects, the program refuses (too early, not active) or the transaction
+ *   isn't confirmed
+ */
+export async function settleDeal(params: DealActionParams & { caller: PublicKey; payer: PublicKey; recipient: PublicKey }): Promise<void> {
+  await sendAndConfirm(params, new Transaction().add(settleDealInstruction(params)))
+}
+
+/**
+ * Sends `cancel_deal`, which withdraws a deal the provider hasn't accepted and refunds the payment.
+ *
+ * @param params the wallet (as `payer`), the program and the deal address
+ * @throws Error when the wallet rejects, the program refuses (already active, not the payer) or the
+ *   transaction isn't confirmed
+ */
+export async function cancelDeal(params: DealActionParams & { payer: PublicKey }): Promise<void> {
+  await sendAndConfirm(params, new Transaction().add(cancelDealInstruction({ programId: params.programId, payer: params.payer, deal: params.deal })))
+}
+
+/**
+ * Reads a deal's authoritative state straight from the chain.
+ *
+ * @param connection the cluster
+ * @param programId the uptime_deal program
+ * @param address the deal address
+ * @returns the decoded deal, or null once the account is closed (settled or cancelled)
+ * @throws Error when the account belongs to another program or isn't a deal
+ */
+export async function readDeal(connection: Connection, programId: PublicKey, address: PublicKey): Promise<OnChainDeal | null> {
+  const account = await connection.getAccountInfo(address, 'confirmed')
+  if (!account) return null
+  if (!account.owner.equals(programId)) throw new Error(`${address.toBase58()} is not an uptime_deal account.`)
+  return decodeDeal(account.data)
+}
+
+/**
+ * Reads how a closed deal ended from the program's own event, searching the deal's recent transactions.
+ *
+ * @param connection the cluster
+ * @param address the deal address
+ * @returns the outcome (who won, the final counters) or null when no closing event is found
+ */
+export async function readOutcome(connection: Connection, address: PublicKey): Promise<{ outcome: DealOutcome; signature: string } | null> {
+  const signatures = await connection.getSignaturesForAddress(address, { limit: HISTORY_LIMIT }, 'confirmed')
+  for (const { signature } of signatures) {
+    const tx = await connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
+    const outcome = tx?.meta?.logMessages ? closedBy(tx.meta.logMessages, address.toBase58()) : null
+    if (outcome) return { outcome, signature }
+  }
+  return null
 }
 
 /**
@@ -116,4 +190,9 @@ export async function waitForConfirmation(connection: Connection, signature: str
     await new Promise((resolve) => setTimeout(resolve, 400))
   }
   throw new Error('The transaction was not confirmed in time.')
+}
+
+async function sendAndConfirm(params: { connection: Connection; sendTransaction: SendTransaction }, transaction: Transaction): Promise<void> {
+  const signature = await params.sendTransaction(transaction, params.connection)
+  await waitForConfirmation(params.connection, signature)
 }

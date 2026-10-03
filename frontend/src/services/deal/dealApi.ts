@@ -8,23 +8,31 @@ export interface DealConfig {
   rpcUrl: string
 }
 
-export type DealStatus = 'ACTIVE' | 'SETTLED' | 'FAILED' | 'CANCELLED'
+export type DealStatus = 'AWAITING_PROVIDER' | 'ACTIVE' | 'SETTLED' | 'FAILED' | 'CANCELLED'
 
-/** A deal as tracked by the uptime service (`GET /api/deals/{address}`). */
+/**
+ * A deal as the uptime service monitors it (`GET /api/deals/{address}`). The terms and counters mirror the
+ * chain for display; the deal account and the program's events are the authority.
+ */
 export interface TrackedDeal {
   address: string
   payer: string
   recipient: string
   amountLamports: number
+  providerStakeLamports: number
   durationSeconds: number
-  /** First second of the uptime window (ISO-8601). */
-  startsAt: string
-  /** End of the window, exclusive (ISO-8601). */
-  endsAt: string
-  /** CANCELLED means the payer reclaimed the escrow with `cancel_deal`. */
+  checkIntervalSeconds: number
+  minUptimeBps: number
+  totalRounds: number
+  /** First second of the window (ISO-8601); null until the provider accepts. */
+  startsAt: string | null
+  /** End of the window, exclusive (ISO-8601); null until the provider accepts. */
+  endsAt: string | null
   status: DealStatus
-  upSeconds: number | null
-  totalSeconds: number | null
+  upChecks: number
+  downChecks: number
+  /** `record_observation` transactions the service has sent. */
+  observationsSent: number
   /** The program's verdict from its `DealSettled` event; null until settled or when unknown. */
   paidToRecipient: boolean | null
   signature: string | null
@@ -44,10 +52,10 @@ export const dealApi = {
   },
 
   /**
-   * Asks the service to watch a deal already created on chain and to settle it after the window.
+   * Asks the service to monitor a deal already created on chain: report each round, then trigger settlement.
    *
    * @param address Base58 deal address
-   * @returns the tracked deal; its window comes from the chain (`starts_at` plus the duration)
+   * @returns the tracked deal; its terms come from the chain
    * @throws Error with the service's problem detail (invalid deal, wrong oracle, duplicate, RPC failure)
    */
   register(address: string): Promise<TrackedDeal> {

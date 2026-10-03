@@ -1,7 +1,8 @@
 #!/bin/sh
 # Starts the full uptime-deal stack for manual testing in the browser, and stops it on Ctrl-C:
 #   - solana-test-validator on :8899 with the uptime_deal program (fresh ledger each run)
-#   - uptime-service on :8080 (PostgreSQL from uptime-db), the deal oracle
+#   - uptime-service on :8080 (PostgreSQL from uptime-db for history), the deal monitor (oracle) that
+#     records per-round observations on chain; the program decides the outcome
 #   - the frontend on :5173 with the in-browser burner wallet
 # Then open http://localhost:5173/deal, connect "Burner Wallet", press "Airdrop 2 SOL" and create a deal.
 # Needs Docker, Java 21, Node and the Solana/Anchor toolchain (scripts/setup-toolchain.sh).

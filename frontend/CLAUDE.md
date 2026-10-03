@@ -15,7 +15,7 @@ npm test                                        # all tests once (Vitest, jsdom;
 npm run test:watch                              # watch mode
 npx vitest run src/lib/format.test.ts           # single file
 npx vitest run -t "settles an ended SLA"        # single test by name
-npm run test:e2e                                # Playwright, real stack (~45s; see "Uptime deal" below)
+npm run test:e2e                                # Playwright, real stack (~60s; see "Uptime deal" below)
 ```
 
 ## Tests
@@ -25,7 +25,7 @@ npm run test:e2e                                # Playwright, real stack (~45s; 
 - Page tests mock `slaService`, `uptimeService` and the wallet-adapter modules with `vi.mock`; they never touch the network. `src/App.tsx` holds the route tree (without Router/wallet providers, which stay in `main.tsx`) so it can be rendered under `MemoryRouter`.
 - `slaService` and `uptimeService` tests use fake timers (`vi.advanceTimersByTimeAsync`) for the mock delays and the 4s fetch timeout; never wait on real timers.
 - Every new feature or behavior change must come with tests, and the suite must stay fast and deterministic.
-- `src/services/deal/dealProgram.test.ts` and `dealService.test.ts` run under `// @vitest-environment node`: web3.js PDA hashing rejects jsdom's cross-realm `Uint8Array`. `src/test/setup.ts` therefore guards its `window` access.
+- `src/services/deal/dealProgram.test.ts` and `dealService.test.ts` run under `// @vitest-environment node`: web3.js PDA hashing rejects jsdom's cross-realm `Uint8Array`. `src/test/setup.ts` therefore guards its `window` access. `src/test/dealFixtures.ts` builds `Deal` account bytes and `DealSettled` / `DealCancelled` log lines the way the program writes them.
 
 ## Data flow
 
@@ -45,13 +45,25 @@ The frontend remains usable when the Java service is stopped: the Monitoring pag
 
 ## Uptime deal (real Solana + backend integration)
 
-The `/deal` page (`src/pages/UptimeDealPage.tsx`) is the one flow that uses no mocks. It works against the `uptime_deal` program (`../uptime-deal`) and `uptime-service` as follows:
+The `/deal` page (`src/pages/UptimeDealPage.tsx`) is the one flow that uses no mocks. It works against the `uptime_deal` program (`../uptime-deal`) and `uptime-service`. **Monitors observe; Solana decides:** the page reads the authoritative counters and the verdict from the chain, never from the backend.
 
 1. `GET /api/deals/config` returns the program id and the service's oracle key.
-2. The connected wallet signs `create_deal`. `src/services/deal/dealProgram.ts` builds the instruction by hand from the IDL layout: discriminator, u64 LE `deal_id` (= `Date.now()`), amount and `duration_seconds` (1..86,400; 32 bytes), with the PDA `["deal", payer, deal_id]`. `dealService.openDeal` sends it and polls `getSignatureStatuses` until it confirms. Polling avoids the websocket that `confirmTransaction` needs.
-3. `POST /api/deals {address}` registers the deal; the window (`starts_at` + duration) comes from the chain. If registration fails after `create_deal` confirmed, `openDeal` throws an error naming the deal address and the `cancel_deal` fallback. The service measures its own per-second uptime over the window and sends `settle_deal` as the oracle.
-4. The page polls `GET /api/deals/{address}` every second. It shows a countdown, the measured up/total seconds, the program's verdict ("Paid to recipient" / "Refunded to payer", read from the `DealSettled` event) and the recipient's on-chain balance. "Simulate outage" / "Restore service" call `POST /api/application/{stop,start}`, so a manual test can force a refund.
-5. "Reclaim escrow": when the deal is FAILED, or ACTIVE past `endsAt` + 600 s, and the connected wallet is the payer, the page shows a button that sends `cancel_deal` (`dealService.cancelDeal`). It is enabled once `endsAt` + 600 s (`CANCEL_TIMEOUT_SECONDS`) has passed, and on success the deal shows as CANCELLED ("Cancelled · escrow returned to payer"). The window input stays at 1..3600 (the backend's default maximum).
+2. The connected wallet (the customer) signs `create_deal`.
+   - `src/services/deal/dealProgram.ts` builds the instruction by hand from the IDL layout, 50 bytes: the discriminator, then u64 LE `deal_id` (= `Date.now()`), `amount_lamports`, `provider_stake_lamports`, `duration_seconds` (1..86,400) and `check_interval_seconds`, then u16 `min_uptime_bps`. The PDA is `["deal", payer, deal_id]`.
+   - The form takes a payment, a provider guarantee (0 starts the window at once), a window of 1..3600 s (the backend's default maximum), a check interval that must divide the window, and a minimum uptime in %, converted to basis points.
+   - `dealService.openDeal` validates these terms, sends the transaction and polls `getSignatureStatuses` until it confirms. Polling avoids the websocket that `confirmTransaction` needs.
+3. `POST /api/deals {address}` asks the service to monitor the deal at once. The service also discovers deals naming its oracle on its own. If registration fails, `openDeal` throws an error naming the deal address. Unobserved rounds count as down.
+4. The page polls the **deal account** every second (`dealService.readDeal` → `decodeDeal`). It shows:
+   - the status line from `dealVerdict(chain, closed, now)`: waiting for the provider, monitoring with a countdown, collecting the last observations during the program's 10 s grace, or ready to settle;
+   - the on-chain counters (`deal-counters`: "9 up · 1 down · 0 unobserved / 10 rounds") and the terms;
+   - an informational projection (`projection`: threshold reached, still reachable, or no longer reachable). The projection is display only; the program decides.
+
+   When the account disappears, `readOutcome` reads the deal's last 10 transactions and decodes the program's `DealSettled` or `DealCancelled` event (`closedBy`). That event gives the verdict ("SLA met · escrow paid to recipient" / "SLA breached · escrow paid to payer" / "Cancelled · payment returned to payer") and the final counters. The backend's `GET /api/deals/{address}` is polled only for monitor info (`observations-sent`, monitor errors).
+5. Actions, all wallet-signed and sent to the program:
+   - "Accept and lock guarantee" (`acceptDeal`) for the connected recipient of a deal awaiting the provider.
+   - "Cancel deal" (`cancelDeal`) for its payer while the deal awaits the provider.
+   - "Settle now" (`settleDeal`) for **any** connected wallet once `starts_at + duration + OBSERVATION_GRACE_SECONDS` has passed. The instruction carries no figures. The service settles on its own too; whoever lands first closes the deal.
+6. "Simulate outage" / "Restore service" call `POST /api/application/{stop,start}`, so a manual test can force a breach.
 
 Configuration comes from `src/config/solana.ts`:
 - `VITE_SOLANA_RPC_URL` sets the cluster (default Devnet).
@@ -61,4 +73,4 @@ Configuration comes from `src/config/solana.ts`:
 
 To test by hand, run `../scripts/run-deal-demo.sh`. It starts a validator on :8899 with the program, the service on :8080 and Vite on :5173 in burner mode. Then open `http://localhost:5173/deal`.
 
-`npm run test:e2e` (`playwright.config.ts`, `e2e/`) starts its own stack on separate ports (validator :18899, service :18080 on the `uptime_test` database via `e2e/start-backend.sh`, Vite :5174). It runs two 10-second deals: one keeps the service up and asserts the recipient received exactly the escrow on chain; the other simulates an outage and asserts the refund. It needs `anchor build` in `../uptime-deal`, Docker, Java and the Solana CLI. It is a cross-module test, so it is not part of `scripts/test-all.sh`; run it when you change the deal flow. The scripts reuse a running `uptime-db` container, because `docker compose up` from another worktree would recreate it on that worktree's `data/` directory.
+`npm run test:e2e` (`playwright.config.ts`, `e2e/`) starts its own stack on separate ports (validator :18899, service :18080 on the `uptime_test` database via `e2e/start-backend.sh`, Vite :5174). It runs two 10-second deals of ten 1-second rounds at 80%. One keeps the service up: observations appear in the on-chain counters, and the program pays the recipient exactly the escrow. The other simulates a 4-second outage, and the program pays the payer back. The threshold leaves room for one round lost to registration latency. It needs `anchor build` in `../uptime-deal`, Docker, Java and the Solana CLI. It is a cross-module test, so it is not part of `scripts/test-all.sh`; run it when you change the deal flow. The scripts reuse a running `uptime-db` container, because `docker compose up` from another worktree would recreate it on that worktree's `data/` directory.
