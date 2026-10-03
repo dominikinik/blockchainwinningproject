@@ -33,7 +33,7 @@ class TrackingServiceTest {
 			assertThat(e.occurredAt()).isEqualTo(TrackingFixture.START);
 		});
 		f.tracking.sample();
-		f.at(20);
+		f.at((20) * 60);
 		assertThat(f.tracking.stop().status()).isEqualTo(TrackingStatus.STOPPING);
 		f.tracking.sample();
 		verify(f.probe, times(1)).check();
@@ -41,31 +41,31 @@ class TrackingServiceTest {
 				.containsExactly(TrackingEventType.START, TrackingEventType.STOP);
 		f.tracking.flush();
 		assertThat(f.tracking.state().orElseThrow().status()).isEqualTo(TrackingStatus.STOPPED);
-		assertThat(f.saved).singleElement().satisfies(e -> assertThat(e.windowEnd()).isEqualTo(TrackingFixture.START.plusMillis(20)));
+		assertThat(f.saved).singleElement().satisfies(e -> assertThat(e.windowEnd()).isEqualTo(TrackingFixture.START.plusMillis((20) * 60)));
 	}
 
 	@Test
 	void downtimeAndRequestFailuresNeverStopTrackingAndDifferentErrorsSplit() {
 		TrackingFixture f = new TrackingFixture();
 		f.tracking.start();
-		for (int i = 0; i < 2; i++) { f.at(i * 10); f.tracking.sample(); }
+		for (int i = 0; i < 2; i++) { f.at((i * 10) * 60); f.tracking.sample(); }
 		when(f.probe.check()).thenReturn(ProbeResult.failure("HEALTH_DOWN", "Unhealthy", FailureType.DOWNTIME, "AWS"));
-		for (int i = 2; i < 4; i++) { f.at(i * 10); f.tracking.sample(); }
+		for (int i = 2; i < 4; i++) { f.at((i * 10) * 60); f.tracking.sample(); }
 		when(f.probe.check()).thenReturn(ProbeResult.failure("HTTP_STATUS", "Unavailable", FailureType.CHECK_FAILURE, "503"));
-		f.at(40); f.tracking.sample();
+		f.at((40) * 60); f.tracking.sample();
 		when(f.probe.check()).thenReturn(ProbeResult.failure("HTTP_TIMEOUT", "Timed out"));
-		f.at(50); f.tracking.sample();
+		f.at((50) * 60); f.tracking.sample();
 		assertThat(f.tracking.state().orElseThrow().status()).isEqualTo(TrackingStatus.ACTIVE);
 		assertThat(f.aggregation.hasActiveSession()).isTrue();
 		when(f.probe.check()).thenReturn(ProbeResult.success());
-		f.at(60); f.tracking.sample();
-		f.at(70); f.tracking.stop(); f.tracking.flush();
+		f.at((60) * 60); f.tracking.sample();
+		f.at((70) * 60); f.tracking.stop(); f.tracking.flush();
 		assertThat(f.saved).singleElement().satisfies(e -> {
 			assertThat(e.badEvents()).hasSize(3);
 			assertThat(e.badEvents()).extracting(b -> b.type())
 					.containsExactly(BadEventType.DOWNTIME, BadEventType.CHECK_FAILURE, BadEventType.CHECK_FAILURE);
-			assertThat(e.badEvents().getFirst().windowStart()).isEqualTo(TrackingFixture.START.plusMillis(20));
-			assertThat(e.badEvents().getFirst().windowEnd()).isEqualTo(TrackingFixture.START.plusMillis(40));
+			assertThat(e.badEvents().getFirst().windowStart()).isEqualTo(TrackingFixture.START.plusMillis((20) * 60));
+			assertThat(e.badEvents().getFirst().windowEnd()).isEqualTo(TrackingFixture.START.plusMillis((40) * 60));
 			assertThat(e.badEvents().getFirst().observationCount()).isEqualTo(2);
 		});
 	}
@@ -74,15 +74,15 @@ class TrackingServiceTest {
 	void stopIntentFailureKeepsExactCutoffAndRetriesSameEvent() {
 		TrackingFixture f = new TrackingFixture();
 		TrackingSession session = f.tracking.start();
-		f.tracking.sample(); f.at(20);
+		f.tracking.sample(); f.at((20) * 60);
 		doThrow(new DataAccessResourceFailureException("secret connection details")).doCallRealMethod()
 				.when(f.lifecycle).saveStop(any(), any());
 		f.tracking.stop();
 		TrackingEvent stop = f.tracking.events(session.id()).getLast();
 		assertThat(f.tracking.lifecycleFailure()).isEqualTo("DataAccessResourceFailureException");
-		f.at(30); f.tracking.sample();
+		f.at((30) * 60); f.tracking.sample();
 		verify(f.probe, times(1)).check();
-		assertThat(f.tracking.sessions(TrackingFixture.START.plusMillis(20), TrackingFixture.START.plusMillis(30))).isEmpty();
+		assertThat(f.tracking.sessions(TrackingFixture.START.plusMillis((20) * 60), TrackingFixture.START.plusMillis((30) * 60))).isEmpty();
 		f.tracking.flush();
 		verify(f.lifecycle, times(2)).saveStop(any(), eq(stop));
 		assertThat(f.tracking.events(session.id())).containsExactly(f.memory.events(session.id()).toArray(TrackingEvent[]::new));
@@ -112,7 +112,7 @@ class TrackingServiceTest {
 	@Test
 	void explicitStopAtCapacityDrainsIncrementallyWithoutLosingCoverage() {
 		TrackingFixture f = new TrackingFixture(2);
-		f.tracking.start(); f.tracking.sample(); f.at(5000);
+		f.tracking.start(); f.tracking.sample(); f.at((5000) * 60);
 		f.tracking.stop();
 		assertThat(f.aggregation.hasActiveSession()).isFalse();
 		assertThat(f.aggregation.hasUnfinalizedSession()).isTrue();
@@ -121,7 +121,7 @@ class TrackingServiceTest {
 		assertThat(f.tracking.state().orElseThrow().status()).isEqualTo(TrackingStatus.STOPPED);
 		assertThat(f.saved).hasSize(5);
 		assertThat(f.saved.getFirst().windowStart()).isEqualTo(TrackingFixture.START);
-		assertThat(f.saved.getLast().windowEnd()).isEqualTo(TrackingFixture.START.plusSeconds(5));
+		assertThat(f.saved.getLast().windowEnd()).isEqualTo(TrackingFixture.START.plusSeconds((5) * 60));
 		for (int i = 1; i < f.saved.size(); i++) {
 			assertThat(f.saved.get(i).windowStart()).isEqualTo(f.saved.get(i - 1).windowEnd());
 		}
@@ -130,14 +130,14 @@ class TrackingServiceTest {
 	@Test
 	void sameSecondSessionsRemainDistinctAndGapIsNotTracked() {
 		TrackingFixture f = new TrackingFixture();
-		f.at(100); TrackingSession first = f.tracking.start(); f.tracking.sample();
-		f.at(120); f.tracking.stop(); f.tracking.flush();
-		f.at(140); TrackingSession second = f.tracking.start(); f.tracking.sample();
-		f.at(160); f.tracking.stop(); f.tracking.flush();
+		f.at((100) * 60); TrackingSession first = f.tracking.start(); f.tracking.sample();
+		f.at((120) * 60); f.tracking.stop(); f.tracking.flush();
+		f.at((140) * 60); TrackingSession second = f.tracking.start(); f.tracking.sample();
+		f.at((160) * 60); f.tracking.stop(); f.tracking.flush();
 		assertThat(f.saved).hasSize(2);
 		assertThat(f.saved).extracting(e -> e.bucketStart()).containsOnly(TrackingFixture.START);
 		assertThat(f.saved).extracting(e -> e.sessionId()).containsExactly(first.id(), second.id());
-		assertThat(f.tracking.sessions(TrackingFixture.START.plusMillis(130), TrackingFixture.START.plusMillis(130))).isEmpty();
+		assertThat(f.tracking.sessions(TrackingFixture.START.plusMillis((130) * 60), TrackingFixture.START.plusMillis((130) * 60))).isEmpty();
 	}
 
 	@Test
@@ -158,13 +158,13 @@ class TrackingServiceTest {
 	@Test
 	void stopCannotCutBetweenObservationAndAdmission() throws Exception {
 		TrackingFixture f = new TrackingFixture();
-		f.tracking.start(); f.at(10);
+		f.tracking.start(); f.at((10) * 60);
 		CountDownLatch observed = new CountDownLatch(1), release = new CountDownLatch(1), stopping = new CountDownLatch(1);
 		f.beforeAdmission.set(result -> { observed.countDown(); await(release); });
 		var threads = Executors.newFixedThreadPool(2);
 		try {
 			var sample = threads.submit(f.tracking::sample);
-			await(observed); f.at(20);
+			await(observed); f.at((20) * 60);
 			var stop = threads.submit(() -> { stopping.countDown(); return f.tracking.stop(); });
 			await(stopping);
 			assertThatThrownBy(() -> stop.get(100, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
@@ -178,7 +178,7 @@ class TrackingServiceTest {
 	@Test
 	void slowPersistenceDoesNotBlockSampling() throws Exception {
 		TrackingFixture f = new TrackingFixture();
-		f.tracking.start(); f.tracking.sample(); f.at(1000);
+		f.tracking.start(); f.tracking.sample(); f.at((1000) * 60);
 		CountDownLatch saving = new CountDownLatch(1), release = new CountDownLatch(1);
 		doAnswer(call -> { saving.countDown(); await(release); f.commit(call.getArgument(0)); return null; })
 				.when(f.store).saveAll(anyList());

@@ -1,0 +1,42 @@
+# CLAUDE.md — frontend
+
+This module is the SLAna React/TypeScript UI. Keep this file in step with changes to its behavior, architecture, configuration, or commands.
+
+## Commands
+
+Run from `frontend/`:
+
+```bash
+npm install
+npm run dev       # Vite on port 5173
+npm run build     # TypeScript check and production build
+npm run preview
+npm test                                        # all tests once (Vitest, jsdom; ~3s)
+npm run test:watch                              # watch mode
+npx vitest run src/lib/format.test.ts           # single file
+npx vitest run -t "settles an ended SLA"        # single test by name
+```
+
+## Tests
+
+- Vitest + jsdom + Testing Library, configured in the `test` block of `vite.config.ts`; setup in `src/test/setup.ts` (jest-dom matchers, cleanup, localStorage reset, TZ=UTC, silences React Router future-flag warnings). Shared helpers (`renderAt`, `makeSLA`) are in `src/test/utils.tsx`.
+- Tests sit next to the code as `*.test.ts(x)` and are typechecked by `npm run build`.
+- Page tests mock `slaService`, `uptimeService` and the wallet-adapter modules with `vi.mock`; they never touch the network. `src/App.tsx` holds the route tree (without Router/wallet providers, which stay in `main.tsx`) so it can be rendered under `MemoryRouter`.
+- `slaService` and `uptimeService` tests use fake timers (`vi.advanceTimersByTimeAsync`) for the mock delays and the 4s fetch timeout; never wait on real timers.
+- Every new feature or behavior change must come with tests, and the suite must stay fast and deterministic.
+
+## Data flow
+
+- `src/services/solana/slaService.ts` is the SLA data boundary. Its agreement, monitor, observation, and settlement methods currently use fixtures in `src/mocks/data.ts` and browser `localStorage`.
+- React must not determine SLA success, consensus, or actual settlement. When the Anchor program is available, replace the mock service methods with wallet-signed instructions and program account reads.
+- `src/services/uptime/uptimeService.ts` reads `GET /api/application/state` and `GET /api/uptime` from the Java backend. The Monitoring page renders a live five-minute, per-second timeline of the backend's own health, refreshed every 10 seconds. It does not score a customer's SLA.
+- The Create SLA page collects separate customer service payment and provider guarantee amounts in SOL. `createSLA()` saves both in browser `localStorage`; no SOL is transferred. SLA uptime and monitor observations stay mocked until endpoint-specific monitoring and Solana integration exist.
+- SLA escrow is two native SOL contributions. On success, the provider receives the customer's payment and its guarantee back. On breach, the customer receives its payment and the provider's forfeited guarantee. Keep each contribution explicit in the model and display their sum as total escrow. The Anchor integration must receive transfers authorized by both wallets before starting the SLA; represent on-chain amounts as lamports.
+- `durationDays` accepts fractional values for short durations. `src/lib/agreementTerms.ts` owns the duration values and labels. New agreements can expire within 30 seconds; the pages show a second-by-second countdown. Monitoring cadence and HTTP timeout are service configuration, not SLA terms. The mock service makes ended agreements ready for a request, but records no payout or transaction for newly created agreements without monitor evidence.
+- The current MVP uses one monitoring server. `consensusRequired=1` and `monitorCount=1` remain in mock models for compatibility, but the Create SLA and details pages do not expose consensus controls or panels.
+
+## Same-origin development API
+
+`vite.config.ts` proxies `/api` to `http://localhost:8080` by default. Set `SLANA_UPTIME_SERVICE_TARGET` before starting Vite to change the target (for example, `http://host.docker.internal:8080` when Vite runs in the devcontainer and Java runs on the host). Browser calls use relative `/api` URLs, so the Java service needs no development CORS setting. Production hosting needs equivalent same-origin routing.
+
+The frontend remains usable when the Java service is stopped: the Monitoring page shows `Backend unavailable` and a history error, while demo SLA data remains visible on the Dashboard and SLA details pages.

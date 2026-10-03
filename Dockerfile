@@ -1,9 +1,7 @@
-# Reproducible environment for both halves of the repo: the TypeScript
-# snapshots in scripts/ and the Anchor workspace in diamond-hands/.
+# Reproducible development environment for the SLAna monorepo, including
+# the Solana toolchain and the frontend in frontend/.
 #
-#   docker build -t live .
-#   docker run --rm -it live                       # anchor test
-#   docker run --rm -it live npm --prefix /app/scripts run 1
+#   docker build -t slana-dev .
 #
 # The base is OtterSec's verified-build image, which already carries the exact
 # anchor-cli this workspace targets plus a matching Solana toolchain. Only the
@@ -85,7 +83,7 @@ RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master
 
 COPY .devcontainer/zshrc /root/.zshrc
 
-# Expose Surfpool's RPC port
-EXPOSE 8899
+# Expose Surfpool RPC and the Vite frontend dev server.
+EXPOSE 8899 5173
 
 CMD ["zsh"]

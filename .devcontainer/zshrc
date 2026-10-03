@@ -33,12 +33,12 @@ alias g='git'
 alias t='anchor test'
 alias tb='anchor test --skip-build'
 alias b='anchor build'
-alias tc='npx tsc --noEmit'
+alias tc='npm --prefix frontend run build'
 
 # Workspace root shortcut
 ws() { cd "${LIVE_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; }
 
 if [[ -o interactive ]]; then
-  print -P "%F{45}live%f — Solana bootcamp"
-  print -P "  %F{244}t%f   anchor test               %F{244}tc%f  typecheck"
+  print -P "%F{45}SLAna%f — monorepo"
+  print -P "  %F{244}t%f   anchor test               %F{244}tc%f  frontend build"
 fi

@@ -3,7 +3,6 @@ package com.example.uptime.aggregation.application;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -17,6 +16,7 @@ import com.example.uptime.aggregation.domain.BadEventType;
 import com.example.uptime.aggregation.domain.FailureKey;
 import com.example.uptime.aggregation.domain.UptimeEvent;
 import com.example.uptime.aggregation.domain.UptimeWindow;
+import com.example.uptime.aggregation.domain.UptimeWindowPolicy;
 import com.example.uptime.checking.application.CheckResultSink;
 import com.example.uptime.checking.domain.CheckOutcome;
 import com.example.uptime.checking.domain.CheckResult;
@@ -26,7 +26,7 @@ import com.example.uptime.tracking.domain.TrackingStatus;
 public final class AggregateChecks implements CheckResultSink {
 	private final UptimeEventStore store;
 	private final Clock clock;
-	private final int expectedChecksPerSecond;
+	private final int expectedChecksPerWindow;
 	private final int maxBufferedWindows;
 	private final int persistenceBatchSize;
 	private final long retryInitialMs;
@@ -56,22 +56,22 @@ public final class AggregateChecks implements CheckResultSink {
 	private String lastPersistenceFailure;
 	private List<UptimeEvent> retryBatch;
 
-	public AggregateChecks(UptimeEventStore store, Clock clock, int expectedChecksPerSecond,
+	public AggregateChecks(UptimeEventStore store, Clock clock, int expectedChecksPerWindow,
 			int maxBufferedWindows, int persistenceBatchSize, long retryInitialMs, long retryMaxMs) {
-		this(store, clock, expectedChecksPerSecond, maxBufferedWindows, persistenceBatchSize,
-				retryInitialMs, retryMaxMs, 50);
+		this(store, clock, expectedChecksPerWindow, maxBufferedWindows, persistenceBatchSize,
+				retryInitialMs, retryMaxMs, 50_000);
 	}
 
-	public AggregateChecks(UptimeEventStore store, Clock clock, int expectedChecksPerSecond,
+	public AggregateChecks(UptimeEventStore store, Clock clock, int expectedChecksPerWindow,
 			int maxBufferedWindows, int persistenceBatchSize, long retryInitialMs, long retryMaxMs,
 			long maxObservationGapMs) {
 		this.store = Objects.requireNonNull(store, "store");
 		this.clock = Objects.requireNonNull(clock, "clock");
-		if (expectedChecksPerSecond <= 0 || maxBufferedWindows <= 0 || persistenceBatchSize <= 0
+		if (expectedChecksPerWindow <= 0 || maxBufferedWindows <= 0 || persistenceBatchSize <= 0
 				|| retryInitialMs <= 0 || retryMaxMs < retryInitialMs || maxObservationGapMs <= 0) {
 			throw new IllegalArgumentException("Counts and delays must be positive; retryMaxMs must be >= retryInitialMs");
 		}
-		this.expectedChecksPerSecond = expectedChecksPerSecond;
+		this.expectedChecksPerWindow = expectedChecksPerWindow;
 		this.maxBufferedWindows = maxBufferedWindows;
 		this.persistenceBatchSize = persistenceBatchSize;
 		this.retryInitialMs = retryInitialMs;
@@ -179,14 +179,14 @@ public final class AggregateChecks implements CheckResultSink {
 			window(result.observedAt()).observe(result, run, failureKey, firstBadObserved);
 			recentIds.add(result.checkId());
 			// A bounded replay cache supplements IDs retained by open windows.
-			if (recentIds.size() > Math.max(1024L, (long) maxBufferedWindows * expectedChecksPerSecond)) {
+			if (recentIds.size() > Math.max(1024L, (long) maxBufferedWindows * expectedChecksPerWindow)) {
 				recentIds.remove(recentIds.getFirst());
 			}
 		}
 	}
 
 	public void completeBefore(Instant cutoff) {
-		Instant boundary = Objects.requireNonNull(cutoff, "cutoff").truncatedTo(ChronoUnit.SECONDS);
+		Instant boundary = UptimeWindowPolicy.bucketStart(Objects.requireNonNull(cutoff, "cutoff"));
 		synchronized (stateLock) {
 			if (session != null) {
 				// A stopped session always drains to its exact cutoff, not the current wall clock.
@@ -198,7 +198,7 @@ public final class AggregateChecks implements CheckResultSink {
 	private void finalizeThrough(Instant target) {
 		closeElapsedWindows(target);
 		while (cursor.isBefore(target)) {
-			Instant bucket = cursor.truncatedTo(ChronoUnit.SECONDS);
+			Instant bucket = UptimeWindowPolicy.bucketStart(cursor);
 			if (!open.containsKey(bucket) && open.size() + pending.size() >= maxBufferedWindows) {
 				return;
 			}
@@ -214,7 +214,7 @@ public final class AggregateChecks implements CheckResultSink {
 		var iterator = open.entrySet().iterator();
 		while (iterator.hasNext()) {
 			var entry = iterator.next();
-			Instant end = entry.getKey().plusSeconds(1);
+			Instant end = UptimeWindowPolicy.end(entry.getKey());
 			if (stopAt != null && end.isAfter(stopAt)) {
 				end = stopAt;
 			}
@@ -231,15 +231,15 @@ public final class AggregateChecks implements CheckResultSink {
 	}
 
 	private UptimeWindow window(Instant at) {
-		Instant bucket = at.truncatedTo(ChronoUnit.SECONDS);
+		Instant bucket = UptimeWindowPolicy.bucketStart(at);
 		return open.computeIfAbsent(bucket, key -> new UptimeWindow(session.id(), key,
-				session.startedAt().isAfter(key) ? session.startedAt() : key, expectedChecksPerSecond));
+				session.startedAt().isAfter(key) ? session.startedAt() : key, expectedChecksPerWindow));
 	}
 
 	private void ensureAdmissionCapacity(Instant end) {
-		Instant firstBucket = cursor.truncatedTo(ChronoUnit.SECONDS);
-		Instant lastBucket = end.truncatedTo(ChronoUnit.SECONDS);
-		long needed = Duration.between(firstBucket, lastBucket).getSeconds() + 1;
+		Instant firstBucket = UptimeWindowPolicy.bucketStart(cursor);
+		Instant lastBucket = UptimeWindowPolicy.bucketStart(end);
+		long needed = Duration.between(firstBucket, lastBucket).getSeconds() / UptimeWindowPolicy.SECONDS + 1;
 		long existing = open.keySet().stream()
 				.filter(key -> !key.isBefore(firstBucket) && !key.isAfter(lastBucket)).count();
 		if (needed - existing + open.size() + pending.size() > maxBufferedWindows) {
@@ -251,7 +251,7 @@ public final class AggregateChecks implements CheckResultSink {
 	}
 
 	private void advanceOneSegment(Instant end) {
-		Instant next = cursor.truncatedTo(ChronoUnit.SECONDS).plusSeconds(1);
+		Instant next = UptimeWindowPolicy.end(UptimeWindowPolicy.bucketStart(cursor));
 		if (next.isAfter(end)) {
 			next = end;
 		}

@@ -16,10 +16,10 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param maxObservationGapMs  maximum inferred coverage following the latest observation
  */
 @ConfigurationProperties("uptime")
-public record UptimeProperties(long sampleIntervalMs, long flushIntervalMs, long maxRangeSeconds,
+public record UptimeProperties(@DefaultValue("10000") long sampleIntervalMs, long flushIntervalMs, long maxRangeSeconds,
 		long defaultRangeSeconds, @DefaultValue("3600") int maxBufferedWindows,
 		@DefaultValue("60") int persistenceBatchSize, @DefaultValue("1000") long retryInitialMs,
-		@DefaultValue("30000") long retryMaxMs, @DefaultValue("50") long maxObservationGapMs) {
+		@DefaultValue("30000") long retryMaxMs, @DefaultValue("50000") long maxObservationGapMs) {
 
 	@ConstructorBinding
 	public UptimeProperties {
@@ -37,7 +37,7 @@ public record UptimeProperties(long sampleIntervalMs, long flushIntervalMs, long
 			long defaultRangeSeconds, int maxBufferedWindows, int persistenceBatchSize,
 			long retryInitialMs, long retryMaxMs) {
 		this(sampleIntervalMs, flushIntervalMs, maxRangeSeconds, defaultRangeSeconds, maxBufferedWindows,
-				persistenceBatchSize, retryInitialMs, retryMaxMs, 50);
+				persistenceBatchSize, retryInitialMs, retryMaxMs, 50_000);
 	}
 
 	public UptimeProperties(long sampleIntervalMs, long flushIntervalMs, long maxRangeSeconds,

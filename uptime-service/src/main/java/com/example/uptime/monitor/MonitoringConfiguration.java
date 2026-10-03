@@ -10,6 +10,7 @@ import org.springframework.context.annotation.Configuration;
 import com.example.uptime.UptimeProperties;
 import com.example.uptime.aggregation.application.AggregateChecks;
 import com.example.uptime.aggregation.application.UptimeEventStore;
+import com.example.uptime.aggregation.domain.UptimeWindowPolicy;
 import com.example.uptime.checking.application.CheckResultSink;
 import com.example.uptime.checking.application.ExecuteCheck;
 import com.example.uptime.checking.application.HealthProbe;
@@ -45,7 +46,7 @@ public class MonitoringConfiguration {
 
 	@Bean
 	AggregateChecks aggregateChecks(UptimeEventStore store, Clock clock, UptimeProperties properties) {
-		int expectedChecks = (int) Math.ceil(1000.0 / properties.sampleIntervalMs());
+		int expectedChecks = (int) Math.ceil((double) UptimeWindowPolicy.MILLIS / properties.sampleIntervalMs());
 		return new AggregateChecks(store, clock, expectedChecks, properties.maxBufferedWindows(),
 				properties.persistenceBatchSize(), properties.retryInitialMs(), properties.retryMaxMs(),
 				properties.maxObservationGapMs());

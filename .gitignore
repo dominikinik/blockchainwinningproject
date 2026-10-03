@@ -4,7 +4,14 @@
 **/.anchor/
 **/test-ledger/
 **/.surfpool/
+dist/
+.playwright-mcp/
+.vite/
+*.tsbuildinfo
 
 # Local secret keypairs
 /scripts/keypair.json
 /scripts/another-keypair.json
+
+# Local Claude Code workspace (plans, notes)
+/.claude/

@@ -43,7 +43,7 @@ public final class TrackingFixture {
 
 	public TrackingFixture(int capacity) {
 		when(probe.check()).thenReturn(ProbeResult.success());
-		aggregation = new AggregateChecks(store, clock, 100, capacity, 10, 100, 1000, 50);
+		aggregation = new AggregateChecks(store, clock, 100, capacity, 10, 100, 1000, 3000);
 		ExecuteCheck checks = new ExecuteCheck(probe, result -> {
 			Consumer<CheckResult> hook = beforeAdmission.get();
 			if (hook != null) hook.accept(result);

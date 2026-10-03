@@ -17,8 +17,8 @@ public record UptimeEvent(UUID id, UUID sessionId, Instant bucketStart, Instant 
         Objects.requireNonNull(status, "status");
         badEvents = List.copyOf(badEvents);
         unknownIntervals = List.copyOf(unknownIntervals);
-        if (bucketStart.getNano() != 0 || windowStart.isBefore(bucketStart)
-                || windowEnd.isAfter(bucketStart.plusSeconds(1)) || windowEnd.isBefore(windowStart)
+        if (!bucketStart.equals(UptimeWindowPolicy.bucketStart(bucketStart)) || windowStart.isBefore(bucketStart)
+                || windowEnd.isAfter(UptimeWindowPolicy.end(bucketStart)) || windowEnd.isBefore(windowStart)
                 || totalChecks < 0 || successfulChecks < 0 || successfulChecks > totalChecks) {
             throw new IllegalArgumentException("Invalid window bounds or counts");
         }

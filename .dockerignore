@@ -3,6 +3,9 @@
 **/.anchor
 **/test-ledger
 **/.surfpool
+**/dist
+**/.vite
+.playwright-mcp
 .git
 
 # secret keys — never bake into an image

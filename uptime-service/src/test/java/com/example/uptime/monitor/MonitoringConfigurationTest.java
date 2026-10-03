@@ -40,7 +40,7 @@ class MonitoringConfigurationTest {
 						.withBean(ObjectMapper.class, () -> JsonMapper.builder().build())
 			.withBean(ApplicationStateHealthIndicator.class,
 					() -> new ApplicationStateHealthIndicator(new ApplicationStateService()))
-			.withPropertyValues("uptime.sample-interval-ms=10", "uptime.flush-interval-ms=1000",
+			.withPropertyValues("uptime.sample-interval-ms=10000", "uptime.flush-interval-ms=1000",
 					"uptime.max-range-seconds=86400", "uptime.default-range-seconds=300");
 
 	@Test
@@ -53,11 +53,11 @@ class MonitoringConfigurationTest {
 			assertThat(properties.persistenceBatchSize()).isEqualTo(60);
 			assertThat(properties.retryInitialMs()).isEqualTo(1000);
 			assertThat(properties.retryMaxMs()).isEqualTo(30000);
-			assertThat(properties.maxObservationGapMs()).isEqualTo(50);
+			assertThat(properties.maxObservationGapMs()).isEqualTo(50000);
 			context.getBean(TrackingService.class).start();
 			context.getBean(ExecuteCheck.class).execute();
 			AggregateChecks aggregation = context.getBean(AggregateChecks.class);
-			aggregation.completeBefore(now.plusSeconds(1));
+			aggregation.completeBefore(now.plusSeconds(60));
 			aggregation.persistPending();
 			verify(store).saveAll(anyList());
 			assertThat(aggregation.status().pendingEvents()).isZero();

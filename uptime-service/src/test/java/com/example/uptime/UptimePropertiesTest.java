@@ -55,7 +55,7 @@ class UptimePropertiesTest {
 
 	@Test
 	void observationGapDefaultsAndValidationApplyToAllConstructors() {
-		assertEquals(50, new UptimeProperties(10, 1000, 3600, 300).maxObservationGapMs());
+		assertEquals(50000, new UptimeProperties(10, 1000, 3600, 300).maxObservationGapMs());
 		assertThrows(IllegalArgumentException.class,
 				() -> new UptimeProperties(10, 1000, 3600, 300, 3600, 60, 1000, 30000, 0));
 		assertThrows(IllegalArgumentException.class,

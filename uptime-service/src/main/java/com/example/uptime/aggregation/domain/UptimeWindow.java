@@ -17,7 +17,7 @@ public final class UptimeWindow {
     private final UUID sessionId;
     private final Instant bucketStart;
     private final Instant start;
-    private final int expectedPerSecond;
+    private final int expectedPerWindow;
     private final Set<UUID> checkIds = new HashSet<>();
     private final List<Fragment> fragments = new ArrayList<>();
     private final List<TimeRange> unknown = new ArrayList<>();
@@ -25,15 +25,15 @@ public final class UptimeWindow {
     private Instant coveredThrough;
     private UptimeEvent closed;
 
-    public UptimeWindow(UUID sessionId, Instant bucketStart, Instant start, int expectedPerSecond) {
-        if (bucketStart.getNano() != 0 || start.isBefore(bucketStart)
-                || !start.isBefore(bucketStart.plusSeconds(1)) || expectedPerSecond <= 0) {
+    public UptimeWindow(UUID sessionId, Instant bucketStart, Instant start, int expectedPerWindow) {
+        if (!bucketStart.equals(UptimeWindowPolicy.bucketStart(bucketStart)) || start.isBefore(bucketStart)
+                || !start.isBefore(UptimeWindowPolicy.end(bucketStart)) || expectedPerWindow <= 0) {
             throw new IllegalArgumentException("Invalid window configuration");
         }
         this.sessionId = java.util.Objects.requireNonNull(sessionId);
         this.bucketStart = bucketStart;
         this.start = start;
-        this.expectedPerSecond = expectedPerSecond;
+        this.expectedPerWindow = expectedPerWindow;
         this.coveredThrough = start;
     }
 
@@ -42,7 +42,7 @@ public final class UptimeWindow {
 
     public void observe(CheckResult result, UUID run, FailureKey key, Instant firstObservedAt) {
         ensureOpen();
-        if (result.observedAt().isBefore(start) || !result.observedAt().isBefore(bucketStart.plusSeconds(1))) {
+        if (result.observedAt().isBefore(start) || !result.observedAt().isBefore(UptimeWindowPolicy.end(bucketStart))) {
             throw new IllegalArgumentException("Observation outside window");
         }
         if (!checkIds.add(result.checkId())) return;
@@ -58,7 +58,7 @@ public final class UptimeWindow {
     public void cover(Instant from, Instant to, UUID run, FailureKey key,
             Instant first, Instant last, String message, boolean known) {
         ensureOpen();
-        if (!from.equals(coveredThrough) || to.isBefore(from) || to.isAfter(bucketStart.plusSeconds(1))) {
+        if (!from.equals(coveredThrough) || to.isBefore(from) || to.isAfter(UptimeWindowPolicy.end(bucketStart))) {
             throw new IllegalArgumentException("Coverage must extend the window contiguously within its bounds");
         }
         if (!to.isAfter(from)) return;
@@ -87,7 +87,7 @@ public final class UptimeWindow {
 
     public UptimeEvent close(Instant end) {
         if (closed != null) return closed;
-        if (end.isBefore(coveredThrough) || end.isAfter(bucketStart.plusSeconds(1))) {
+        if (end.isBefore(coveredThrough) || end.isAfter(UptimeWindowPolicy.end(bucketStart))) {
             throw new IllegalArgumentException("Invalid close boundary");
         }
         // Uncovered tail is unknown, not implicit healthy time.
@@ -100,8 +100,8 @@ public final class UptimeWindow {
                     unknown.add(new TimeRange(start, end));
                 }
                 long nanos = Duration.between(start, end).toNanos();
-        long expected = (long) Math.ceil(nanos / 1_000_000_000.0 * expectedPerSecond);
-        boolean partial = !start.equals(bucketStart) || !end.equals(bucketStart.plusSeconds(1))
+        long expected = (long) Math.ceil(nanos / (UptimeWindowPolicy.MILLIS * 1_000_000.0) * expectedPerWindow);
+        boolean partial = !start.equals(bucketStart) || !end.equals(UptimeWindowPolicy.end(bucketStart))
                 || !unknown.isEmpty() || checkIds.size() < expected;
         closed = new UptimeEvent(id, sessionId, bucketStart, start, end,
                 !bad.isEmpty() ? EventStatus.FAILED : !unknown.isEmpty() ? EventStatus.UNKNOWN : EventStatus.SUCCESS,

@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.example.uptime.UptimeProperties;
 import com.example.uptime.aggregation.domain.TimeRange;
+import com.example.uptime.aggregation.domain.UptimeWindowPolicy;
 import com.example.uptime.tracking.application.TrackingCoverage;
 import com.example.uptime.tracking.domain.TrackingSession;
 
@@ -47,7 +48,7 @@ public class UptimeQueryService {
 				.filter(e -> e.sessionId().equals(session.id()) && !time.isBefore(e.windowStart())
 						&& time.isBefore(e.windowEnd()))
 				.findFirst().map(this::details)
-				.orElseGet(() -> missing(session, time.truncatedTo(ChronoUnit.SECONDS), now));
+				.orElseGet(() -> missing(session, UptimeWindowPolicy.bucketStart(time), now));
 	}
 
 	/** Inclusive original bounds; session and event windows remain half-open. */
@@ -79,6 +80,7 @@ public class UptimeQueryService {
 			}
 			end = limit.minusNanos(1);
 		}
+		// Range configuration remains in seconds, independently of parent window duration.
 		Instant start = from;
 		if (start == null) {
 			start = max(latest.startedAt(), end.truncatedTo(ChronoUnit.SECONDS)
@@ -93,14 +95,14 @@ public class UptimeQueryService {
 		List<TrackingSession> sessions = covered(start, end, now);
 		Map<UUID, Map<Instant, List<UptimeHistoryEntry>>> entries = reader.range(start, end).stream()
 				.collect(Collectors.groupingBy(UptimeHistoryEntry::sessionId,
-						Collectors.groupingBy(UptimeHistoryEntry::bucketStart)));
+						Collectors.groupingBy(e -> UptimeWindowPolicy.bucketStart(e.bucketStart()))));
 		List<UptimePoint> points = new ArrayList<>();
 		for (TrackingSession session : sessions) {
 			Instant first = max(start, session.startedAt());
 			Instant last = min(end, endOf(session, now).minusNanos(1));
 			if (first.isAfter(last)) continue;
-			for (Instant bucket = first.truncatedTo(ChronoUnit.SECONDS); !bucket.isAfter(last);
-					bucket = bucket.plusSeconds(1)) {
+			for (Instant bucket = UptimeWindowPolicy.bucketStart(first); !bucket.isAfter(last);
+					bucket = UptimeWindowPolicy.end(bucket)) {
 				Instant b = bucket;
 				List<UptimeHistoryEntry> parents = entries.getOrDefault(session.id(), Map.of())
 						.getOrDefault(b, List.of()).stream()
@@ -140,7 +142,7 @@ public class UptimeQueryService {
 
 	private UptimeEventDetails missing(TrackingSession session, Instant bucket, Instant now) {
 		Instant start = max(bucket, session.startedAt());
-		Instant end = min(bucket.plusSeconds(1), endOf(session, now));
+		Instant end = min(UptimeWindowPolicy.end(bucket), endOf(session, now));
 		String status = session.committedThrough() == null || end.isAfter(session.committedThrough())
 				? "PENDING" : "UNKNOWN";
 		return new UptimeEventDetails(null, session.id(), bucket, start, end, status, 0, 0, 0,

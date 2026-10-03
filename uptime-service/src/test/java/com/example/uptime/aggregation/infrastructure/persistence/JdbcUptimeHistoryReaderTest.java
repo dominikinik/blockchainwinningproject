@@ -25,14 +25,14 @@ class JdbcUptimeHistoryReaderTest {
 		var reader = new JdbcUptimeHistoryReader(jdbc, json);
 		Instant start = Instant.parse("2026-10-03T12:00:00Z");
 		StoredEvent event = new StoredEvent(UUID.randomUUID(), UUID.randomUUID(), start, start,
-				start.plusSeconds(1), EventStatus.FAILED, 100, 98, false, List.of());
+				start.plusSeconds(60), EventStatus.FAILED, 6, 4, false, List.of());
 		List<UUID> ids = List.of(UUID.randomUUID(), UUID.randomUUID());
 		ResultSet row = mock(ResultSet.class);
 		when(row.getString(1)).thenReturn(json.write(event));
 		when(row.getString(2)).thenReturn(json.write(ids));
 		when(jdbc.query(contains("FROM uptime_event e"), any(RowMapper.class), any(Object[].class)))
 				.thenAnswer(call -> List.of(((RowMapper<UptimeHistoryEntry>) call.getArgument(1)).mapRow(row, 0)));
-		assertThat(reader.range(start, start.plusMillis(999))).singleElement()
+		assertThat(reader.range(start, start.plusSeconds(59))).singleElement()
 				.satisfies(entry -> assertThat(entry.badEventIds()).containsExactlyElementsOf(ids));
 		verify(jdbc, times(1)).query(contains("FROM uptime_event e"), any(RowMapper.class), any(Object[].class));
 		verifyNoMoreInteractions(jdbc);

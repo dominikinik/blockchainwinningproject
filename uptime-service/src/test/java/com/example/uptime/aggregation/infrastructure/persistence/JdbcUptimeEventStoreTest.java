@@ -20,7 +20,7 @@ class JdbcUptimeEventStoreTest {
 	private final PersistenceJson json = new PersistenceJson(JsonMapper.builder().build());
 	private final JdbcUptimeEventStore store = new JdbcUptimeEventStore(jdbc, json);
 	static UptimeEvent success(UUID session, Instant start) {
-		return new UptimeEvent(UUID.randomUUID(), session, start.truncatedTo(java.time.temporal.ChronoUnit.SECONDS),
+		return new UptimeEvent(UUID.randomUUID(), session, start.truncatedTo(java.time.temporal.ChronoUnit.MINUTES),
 				start, start.plusNanos(100), EventStatus.SUCCESS, 3, 3, true, List.of(), List.of());
 	}
 	@Test
@@ -63,7 +63,7 @@ class JdbcUptimeEventStoreTest {
 		when(jdbc.query(startsWith("SELECT payload::text FROM bad_event"), any(RowMapper.class), any(Object[].class)))
 				.thenReturn(List.of(json.write(first), json.write(second)));
 		for (List<BadEvent> children : List.of(List.of(first), List.of(first, second, extra))) {
-			UptimeEvent retry = new UptimeEvent(eventId, sessionId, start.truncatedTo(java.time.temporal.ChronoUnit.SECONDS), start,
+			UptimeEvent retry = new UptimeEvent(eventId, sessionId, start.truncatedTo(java.time.temporal.ChronoUnit.MINUTES), start,
 					start.plusNanos(100), EventStatus.FAILED, 2, 0, true, children, List.of());
 			assertThatThrownBy(() -> store.saveAll(List.of(retry))).isInstanceOf(IllegalStateException.class)
 					.hasMessageContaining("Conflicting finalized uptime event");
@@ -86,7 +86,7 @@ class JdbcUptimeEventStoreTest {
 	@Test
 	void unknownIntervalJsonRoundTripsExactNanoseconds() {
 		Instant start = Instant.parse("2001-01-01T00:00:00.123456789Z");
-		UptimeEvent event = new UptimeEvent(UUID.randomUUID(), UUID.randomUUID(), start.truncatedTo(java.time.temporal.ChronoUnit.SECONDS),
+		UptimeEvent event = new UptimeEvent(UUID.randomUUID(), UUID.randomUUID(), start.truncatedTo(java.time.temporal.ChronoUnit.MINUTES),
 				start, start.plusNanos(7), EventStatus.UNKNOWN, 0, 0, true, List.of(), List.of(new TimeRange(start, start.plusNanos(7))));
 		assertThat(json.read(json.write(event), UptimeEvent.class)).isEqualTo(event);
 		assertThat(json.eventPayload(event)).contains(start.toString(), start.plusNanos(7).toString());

@@ -57,7 +57,7 @@ class JdbcUptimeEventStorePostgresTest {
 		store.saveAll(List.of(original, original));
 		UptimeEvent changed = new UptimeEvent(original.id(), sessionId, original.bucketStart(), start,
 				original.windowEnd(), EventStatus.SUCCESS, 4, 4, true, List.of(), List.of());
-		UptimeEvent later = JdbcUptimeEventStoreTest.success(sessionId, start.plusSeconds(1));
+		UptimeEvent later = JdbcUptimeEventStoreTest.success(sessionId, start.plusSeconds(60));
 		assertThatThrownBy(() -> store.saveAll(List.of(later, changed))).isInstanceOf(IllegalStateException.class);
 		assertThat(reader.range(start, start.plusSeconds(2))).hasSize(1);
 		assertThat(tracking.find(sessionId).orElseThrow().committedThrough()).isEqualTo(original.windowEnd());
@@ -111,7 +111,7 @@ class JdbcUptimeEventStorePostgresTest {
 		BadEvent checkFailure = new BadEvent(UUID.randomUUID(), eventId, sessionId, BadEventType.CHECK_FAILURE,
 				start.plusNanos(5), start.plusNanos(100), start.plusNanos(5), start.plusNanos(6), 1,
 				new FailureKey(BadEventType.CHECK_FAILURE, "HTTP_TIMEOUT", "timeout"), "timed out");
-		UptimeEvent event = new UptimeEvent(eventId, sessionId, start.truncatedTo(java.time.temporal.ChronoUnit.SECONDS), start,
+		UptimeEvent event = new UptimeEvent(eventId, sessionId, start.truncatedTo(java.time.temporal.ChronoUnit.MINUTES), start,
 				start.plusNanos(100), EventStatus.FAILED, 2, 0, true, List.of(child, checkFailure), List.of());
 		store.saveAll(List.of(event, event));
 		assertThat(reader.badEvents(eventId)).containsExactly(child, checkFailure);
@@ -130,10 +130,10 @@ class JdbcUptimeEventStorePostgresTest {
 				2, 0, true, List.of(child, checkFailure, extra), List.of());
 		assertThatThrownBy(() -> store.saveAll(List.of(moreChildren))).isInstanceOf(IllegalStateException.class);
 		UUID secondId = UUID.randomUUID();
-		BadEvent duplicate = new BadEvent(child.id(), secondId, sessionId, child.type(), start.plusSeconds(1), start.plusSeconds(1).plusNanos(100),
-				start.plusSeconds(1), start.plusSeconds(1), 1, child.failureKey(), "duplicate UUID");
-		UptimeEvent invalid = new UptimeEvent(secondId, sessionId, start.plusSeconds(1).truncatedTo(java.time.temporal.ChronoUnit.SECONDS),
-				start.plusSeconds(1), start.plusSeconds(1).plusNanos(100), EventStatus.FAILED, 1, 0, true, List.of(duplicate), List.of());
+		BadEvent duplicate = new BadEvent(child.id(), secondId, sessionId, child.type(), start.plusSeconds(60), start.plusSeconds(60).plusNanos(100),
+				start.plusSeconds(60), start.plusSeconds(60), 1, child.failureKey(), "duplicate UUID");
+		UptimeEvent invalid = new UptimeEvent(secondId, sessionId, start.plusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.MINUTES),
+				start.plusSeconds(60), start.plusSeconds(60).plusNanos(100), EventStatus.FAILED, 1, 0, true, List.of(duplicate), List.of());
 		assertThatThrownBy(() -> store.saveAll(List.of(invalid))).isInstanceOf(RuntimeException.class);
 		assertThat(jdbc.queryForObject("SELECT count(*) FROM uptime_event WHERE id = ?", Integer.class, secondId)).isZero();
 		assertThat(reader.badEvents(eventId)).containsExactly(child, checkFailure);
@@ -151,7 +151,7 @@ class JdbcUptimeEventStorePostgresTest {
 		assertThat(recovered.status()).isEqualTo(TrackingStatus.INTERRUPTED);
 		assertThat(recovered.stoppedAt()).isEqualTo(event.windowEnd());
 		assertThat(tracking.events(sessionId)).contains(stop).hasSize(2);
-		assertThatThrownBy(() -> store.saveAll(List.of(JdbcUptimeEventStoreTest.success(sessionId, start.plusSeconds(1)))))
+		assertThatThrownBy(() -> store.saveAll(List.of(JdbcUptimeEventStoreTest.success(sessionId, start.plusSeconds(60)))))
 				.isInstanceOf(IllegalStateException.class);
 	}
 	@Test
@@ -165,13 +165,13 @@ class JdbcUptimeEventStorePostgresTest {
 	@Test
 	void completeStopWaitsForExactCommittedCutoffAndAllowsZeroLength() {
 		begin();
-		Instant boundary = start.truncatedTo(java.time.temporal.ChronoUnit.SECONDS).plusSeconds(1);
+		Instant boundary = start.truncatedTo(java.time.temporal.ChronoUnit.MINUTES).plusSeconds(60);
 		Instant cutoff = boundary.plusNanos(100);
 		tracking.saveStop(new TrackingSession(sessionId, start, cutoff, TrackingStatus.STOPPING, null),
 				new TrackingEvent(UUID.randomUUID(), sessionId, TrackingEventType.STOP, cutoff, null));
 		assertThatThrownBy(() -> tracking.completeStop(sessionId)).isInstanceOf(IllegalStateException.class);
 		assertThat(tracking.find(sessionId).orElseThrow().status()).isEqualTo(TrackingStatus.STOPPING);
-		UptimeEvent first = new UptimeEvent(UUID.randomUUID(), sessionId, start.truncatedTo(java.time.temporal.ChronoUnit.SECONDS),
+		UptimeEvent first = new UptimeEvent(UUID.randomUUID(), sessionId, start.truncatedTo(java.time.temporal.ChronoUnit.MINUTES),
 				start, boundary, EventStatus.SUCCESS, 1, 1, true, List.of(), List.of());
 		store.saveAll(List.of(first));
 		assertThatThrownBy(() -> tracking.completeStop(sessionId)).isInstanceOf(IllegalStateException.class);

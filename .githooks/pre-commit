@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks the commit unless every module's tests pass. Enable once per clone with:
+#   git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/test-all.sh"
