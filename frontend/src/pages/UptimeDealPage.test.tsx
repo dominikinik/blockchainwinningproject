@@ -201,10 +201,20 @@ describe('UptimeDealPage', () => {
     expect(screen.getByText('Lock 0.1 SOL to start the window')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Cancel deal' })).not.toBeInTheDocument()
 
+    expect(screen.getByTestId('deal-oracle')).toHaveTextContent('DGT7vw...56GjDd')
+    expect(screen.queryByTestId('foreign-oracle')).not.toBeInTheDocument()
+
     await userEvent.click(screen.getByRole('button', { name: 'Accept and lock guarantee' }))
     expect(acceptDeal).toHaveBeenCalledWith({
       connection, sendTransaction, programId: new PublicKey(config.programId), deal: new PublicKey(DEAL), recipient: new PublicKey(PROVIDER),
     })
+  })
+
+  it('warns the provider when the deal names an oracle other than this service', async () => {
+    connect(new PublicKey(PROVIDER))
+    vi.mocked(readDeal).mockResolvedValue(chainDeal({ oracle: WALLET, active: false, startsAt: null, providerStakeLamports: 1n }))
+    await createDeal()
+    expect(await screen.findByTestId('foreign-oracle')).toHaveTextContent(/names oracle .* not this service's monitor/)
   })
 
   it('lets the payer cancel a deal the provider has not accepted', async () => {

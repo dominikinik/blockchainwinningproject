@@ -60,7 +60,7 @@ The `/deal` page (`src/pages/UptimeDealPage.tsx`) is the one flow that uses no m
 
    When the account disappears, `readOutcome` reads the deal's last 10 transactions and decodes the program's `DealSettled` or `DealCancelled` event (`closedBy`). That event gives the verdict ("SLA met · escrow paid to recipient" / "SLA breached · escrow paid to payer" / "Cancelled · payment returned to payer") and the final counters. The backend's `GET /api/deals/{address}` is polled only for monitor info (`observations-sent`, monitor errors).
 5. Actions, all wallet-signed and sent to the program:
-   - "Accept and lock guarantee" (`acceptDeal`) for the connected recipient of a deal awaiting the provider.
+   - "Accept and lock guarantee" (`acceptDeal`) for the connected recipient of a deal awaiting the provider. The panel shows the deal's oracle. If it isn't this service's key, a `foreign-oracle` warning tells the provider before it accepts: the payer picks the oracle, and whoever holds that key reports every round.
    - "Cancel deal" (`cancelDeal`) for its payer while the deal awaits the provider.
    - "Settle now" (`settleDeal`) for **any** connected wallet once `starts_at + duration + OBSERVATION_GRACE_SECONDS` has passed. The instruction carries no figures. The service settles on its own too; whoever lands first closes the deal.
 6. "Simulate outage" / "Restore service" call `POST /api/application/{stop,start}`, so a manual test can force a breach.

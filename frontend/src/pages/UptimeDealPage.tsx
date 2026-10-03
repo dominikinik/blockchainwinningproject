@@ -301,6 +301,7 @@ export function UptimeDealPage() {
           <div className="summary-list">
             <div><span>Address</span><strong title={address}>{shortAddress(address, 6, 6)}</strong></div>
             {chain && <div><span>Terms</span><strong>{chain.durationSeconds}s · {chain.checkIntervalSeconds}s rounds · ≥ {formatBps(chain.minUptimeBps)}</strong></div>}
+            {chain && <div><span>Oracle</span><strong title={chain.oracle} data-testid="deal-oracle">{shortAddress(chain.oracle, 6, 6)}</strong></div>}
             <div><span>On-chain counters</span><strong data-testid="deal-counters">{counters}</strong></div>
             {chain && !closed && chain.active && <div><span>Projection (informational)</span><strong data-testid="deal-projection">{projection(chain)}</strong></div>}
             {recipientLabel && <div><span>Recipient</span><strong title={recipientLabel}>{shortAddress(recipientLabel, 6, 6)}</strong></div>}
@@ -309,6 +310,7 @@ export function UptimeDealPage() {
           </div>
           {awaitingProvider && me === chain?.recipient && <div className="agreement-escrow">
             <span>Lock {formatLamports(chain.providerStakeLamports)} to start the window</span>
+            {chain.oracle !== config?.oracle && <span role="alert" data-testid="foreign-oracle">This deal names oracle {shortAddress(chain.oracle, 6, 6)}, not this service's monitor. Whoever holds that key reports every round.</span>}
             <button type="button" className="button settle-button" onClick={accept} disabled={Boolean(busy)}>Accept and lock guarantee</button>
           </div>}
           {awaitingProvider && me === chain?.payer && <div className="agreement-escrow">

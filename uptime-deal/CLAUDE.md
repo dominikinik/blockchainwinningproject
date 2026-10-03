@@ -30,7 +30,7 @@ The `uptime_deal` Solana program (Rust, Anchor 1.1.2). It is an uptime SLA whose
 
 Uptime-service is the default oracle. It samples its own health during each round and sends `record_observation` once the round ends. Its Postgres history (`uptime-db`) is for the dashboard only and is never read for settlement. See `uptime-service/CLAUDE.md`, "Uptime deals". The frontend `/deal` page creates, accepts and settles deals with the wallet, and reads the counters straight from the account.
 
-Trust model: the oracle is trusted to report honestly what it saw. It can't invent rounds that haven't ended, count a round twice, report after the grace period, change the terms, or move funds. If it goes silent, its rounds count as down. Neither party can feed the counters.
+Trust model: the payer names the oracle in `create_deal`, and the provider accepts it by calling `accept_deal`. The provider must check it first; the frontend warns when it isn't the service's key. The oracle is trusted to report honestly what it saw. It can't invent rounds that haven't ended, count a round twice, report after the grace period, change the terms, or move funds. If it goes silent, its rounds count as down. Neither party can feed the counters.
 
 Events:
 - `DealCreated` (the terms), `DealStarted` (`starts_at`, `ends_at`), `ObservationRecorded` (the round, `up`, the counters after it), `DealSettled` (the counters, `min_uptime_bps`, `paid_to_recipient`, `payout_lamports`) and `DealCancelled`. Each starts with the deal's pubkey.
