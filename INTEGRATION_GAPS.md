@@ -33,7 +33,13 @@ The mock service assigns an ID and start/end timestamps, then returns the create
 
 ## Available now
 
-- **Uptime deal, end to end (`/deal`):** the wallet signs the real `uptime_deal` `create_deal` instruction, which locks SOL and fixes the uptime window on chain. `POST /api/deals` registers the deal with `uptime-service`, which is the program's oracle. After the window (for example 10 s), the service sends `settle_deal` with its own recorded up/total seconds. The program pays the recipient when uptime is above 99% and refunds the payer otherwise. The page shows the verdict and the recipient's on-chain balance. Covered by `frontend/e2e` (Playwright) and runnable by hand with `scripts/run-deal-demo.sh`. What it measures is the Java service's own health, not a customer endpoint. Tracked deals live in the service's memory, so a restart before settlement stops it from settling them; the payer can then reclaim the escrow with `cancel_deal` ("Reclaim escrow" on the page) 10 minutes after the window ends.
+- **Uptime deal, end to end (`/deal`): monitors observe, Solana decides.**
+  - The customer's wallet signs `create_deal`. It locks the payment and fixes every term on chain: window, check interval, minimum uptime in bps, and an optional provider guarantee. With a guarantee, the provider locks it with `accept_deal`.
+  - `uptime-service` is the program's oracle. It finds the deal through `POST /api/deals` or by discovering accounts that name it. It sends one `record_observation(round, up)` per round, and the program counts each round at most once, only after the round has ended.
+  - After the window and a 10 s observation grace, **anyone** can call `settle_deal`, which takes no arguments: the service, or "Settle now" on the page. The program compares `up_checks` with `min_uptime_bps × total_rounds` (unobserved rounds count as down) and pays the whole escrow to the provider or to the customer.
+  - The page reads the counters and the verdict from the chain. `uptime-db` is not involved in settlement.
+  - Covered by `frontend/e2e` (Playwright) and runnable by hand with `scripts/run-deal-demo.sh`. The monitor checks the Java service's own health, not a customer endpoint. The service rediscovers open deals after a restart, and rounds missed while it was down count as down.
+  - Still open: one trusted monitor, with no multi-monitor consensus, staking or slashing; native SOL only.
 
 - The Monitoring page reads the Java service's own `GET /api/application/state` and `GET /api/uptime?from=...&to=...` endpoints. The timeline shows recorded `UP` or `DOWN` seconds for the **Java service**, refreshing every 10 seconds. It does not measure customer API endpoints.
 - Vite proxies relative `/api` requests to `uptime-service` during development, so the browser does not need CORS. The target is `http://localhost:8080` by default, or `SLANA_UPTIME_SERVICE_TARGET`.

@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working in the 
 
 The local PostgreSQL 17 database for `uptime-service`, run with Docker Compose (`postgres:17-alpine`, container `uptime-db`). This module owns the schema and the data files. The service only validates against the schema (`ddl-auto=validate`) and never creates tables itself.
 
+The data is detailed per-second history for the dashboard, the API, debugging and analytics. It is **not** an input to deal settlement: the `uptime_deal` program keeps the authoritative SLA counters on chain, so deleting this database, even right before a settlement, doesn't change any outcome.
+
 ## Commands
 
 Run these from the repo root (or drop the `-f` path when running from `uptime-db/`):
