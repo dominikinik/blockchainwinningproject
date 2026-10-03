@@ -31,6 +31,10 @@ npx vitest run -t "settles an ended SLA"        # single test by name
 - React must not determine SLA success, consensus, or actual settlement. When the Anchor program is available, replace the mock service methods with wallet-signed instructions and program account reads.
 - `src/services/uptime/uptimeService.ts` reads `GET /api/application/state` and `GET /api/uptime` from the Java backend. The Monitoring page renders a live five-minute, per-second timeline of the backend's own health, refreshed every 10 seconds. It does not score a customer's SLA.
 - The Create SLA page remains available. `createSLA()` saves a demo agreement in browser `localStorage`; no SOL is locked. SLA uptime and monitor observations stay mocked until endpoint-specific monitoring and Solana integration exist.
+- `durationDays` and `checkIntervalMinutes` also accept fractional values for seconds/minutes in demo terms. `src/lib/agreementTerms.ts` owns the selectable values and labels. New demo agreements can expire within 30 seconds; the pages show a second-by-second countdown. The mock service makes ended agreements ready for a request, but records no payout or transaction for newly created agreements without monitor evidence.
+- The Create SLA form always shows 10-second, 1-minute, 5-minute, and 10-minute intervals. It warns and rejects submission when the selected interval exceeds the agreement duration. This is form validation only; it does not perform uptime checks.
+- Request timeout remains a fixed 2,000 ms field in the mock SLA model and create payload; the form and details page do not expose it while customer endpoint monitoring is absent.
+- The current MVP uses one monitoring server. `consensusRequired=1` and `monitorCount=1` remain in mock models for compatibility, but the Create SLA and details pages do not expose consensus controls or panels.
 
 ## Same-origin development API
 
