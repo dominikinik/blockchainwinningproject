@@ -9,22 +9,36 @@ pub enum DealError {
     RecipientIsPayer,
     #[msg("Signer is not the deal's oracle")]
     UnauthorizedOracle,
+    /// No longer returned: `settle_deal` takes no uptime figures since the counters moved on chain.
     #[msg("Uptime needs total_seconds > 0 and up_seconds <= total_seconds")]
     InvalidUptime,
     #[msg("Deal duration must be between 1 second and MAX_DEAL_DURATION_SECONDS")]
     InvalidDuration,
+    /// No longer returned: an active deal is never cancelled, anyone can settle it instead.
     #[msg("The deal can be cancelled only CANCEL_TIMEOUT_SECONDS after its window ends")]
     CancelTooEarly,
-    #[msg("Deal guarantee is below the minimum")]
-    GuaranteeTooSmall,
-    #[msg("The deal is not a proposal waiting for acceptance")]
-    DealNotProposed,
-    #[msg("The deal has not been accepted yet")]
+    #[msg("Check interval must divide the duration into 1 to MAX_ROUNDS rounds")]
+    InvalidCheckInterval,
+    #[msg("Minimum uptime must be between 1 and 10,000 basis points")]
+    InvalidThreshold,
+    #[msg("The deal is waiting for the provider's guarantee")]
     DealNotActive,
-    #[msg("The proposal can no longer be accepted")]
+    #[msg("The provider has already accepted the deal")]
+    DealAlreadyActive,
+    #[msg("Round is outside the deal's window")]
+    RoundOutOfRange,
+    #[msg("Round has not ended yet on the chain clock")]
+    RoundNotEnded,
+    #[msg("Round was already recorded")]
+    RoundAlreadyRecorded,
+    #[msg("Observations closed OBSERVATION_GRACE_SECONDS after the window ended")]
+    ObservationsClosed,
+    #[msg("The deal can be settled only OBSERVATION_GRACE_SECONDS after its window ends")]
+    SettleTooEarly,
+    #[msg("Arithmetic overflow")]
+    Overflow,
+    #[msg("Round has not started yet on the chain clock")]
+    RoundNotStarted,
+    #[msg("The provider acceptance deadline has passed")]
     AcceptExpired,
-    #[msg("The accepted terms differ from the deal's terms")]
-    TermsMismatch,
-    #[msg("Only the deal's payer or recipient can cancel it")]
-    NotAParty,
 }

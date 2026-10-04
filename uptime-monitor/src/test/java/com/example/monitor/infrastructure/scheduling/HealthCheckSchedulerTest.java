@@ -5,15 +5,15 @@ import static org.mockito.Mockito.verify;
 
 import org.junit.jupiter.api.Test;
 
-import com.example.monitor.application.TrackingService;
+import com.example.monitor.application.HealthRelay;
 
 class HealthCheckSchedulerTest {
 
 	@Test
-	void eachTickChecksEveryTrackedService() {
-		TrackingService tracking = mock(TrackingService.class);
-		new HealthCheckScheduler(tracking).checkAll();
-		verify(tracking).checkActive();
+	void eachTickRelaysTheProvidersHealth() {
+		HealthRelay relay = mock(HealthRelay.class);
+		new HealthCheckScheduler(relay).relay();
+		verify(relay).relay();
 	}
 
 }

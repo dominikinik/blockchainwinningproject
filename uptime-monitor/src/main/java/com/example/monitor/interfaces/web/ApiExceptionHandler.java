@@ -7,7 +7,6 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-import com.example.monitor.domain.TrackingException;
 import com.example.monitor.domain.deal.DealAlreadyRegisteredException;
 import com.example.monitor.infrastructure.solana.SolanaRpc.SolanaRpcException;
 
@@ -22,11 +21,6 @@ public class ApiExceptionHandler {
 	@ExceptionHandler(NoSuchElementException.class)
 	ProblemDetail notFound(NoSuchElementException e) {
 		return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
-	}
-
-	@ExceptionHandler(TrackingException.class)
-	ProblemDetail conflict(TrackingException e) {
-		return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
 	}
 
 	@ExceptionHandler(DealAlreadyRegisteredException.class)

@@ -3,7 +3,6 @@ package com.example.monitor.infrastructure.solana;
 import java.util.List;
 
 import com.example.monitor.domain.deal.DealChain;
-import com.example.monitor.domain.deal.Verdict;
 import com.example.monitor.infrastructure.solana.DealProgram.DealAccount;
 import com.example.monitor.infrastructure.solana.DealProgram.Outcome;
 import com.example.monitor.infrastructure.solana.SolanaRpc.AccountInfo;
@@ -69,16 +68,26 @@ public class SolanaDealChain implements DealChain {
 		}
 		DealAccount deal = DealProgram.decodeDeal(account.data());
 		return new ChainDeal(deal.payer(), deal.recipient(), deal.oracle(), deal.amountLamports(),
-				deal.guaranteeLamports(), deal.durationSeconds(), deal.acceptDeadline(), deal.startsAt());
+				deal.providerStakeLamports(), deal.durationSeconds(), deal.checkIntervalSeconds(), deal.minUptimeBps(),
+				deal.totalRounds(), deal.upChecks(), deal.downChecks(), deal.recorded(), deal.acceptDeadline(), deal.startsAt());
 	}
 
 	@Override
-	public String sendSettle(String address, ChainDeal deal, Verdict verdict) {
+	public String recordObservation(String address, ChainDeal deal, int round, boolean up) {
+		byte[] tx = SolanaTransaction.signed(oracle,
+				List.of(DealProgram.observationInstruction(programId, oracle.address(), address, round, up)),
+				rpc.getLatestBlockhash());
+		return rpc.sendTransaction(tx);
+	}
+
+	@Override
+	public String sendSettle(String address, ChainDeal deal) {
 		DealAccount account = new DealAccount(deal.payer(), deal.recipient(), deal.oracle(), 0, deal.amountLamports(),
-				deal.guaranteeLamports(), deal.durationSeconds(), deal.acceptDeadline(), deal.startsAt(),
-				deal.accepted() ? DealProgram.DealStatus.ACTIVE : DealProgram.DealStatus.PROPOSED);
+				deal.guaranteeLamports(), deal.acceptDeadline(), deal.accepted(), deal.startsAt(), deal.durationSeconds(),
+				deal.checkIntervalSeconds(), deal.minUptimeBps(), deal.totalRounds(), deal.upChecks(), deal.downChecks(),
+				deal.recorded());
 		byte[] tx = SolanaTransaction.signed(oracle, List.of(DealProgram.settleInstruction(programId, oracle.address(),
-				address, account, verdict.upSeconds(), verdict.totalSeconds())), rpc.getLatestBlockhash());
+				address, account)), rpc.getLatestBlockhash());
 		return rpc.sendTransaction(tx);
 	}
 
@@ -123,7 +132,9 @@ public class SolanaDealChain implements DealChain {
 
 	private static Closure toClosure(Outcome outcome) {
 		return outcome == null ? null
-				: new Closure(outcome.cancelled(), outcome.paidToRecipient(), outcome.upSeconds(), outcome.totalSeconds());
+				: new Closure(outcome.cancelled(), outcome.paidToRecipient(),
+						outcome.upChecks() == null ? null : outcome.upChecks().longValue(),
+						outcome.totalRounds() == null ? null : outcome.totalRounds().longValue());
 	}
 
 }

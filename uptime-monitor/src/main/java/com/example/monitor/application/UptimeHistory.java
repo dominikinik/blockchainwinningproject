@@ -4,20 +4,16 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 
-import com.example.monitor.domain.ServiceId;
-import com.example.monitor.domain.TrackingEvent;
-import com.example.monitor.domain.TrackingEvent.Downtime;
-import com.example.monitor.domain.TrackingEvent.TrackingFinished;
-import com.example.monitor.domain.TrackingEvent.TrackingStarted;
-import com.example.monitor.domain.TrackingEventStore;
-
 /**
- * Read model: a service's uptime per second, derived from its events. A second is down when the service
- * wasn't being tracked during it, or when it falls in the check interval that starts at a {@code Downtime}
- * event ({@code [t, t + interval)}), the same rule the deal measurement uses.
+ * The provider's uptime per second, kept in memory from the health results the proxy relayed since it started. A
+ * second is down before the first result, and when it falls in the check interval that starts at a DOWN result
+ * ({@code [t, t + interval)}). Results older than {@code maxRangeSeconds} are dropped, so memory stays bounded and a
+ * restart starts the history over.
  */
 public class UptimeHistory {
 
@@ -25,19 +21,42 @@ public class UptimeHistory {
 	public record Point(Instant time, boolean down) {
 	}
 
-	private final TrackingEventStore events;
-
 	private final Clock clock;
+
+	private final Duration interval;
 
 	private final long defaultRangeSeconds;
 
 	private final long maxRangeSeconds;
 
-	public UptimeHistory(TrackingEventStore events, Clock clock, long defaultRangeSeconds, long maxRangeSeconds) {
-		this.events = events;
+	private Instant firstResult;
+
+	private final Deque<Instant> downs = new ArrayDeque<>();
+
+	/**
+	 * @param interval            how long one health result stands for: the check interval
+	 * @param defaultRangeSeconds length of the range when {@code from} is omitted
+	 * @param maxRangeSeconds     longest range served, and how long results are kept
+	 */
+	public UptimeHistory(Clock clock, Duration interval, long defaultRangeSeconds, long maxRangeSeconds) {
 		this.clock = clock;
+		this.interval = interval;
 		this.defaultRangeSeconds = defaultRangeSeconds;
 		this.maxRangeSeconds = maxRangeSeconds;
+	}
+
+	/** Adds one health result observed at {@code at}. */
+	public synchronized void record(Instant at, boolean up) {
+		if (firstResult == null) {
+			firstResult = at;
+		}
+		if (!up) {
+			downs.addLast(at);
+		}
+		Instant oldest = at.minusSeconds(maxRangeSeconds).minus(interval);
+		while (!downs.isEmpty() && downs.peekFirst().isBefore(oldest)) {
+			downs.removeFirst();
+		}
 	}
 
 	/**
@@ -46,7 +65,7 @@ public class UptimeHistory {
 	 *
 	 * @throws IllegalArgumentException if {@code from} is after {@code to} or the range is too long
 	 */
-	public List<Point> range(ServiceId service, Instant from, Instant to) {
+	public synchronized List<Point> range(Instant from, Instant to) {
 		Instant end = (to != null ? to : clock.instant()).truncatedTo(ChronoUnit.SECONDS);
 		Instant start = (from != null ? from : end.minusSeconds(defaultRangeSeconds - 1)).truncatedTo(ChronoUnit.SECONDS);
 		if (start.isAfter(end)) {
@@ -57,29 +76,9 @@ public class UptimeHistory {
 			throw new IllegalArgumentException("Range of " + seconds + "s exceeds maximum of " + maxRangeSeconds + "s");
 		}
 		boolean[] up = new boolean[(int) seconds];
-		Instant periodStart = null;
-		Duration interval = Duration.ZERO;
-		List<Instant[]> downs = new ArrayList<>();
-		for (TrackingEvent event : events.load(service)) {
-			switch (event) {
-				case TrackingStarted e -> {
-					periodStart = e.occurredAt();
-					interval = e.checkInterval();
-				}
-				case TrackingFinished e -> {
-					mark(up, start, periodStart, e.occurredAt(), true);
-					periodStart = null;
-				}
-				case Downtime e -> downs.add(new Instant[] { e.occurredAt(), e.occurredAt().plus(interval) });
-				default -> {
-				}
-			}
-		}
-		if (periodStart != null) {
-			mark(up, start, periodStart, end.plusSeconds(1), true);
-		}
-		for (Instant[] d : downs) {
-			mark(up, start, d[0], d[1], false);
+		mark(up, start, firstResult, end.plusSeconds(1), true);
+		for (Instant down : downs) {
+			mark(up, start, down, down.plus(interval), false);
 		}
 		List<Point> points = new ArrayList<>((int) seconds);
 		for (int i = 0; i < seconds; i++) {

@@ -1,6 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { ArrowRight, Coins, Copy, Droplets, ExternalLink, Handshake, LockKeyhole, Server, ShieldCheck, Timer } from 'lucide-react'
-import { useSearchParams } from 'react-router-dom'
+import { ArrowRight, Coins, Droplets, ExternalLink, Gavel, LockKeyhole, Server, ShieldCheck, Timer } from 'lucide-react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
 import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js'
@@ -11,16 +10,19 @@ import { useNow } from '../hooks/useNow'
 import { sameCluster, SOLANA_RPC_URL } from '../config/solana'
 import { explorerUrl, shortAddress } from '../lib/format'
 import { dealApi, type TrackedDeal } from '../services/deal/dealApi'
-import { CANCEL_TIMEOUT_SECONDS } from '../services/deal/dealProgram'
-import { acceptDeal, cancelDeal, openDeal, requestAirdrop } from '../services/deal/dealService'
+import { BPS_DENOMINATOR, OBSERVATION_GRACE_SECONDS, requiredUpRounds, totalRounds, type DealOutcome, type OnChainDeal } from '../services/deal/dealProgram'
+import { acceptDeal, cancelDeal, openDeal, readDeal, readOutcome, requestAirdrop, settleDeal } from '../services/deal/dealService'
 import { uptimeService, type UptimeServiceState } from '../services/uptime/uptimeService'
 
 const AIRDROP_LAMPORTS = 2 * LAMPORTS_PER_SOL
 /**
- * Balances also refresh right after every action and status change, so a slow background poll is enough. A
- * 2 s poll per balance, per open tab, exhausted the public Devnet RPC's per-IP limit and blocked transactions.
+ * Balances also refresh right after every action and when the deal closes, so a slow background poll is enough.
+ * A 2 s poll per balance, per open tab, exhausted the public Devnet RPC's per-IP limit and blocked transactions.
  */
 const BALANCE_POLL_MS = 10_000
+
+/** How a followed deal was closed: its event and transaction, or 'unknown' when no event was found. */
+export type ClosedDeal = { outcome: DealOutcome; signature: string } | 'unknown'
 
 /**
  * Formats lamports as SOL with up to 9 decimals.
@@ -28,53 +30,79 @@ const BALANCE_POLL_MS = 10_000
  * @param lamports the amount, or null when unknown
  * @returns e.g. "0.5 SOL", or "—" when unknown
  */
-export function formatLamports(lamports: number | null): string {
+export function formatLamports(lamports: number | bigint | null): string {
   if (lamports === null) return '—'
-  return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 9 }).format(lamports / LAMPORTS_PER_SOL)} SOL`
+  return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 9 }).format(Number(lamports) / LAMPORTS_PER_SOL)} SOL`
 }
 
 /**
- * Describes where a tracked deal stands.
+ * Tells when the program opens settlement (and closes observations) for a deal.
  *
- * @param deal the tracked deal
+ * @param deal the on-chain deal
+ * @returns the time in ms, or null while the deal waits for the provider
+ */
+export function settleOpensAt(deal: OnChainDeal): number | null {
+  if (deal.startsAt === null) return null
+  return (deal.startsAt + deal.durationSeconds + OBSERVATION_GRACE_SECONDS) * 1000
+}
+
+/**
+ * Describes where a deal stands, from on-chain state only.
+ *
+ * @param deal the deal account, or null when not read yet
+ * @param closed how the deal was closed, or null while its account exists
  * @param now the current time in ms
  * @returns a short status line for the deal panel
  */
-export function dealVerdict(deal: TrackedDeal, now: number): string {
-  if (deal.status === 'CANCELLED') return 'Cancelled · deposits returned'
-  if (deal.status === 'FAILED') return `Settlement failed: ${deal.error ?? 'unknown error'}`
-  if (deal.status === 'SETTLED') {
-    if (deal.paidToRecipient === true) return 'Paid to recipient'
-    if (deal.paidToRecipient === false) return 'Refunded to payer'
-    return 'Settled'
+export function dealVerdict(deal: OnChainDeal | null, closed: ClosedDeal | null, now: number): string {
+  if (closed === 'unknown') return 'Closed on chain'
+  if (closed) {
+    if (closed.outcome.cancelled) return 'Cancelled · payment returned to payer'
+    return closed.outcome.paidToRecipient ? 'SLA met · escrow paid to recipient' : 'SLA breached · escrow paid to payer'
   }
-  if (deal.status === 'PROPOSED' || !deal.startsAt || !deal.endsAt) {
-    return Date.parse(deal.acceptDeadline) > now ? 'Waiting for the provider to accept' : 'Proposal expired · withdraw it to get your payment back'
-  }
-  const left = Math.ceil((Date.parse(deal.endsAt) - now) / 1000)
-  if (Date.parse(deal.startsAt) > now) return 'Window starts in a moment'
-  return left > 0 ? `Measuring uptime · ${left}s left` : 'Settling on chain…'
+  if (!deal) return 'Reading the deal from chain…'
+  if (deal.startsAt === null) return 'Waiting for the provider to lock its guarantee'
+  const endsAt = (deal.startsAt + deal.durationSeconds) * 1000
+  if (now < endsAt) return `Monitoring · ${Math.ceil((endsAt - now) / 1000)}s left`
+  const opens = settleOpensAt(deal) ?? 0
+  if (now < opens) return `Collecting the last observations · settlement opens in ${Math.ceil((opens - now) / 1000)}s`
+  return 'Ready to settle on chain'
 }
 
 /**
- * Tells when a party may reclaim the deposits of an accepted deal the oracle didn't settle.
+ * Summarises the program's counters.
  *
- * @param deal the tracked deal
- * @returns the time in ms from which `cancel_deal` is accepted; 0 when the deal has no window, since a
- *   proposal can be cancelled at any time
+ * @param up rounds recorded UP
+ * @param down rounds recorded DOWN
+ * @param total rounds in the window
+ * @returns e.g. "9 up · 1 down · 0 unobserved / 10 rounds"
  */
-export function reclaimableAt(deal: TrackedDeal): number {
-  return deal.endsAt ? Date.parse(deal.endsAt) + CANCEL_TIMEOUT_SECONDS * 1000 : 0
+export function counterLine(up: number, down: number, total: number): string {
+  return `${up} up · ${down} down · ${total - up - down} unobserved / ${total} rounds`
 }
 
 /**
- * Builds the link a payer sends to the provider so it can review and accept a proposal.
+ * Formats a basis-point threshold as a percentage.
  *
- * @param address the deal address
- * @returns an absolute URL of this page with `?deal=<address>`
+ * @param bps the threshold in basis points
+ * @returns e.g. "99%" or "99.5%"
  */
-export function dealLink(address: string): string {
-  return `${window.location.origin}/deal?deal=${encodeURIComponent(address)}`
+export function formatBps(bps: number): string {
+  return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(bps / 100)}%`
+}
+
+/**
+ * An informational projection from the counters. The program alone decides; this only says whether the
+ * provider can still reach the threshold if every remaining round is UP.
+ *
+ * @param deal the on-chain deal
+ * @returns a short projection line
+ */
+export function projection(deal: OnChainDeal): string {
+  const required = requiredUpRounds(deal.totalRounds, deal.minUptimeBps)
+  if (deal.upChecks >= required) return 'Threshold already reached'
+  if (deal.totalRounds - deal.downChecks < required) return 'Threshold can no longer be reached'
+  return `${required - deal.upChecks} more UP rounds needed`
 }
 
 /** A transaction this window's wallet signed for the current deal. */
@@ -96,34 +124,32 @@ function ExplorerLink({ kind, value, testId }: { kind: 'tx' | 'address'; value: 
   </a>
 }
 
-/** Writes text to the clipboard, ignoring browsers that refuse it. */
-async function copy(text: string): Promise<void> {
-  try { await navigator.clipboard.writeText(text) } catch { /* nothing to copy into */ }
-}
-
-/**
- * Proposes a real on-chain uptime deal, lets the provider accept it from a shared link, and follows it until
- * the uptime service settles it.
- */
+/** Creates a real on-chain uptime SLA and follows it, from chain state, until the program settles it. */
 export function UptimeDealPage() {
   const { connection } = useConnection()
   const { publicKey, sendTransaction } = useWallet()
   const now = useNow()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const linkedDeal = searchParams.get('deal')
   const { data: config, error: configError, reload: reloadConfig } = useAsyncData(() => dealApi.getConfig(), [])
   const [serviceState, setServiceState] = useState<UptimeServiceState | null>(null)
   const [recipient, setRecipient] = useState('')
   const [amountSol, setAmountSol] = useState('0.5')
-  const [guaranteeSol, setGuaranteeSol] = useState('0.5')
+  const [stakeSol, setStakeSol] = useState('0')
   const [durationSeconds, setDurationSeconds] = useState('10')
+  const [intervalSeconds, setIntervalSeconds] = useState('2')
+  const [minUptimePercent, setMinUptimePercent] = useState('99')
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [deal, setDeal] = useState<TrackedDeal | null>(null)
+  const [address, setAddress] = useState<string | null>(null)
+  const [chain, setChain] = useState<OnChainDeal | null>(null)
+  const [closed, setClosed] = useState<ClosedDeal | null>(null)
+  const [monitor, setMonitor] = useState<TrackedDeal | null>(null)
   const [txs, setTxs] = useState<DealTx[]>([])
-  const [tracked, setTracked] = useState<TrackedDeal[]>([])
   const wallet = useBalance(connection, publicKey?.toBase58(), BALANCE_POLL_MS)
-  const recipientBalance = useBalance(connection, deal?.recipient, BALANCE_POLL_MS)
+  const recipientBalance = useBalance(connection, chain?.recipient ?? monitor?.recipient, BALANCE_POLL_MS)
+
+  useEffect(() => {
+    if (config) setIntervalSeconds(String(config.checkIntervalSeconds))
+  }, [config])
 
   useEffect(() => {
     const load = () => uptimeService.getState().then(setServiceState, () => setServiceState(null))
@@ -132,54 +158,46 @@ export function UptimeDealPage() {
     return () => window.clearInterval(interval)
   }, [])
 
-  // A provider finds the proposals addressed to its wallet here, without reloading the page: a reload
-  // gives the burner wallet a new key, which would no longer be the deal's provider.
-  const me = publicKey?.toBase58()
+  // The deal account is the authority: poll it until it closes, then read the program's closing event.
+  const programId = config?.programId
   useEffect(() => {
-    if (!me) return
-    const load = () => dealApi.list().then(setTracked, () => undefined)
+    if (!address || !programId || closed) return
+    let cancelled = false
+    const load = async () => {
+      try {
+        const deal = await readDeal(connection, new PublicKey(programId), new PublicKey(address))
+        if (cancelled) return
+        if (deal) { setChain(deal); return }
+        const outcome = await readOutcome(connection, new PublicKey(address))
+        if (!cancelled) setClosed(outcome ?? 'unknown')
+      } catch { /* keep the last state and retry */ }
+    }
     void load()
-    const interval = window.setInterval(load, 2000)
-    return () => window.clearInterval(interval)
-  }, [me])
+    const interval = window.setInterval(() => void load(), 1000)
+    return () => { cancelled = true; window.clearInterval(interval) }
+  }, [address, programId, closed, connection])
 
+  // The service's view is informational: how many observations it sent, and any settlement error.
   useEffect(() => {
-    if (!linkedDeal) return
-    let ignore = false
-    dealApi.get(linkedDeal).then(
-      (found) => { if (!ignore) setDeal(found) },
-      (cause: unknown) => { if (!ignore) setError(`Deal ${linkedDeal} could not be loaded: ${cause instanceof Error ? cause.message : 'unknown error'}`) },
-    )
-    return () => { ignore = true }
-  }, [linkedDeal])
-
-  const dealAddress = deal?.address
-  const dealDone = deal?.status === 'SETTLED' || deal?.status === 'FAILED' || deal?.status === 'CANCELLED'
-  useEffect(() => {
-    if (!dealAddress || dealDone) return
-    const load = () => dealApi.get(dealAddress).then(setDeal, () => undefined)
+    if (!address || closed) return
+    const load = () => dealApi.get(address).then(setMonitor, () => undefined)
     void load()
     const interval = window.setInterval(load, 1000)
     return () => window.clearInterval(interval)
-  }, [dealAddress, dealDone])
+  }, [address, closed])
 
-  const dealStatus = deal?.status
   useEffect(() => {
-    if (dealDone || dealStatus === 'ACTIVE') {
+    if (closed) {
       void recipientBalance.refresh()
       void wallet.refresh()
     }
-  }, [dealDone, dealStatus]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [closed]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const clusterMismatch = config !== undefined && config !== null && !sameCluster(config.rpcUrl, SOLANA_RPC_URL)
-  const incoming = tracked.filter((d) => d.status === 'PROPOSED' && d.recipient === me && d.address !== deal?.address && Date.parse(d.acceptDeadline) > now)
-  const isPayer = Boolean(deal && me && deal.payer === me)
-  const isRecipient = Boolean(deal && me && deal.recipient === me)
-  const proposed = deal?.status === 'PROPOSED'
-  const acceptOpen = Boolean(deal && proposed && Date.parse(deal.acceptDeadline) > now)
-  const stuck = deal !== null && (deal.status === 'FAILED' || (deal.status === 'ACTIVE' && now >= reclaimableAt(deal)))
-  const reclaimAt = deal ? reclaimableAt(deal) : null
-  const canReclaim = reclaimAt !== null && now >= reclaimAt
+  const me = publicKey?.toBase58()
+  const awaitingProvider = chain !== null && !closed && !chain.active
+  const opensAt = chain ? settleOpensAt(chain) : null
+  const canSettle = chain !== null && !closed && chain.active && opensAt !== null && now >= opensAt && Boolean(publicKey)
 
   async function run(label: string, action: () => Promise<void>) {
     setBusy(label)
@@ -207,144 +225,138 @@ export function UptimeDealPage() {
     })
   }
 
-  function cancel(label: string) {
-    if (!publicKey || !config || !deal) return
+  function dealAction(label: string, txLabel: string, action: (deal: PublicKey, program: PublicKey, wallet: PublicKey) => Promise<string>) {
+    if (!publicKey || !config || !address) return
     void run(label, async () => {
-      const signature = await cancelDeal({ connection, signer: publicKey, sendTransaction, programId: new PublicKey(config.programId), deal })
-      setTxs((done) => [...done, { label: 'Cancel tx', signature }])
-      setDeal({ ...deal, status: 'CANCELLED' })
+      const signature = await action(new PublicKey(address), new PublicKey(config.programId), publicKey)
+      setTxs((done) => [...done, { label: txLabel, signature }])
       await wallet.refresh()
     })
   }
 
-  function accept() {
-    if (!publicKey || !config || !deal) return
-    void run('Accepting deal', async () => {
-      const signature = await acceptDeal({ connection, recipient: publicKey, sendTransaction, config, deal })
-      setTxs((done) => [...done, { label: 'Acceptance tx', signature }])
-      setDeal(await dealApi.get(deal.address))
-      await wallet.refresh()
-    })
+  const accept = () => dealAction('Locking guarantee', 'Acceptance tx', (deal, program, me) =>
+    acceptDeal({ connection, sendTransaction, programId: program, deal, recipient: me }))
+  const cancel = () => dealAction('Cancelling deal', 'Cancel tx', (deal, program, me) =>
+    cancelDeal({ connection, sendTransaction, programId: program, deal, payer: me }))
+  const settle = () => {
+    if (!chain) return
+    dealAction('Settling', 'Settle tx', (deal, program, me) =>
+      settleDeal({ connection, sendTransaction, programId: program, deal, caller: me, payer: new PublicKey(chain.payer), recipient: new PublicKey(chain.recipient) }))
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!publicKey || !config || clusterMismatch) return
     const sol = Number(amountSol)
-    const guarantee = Number(guaranteeSol)
+    const stake = Number(stakeSol)
     const seconds = Number(durationSeconds)
+    const interval = Number(intervalSeconds)
+    const percent = Number(minUptimePercent)
     if (!Number.isFinite(sol) || sol <= 0) { setError('Enter a payment in SOL.'); return }
-    if (!Number.isFinite(guarantee) || guarantee <= 0) { setError('Enter a provider guarantee in SOL.'); return }
+    if (!Number.isFinite(stake) || stake < 0) { setError('Enter a provider guarantee of 0 SOL or more.'); return }
     if (!Number.isInteger(seconds) || seconds < 1 || seconds > 3600) { setError('Enter a window of 1 to 3600 seconds.'); return }
-    void run('Proposing deal', async () => {
-      setDeal(null)
-      setTxs([])
-      const { deal: proposal, signature } = await openDeal({
+    if (totalRounds(seconds, interval) === null) { setError('The check interval must divide the window evenly.'); return }
+    if (!Number.isFinite(percent) || percent < 0.01 || percent > 100) { setError('Enter a minimum uptime between 0.01% and 100%.'); return }
+    void run('Creating deal', async () => {
+      setAddress(null); setChain(null); setClosed(null); setMonitor(null); setTxs([])
+      const { deal: tracked, signature } = await openDeal({
         connection, payer: publicKey, sendTransaction, config, recipient: recipient.trim(),
-        amountLamports: BigInt(Math.round(sol * LAMPORTS_PER_SOL)),
-        guaranteeLamports: BigInt(Math.round(guarantee * LAMPORTS_PER_SOL)),
-        durationSeconds: seconds,
+        amountLamports: BigInt(Math.round(sol * LAMPORTS_PER_SOL)), providerStakeLamports: BigInt(Math.round(stake * LAMPORTS_PER_SOL)),
+        durationSeconds: seconds, checkIntervalSeconds: interval, minUptimeBps: Math.round(percent * BPS_DENOMINATOR / 100),
       })
-      setTxs([{ label: 'Proposal tx', signature }])
-      setDeal(proposal)
-      setSearchParams({ deal: proposal.address })
+      setTxs([{ label: 'Create tx', signature }])
+      setMonitor(tracked)
+      setAddress(tracked.address)
       await wallet.refresh()
     })
   }
 
-  const measured = deal?.upSeconds != null && deal.totalSeconds ? `${deal.upSeconds}/${deal.totalSeconds} s up (${(deal.upSeconds / deal.totalSeconds * 100).toFixed(1)}%)` : '—'
+  const settled = closed && closed !== 'unknown' && !closed.outcome.cancelled ? closed.outcome : null
+  const counters = settled ? counterLine(settled.upChecks, settled.downChecks, settled.totalRounds)
+    : chain ? counterLine(chain.upChecks, chain.downChecks, chain.totalRounds) : '—'
+  const recipientLabel = chain?.recipient ?? monitor?.recipient
 
   return <div className="page-stack">
     <div className="page-heading create-heading"><div>
-      <div className="eyebrow"><span className="eyebrow-line" /> ON-CHAIN DEAL <span className="eyebrow-slash">/</span> UPTIME &gt; 99%</div>
+      <div className="eyebrow"><span className="eyebrow-line" /> ON-CHAIN SLA <span className="eyebrow-slash">/</span> MONITORS OBSERVE, SOLANA DECIDES</div>
       <h1>Uptime deal</h1>
-      <p>Propose a deal to a provider and lock your payment. The provider accepts by locking a guarantee, which starts the window. If the uptime service stays up more than 99% of it, the provider receives both; otherwise you do.</p>
+      <p>Lock a payment for a provider, who may lock a guarantee too. The uptime service reports each round as UP or DOWN on chain; when the window ends the program compares its own counters with the threshold and pays the whole escrow to the provider, or back to you.</p>
     </div></div>
 
     {configError && <ErrorState message={`Uptime service unavailable: ${configError}`} retry={() => void reloadConfig()} />}
-    {config && clusterMismatch && <ErrorState message={`The uptime service settles on ${config.rpcUrl}, but this app is connected to ${SOLANA_RPC_URL}. Set VITE_SOLANA_RPC_URL=${config.rpcUrl} and restart the frontend.`} />}
+    {config && clusterMismatch && <ErrorState message={`The uptime service reports on ${config.rpcUrl}, but this app is connected to ${SOLANA_RPC_URL}. Set VITE_SOLANA_RPC_URL=${config.rpcUrl} and restart the frontend.`} />}
     {error && <ErrorState message={error} />}
 
     <div className="form-layout">
-      <form onSubmit={submit} className="surface form-surface" noValidate aria-label="Propose uptime deal">
-        <div className="form-section"><div className="form-section-heading"><span className="form-step">01</span><div><h2>Your wallet</h2><p>The payer signs create_deal and locks its payment; the provider signs accept_deal and locks its guarantee.</p></div></div>
+      <form onSubmit={submit} className="surface form-surface" noValidate aria-label="Create uptime deal">
+        <div className="form-section"><div className="form-section-heading"><span className="form-step">01</span><div><h2>Your wallet</h2><p>The customer signs create_deal and funds the payment.</p></div></div>
           {publicKey ? <div className="agreement-list">
-            <div><span>Wallet</span><strong title={publicKey.toBase58()} data-testid="wallet-address">{shortAddress(publicKey.toBase58(), 6, 6)}</strong></div>
-            <div><span>Share it with the payer if you are the provider</span><button type="button" className="button" onClick={() => void copy(publicKey.toBase58())}><Copy size={15} /> Copy my address</button></div>
+            <div><span>Payer</span><strong title={publicKey.toBase58()}>{shortAddress(publicKey.toBase58(), 6, 6)}</strong></div>
             <div><span>Wallet balance</span><strong data-testid="wallet-balance">{formatLamports(wallet.lamports)}</strong></div>
             <div><span>Need SOL on localnet or devnet?</span><button type="button" className="button" onClick={airdrop} disabled={Boolean(busy)}><Droplets size={15} /> Airdrop 2 SOL</button></div>
-          </div> : <div className="agreement-list"><div><span>Connect a wallet to propose or accept a deal.</span><WalletMultiButton /></div></div>}
+          </div> : <div className="agreement-list"><div><span>Connect a wallet to create a deal.</span><WalletMultiButton /></div></div>}
         </div>
 
-        <div className="form-section"><div className="form-section-heading"><span className="form-step">02</span><div><h2>Deal terms</h2><p>The uptime service is the oracle; it settles when the window ends.</p></div></div>
-          <div className="field"><label htmlFor="recipient">Provider address</label><input id="recipient" value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="Solana wallet of the provider" /><small>Must accept the deal; receives both deposits if the service stays up.</small></div>
+        <div className="form-section"><div className="form-section-heading"><span className="form-step">02</span><div><h2>Deal terms</h2><p>All terms are stored on chain; the program settles from them.</p></div></div>
+          <div className="field"><label htmlFor="recipient">Recipient address</label><input id="recipient" value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="The provider's Solana wallet" /><small>Wins the whole escrow when the SLA is met.</small></div>
           <div className="field-grid">
-            <div className="field"><label htmlFor="amount">Payment (SOL)</label><input id="amount" type="number" min="0.001" step="0.001" value={amountSol} onChange={(e) => setAmountSol(e.target.value)} /><small>You lock it now. At least 0.001 SOL.</small></div>
-            <div className="field"><label htmlFor="guarantee">Provider guarantee (SOL)</label><input id="guarantee" type="number" min="0.001" step="0.001" value={guaranteeSol} onChange={(e) => setGuaranteeSol(e.target.value)} /><small>The provider locks it on acceptance and loses it on a breach.</small></div>
+            <div className="field"><label htmlFor="amount">Payment (SOL)</label><input id="amount" type="number" min="0.001" step="0.001" value={amountSol} onChange={(e) => setAmountSol(e.target.value)} /><small>At least 0.001 SOL.</small></div>
+            <div className="field"><label htmlFor="stake">Provider guarantee (SOL)</label><input id="stake" type="number" min="0" step="0.001" value={stakeSol} onChange={(e) => setStakeSol(e.target.value)} /><small>0 starts at once; otherwise the provider must accept.</small></div>
           </div>
-          <div className="field"><label htmlFor="duration">Window (seconds)</label><input id="duration" type="number" min="1" max="3600" step="1" value={durationSeconds} onChange={(e) => setDurationSeconds(e.target.value)} /><small>Starts when the provider accepts. Uptime is measured per second.</small></div>
+          <div className="field-grid">
+            <div className="field"><label htmlFor="duration">Window (seconds)</label><input id="duration" type="number" min="1" max="3600" step="1" value={durationSeconds} onChange={(e) => setDurationSeconds(e.target.value)} /><small>1 to 3600 seconds.</small></div>
+            <div className="field"><label htmlFor="interval">Check interval (seconds)</label><input id="interval" type="number" min="1" step="1" value={intervalSeconds} onChange={(e) => setIntervalSeconds(e.target.value)} /><small>The monitor checks the service once per round, at this interval, and reports each result on chain.</small></div>
+            <div className="field"><label htmlFor="min-uptime">Minimum uptime (%)</label><input id="min-uptime" type="number" min="0.01" max="100" step="0.01" value={minUptimePercent} onChange={(e) => setMinUptimePercent(e.target.value)} /><small>Unobserved rounds count as down.</small></div>
+          </div>
         </div>
 
-        <div className="form-submit"><button className="button button-primary button-large" type="submit" disabled={!publicKey || !config || clusterMismatch || Boolean(busy)}>{busy ?? 'Propose deal'}<ArrowRight size={17} /></button></div>
+        <div className="form-submit"><button className="button button-primary button-large" type="submit" disabled={!publicKey || !config || clusterMismatch || Boolean(busy)}>{busy ?? 'Create deal'}<ArrowRight size={17} /></button></div>
       </form>
 
       <aside className="summary-column">
         <section className="surface summary-card" aria-label="Uptime service">
           <div className="summary-icon"><Server size={21} /></div>
-          <h2>Uptime service</h2>
-          <p className="summary-intro">Its per-second health history decides the deal.</p>
+          <h2>Uptime monitor</h2>
+          <p className="summary-intro">Reports each round as UP or DOWN on chain. It never decides the outcome.</p>
           <div className="summary-list">
             <div><span>Current state</span><strong data-testid="service-state">{serviceState ?? 'Unavailable'}</strong></div>
             <div><span>Oracle</span><strong>{config ? <ExplorerLink kind="address" value={config.oracle} /> : '—'}</strong></div>
             <div><span>Program</span><strong>{config ? <ExplorerLink kind="address" value={config.programId} testId="program-link" /> : '—'}</strong></div>
+            {monitor && <div><span>Observations sent</span><strong data-testid="observations-sent">{monitor.observationsSent}</strong></div>}
+            {monitor?.error && <div><span>Monitor error</span><strong>{monitor.error}</strong></div>}
           </div>
           <button type="button" className="button settle-button" onClick={toggleService} disabled={!serviceState || Boolean(busy)}>{serviceState === 'DOWN' ? 'Restore service' : 'Simulate outage'}</button>
         </section>
 
-        {incoming.length > 0 && <section className="surface summary-card" aria-label="Proposals for you">
-          <div className="summary-icon"><Handshake size={21} /></div>
-          <h2>Proposals for you</h2>
-          <p className="summary-intro">Payers proposed these deals to your wallet. Review one to accept or reject it.</p>
-          {incoming.map((offer) => <div className="agreement-escrow" key={offer.address}>
-            <span title={offer.payer}>{shortAddress(offer.payer, 6, 6)} pays {formatLamports(offer.amountLamports)} · you lock {formatLamports(offer.guaranteeLamports)} · {offer.durationSeconds}s</span>
-            <button type="button" className="button" onClick={() => { setError(null); setTxs([]); setSearchParams({ deal: offer.address }) }}>Review</button>
-          </div>)}
-        </section>}
-
-        {deal && <section className="surface summary-card" aria-label="Deal">
-          <div className="summary-icon">{dealDone ? <ShieldCheck size={21} /> : proposed ? <Handshake size={21} /> : <Timer size={21} />}</div>
-          <h2>Deal</h2>
-          <p className="summary-intro" role="status" data-testid="deal-verdict">{dealVerdict(deal, now)}</p>
+        {address && <section className="surface summary-card" aria-label="Deal">
+          <div className="summary-icon">{closed ? <ShieldCheck size={21} /> : <Timer size={21} />}</div>
+          <h2>Deal (read from chain)</h2>
+          <p className="summary-intro" role="status" data-testid="deal-verdict">{dealVerdict(chain, closed, now)}</p>
           <div className="summary-list">
-            <div><span>Address</span><strong><ExplorerLink kind="address" value={deal.address} testId="deal-address-link" /></strong></div>
-            <div><span>Window</span><strong>{deal.durationSeconds}s</strong></div>
-            {proposed && <div><span>Accept by</span><strong>{new Date(deal.acceptDeadline).toLocaleString()}</strong></div>}
-            <div><span>Measured</span><strong data-testid="deal-measured">{measured}</strong></div>
-            <div><span>Provider</span><strong title={deal.recipient}>{shortAddress(deal.recipient, 6, 6)}</strong></div>
-            <div><span><Coins size={16} /> Provider balance</span><strong data-testid="recipient-balance">{formatLamports(recipientBalance.lamports)}</strong></div>
-            <div><span>Payment</span><strong data-testid="deal-payment">{formatLamports(deal.amountLamports)}</strong></div>
-            <div><span>Provider guarantee</span><strong data-testid="deal-guarantee">{formatLamports(deal.guaranteeLamports)}</strong></div>
+            <div><span>Address</span><strong><ExplorerLink kind="address" value={address} testId="deal-address-link" /></strong></div>
+            {chain && <div><span>Terms</span><strong>{chain.durationSeconds}s · {chain.checkIntervalSeconds}s rounds · ≥ {formatBps(chain.minUptimeBps)}</strong></div>}
+            {chain && <div><span>Oracle</span><strong title={chain.oracle} data-testid="deal-oracle">{shortAddress(chain.oracle, 6, 6)}</strong></div>}
+            <div><span>On-chain counters</span><strong data-testid="deal-counters">{counters}</strong></div>
+            {chain && !closed && chain.active && <div><span>Projection (informational)</span><strong data-testid="deal-projection">{projection(chain)}</strong></div>}
+            {recipientLabel && <div><span>Recipient</span><strong title={recipientLabel}>{shortAddress(recipientLabel, 6, 6)}</strong></div>}
+            <div><span><Coins size={16} /> Recipient balance</span><strong data-testid="recipient-balance">{formatLamports(recipientBalance.lamports)}</strong></div>
             {txs.map((tx) => <div key={tx.signature}><span>{tx.label}</span><strong><ExplorerLink kind="tx" value={tx.signature} testId="wallet-tx-link" /></strong></div>)}
-            {deal.signature && <div><span>Settlement tx</span><strong><ExplorerLink kind="tx" value={deal.signature} testId="settlement-tx-link" /></strong></div>}
+            {closed && closed !== 'unknown' && <div><span>Closing tx</span><strong><ExplorerLink kind="tx" value={closed.signature} testId="settlement-tx-link" /></strong></div>}
           </div>
-          {proposed && isPayer && <div className="agreement-escrow">
-            <span>The provider sees it under “Proposals for you”, or opens this link</span>
-            <button type="button" className="button" onClick={() => void copy(dealLink(deal.address))}><Copy size={15} /> Copy link</button>
+          {awaitingProvider && me === chain?.recipient && <div className="agreement-escrow">
+            <span>Lock {formatLamports(chain.providerStakeLamports)} to start the window</span>
+            {chain.oracle !== config?.oracle && <span role="alert" data-testid="foreign-oracle">This deal names oracle {shortAddress(chain.oracle, 6, 6)}, not this service's monitor. Whoever holds that key reports every round.</span>}
+            <button type="button" className="button settle-button" onClick={accept} disabled={Boolean(busy)}>Accept and lock guarantee</button>
           </div>}
-          {proposed && isRecipient && <div className="agreement-escrow">
-            <span>{acceptOpen ? 'You are the provider of this deal' : 'The proposal has expired'}</span>
-            <button type="button" className="button button-primary settle-button" onClick={accept} disabled={!acceptOpen || Boolean(busy)}>Accept and lock {formatLamports(deal.guaranteeLamports)}</button>
-            <button type="button" className="button settle-button" onClick={() => cancel('Rejecting deal')} disabled={Boolean(busy)}>Reject</button>
+          {awaitingProvider && me === chain?.payer && <div className="agreement-escrow">
+            <span>The provider hasn't accepted yet</span>
+            <button type="button" className="button settle-button" onClick={cancel} disabled={Boolean(busy)}>Cancel deal</button>
           </div>}
-          {proposed && isPayer && <div className="agreement-escrow">
-            <span>Not accepted yet</span>
-            <button type="button" className="button settle-button" onClick={() => cancel('Withdrawing proposal')} disabled={Boolean(busy)}>Withdraw proposal</button>
+          {canSettle && <div className="agreement-escrow">
+            <span><Gavel size={16} /> Anyone can settle; the program decides</span>
+            <button type="button" className="button settle-button" onClick={settle} disabled={Boolean(busy)}>Settle now</button>
           </div>}
-          {stuck && (isPayer || isRecipient) && <div className="agreement-escrow">
-            <span>{canReclaim ? 'Deposits can be reclaimed' : `Reclaim available ${new Date(reclaimAt ?? 0).toLocaleTimeString()}`}</span>
-            <button type="button" className="button settle-button" onClick={() => cancel('Reclaiming deposits')} disabled={!canReclaim || Boolean(busy)}>Reclaim deposits</button>
-          </div>}
-          <div className="agreement-escrow"><span><LockKeyhole size={16} /> Escrow</span><strong data-testid="deal-escrow">{formatLamports(deal.amountLamports + (proposed ? 0 : deal.guaranteeLamports))}</strong></div>
+          {chain && <div className="agreement-escrow"><span><LockKeyhole size={16} /> Escrow</span><strong>{formatLamports(chain.amountLamports + (chain.active ? chain.providerStakeLamports : 0n))}</strong></div>}
         </section>}
       </aside>
     </div>

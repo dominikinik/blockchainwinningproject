@@ -4,35 +4,26 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.List;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestClient;
 
 import com.example.monitor.application.DealService;
-import com.example.monitor.application.TrackingEventListener;
-import com.example.monitor.application.TrackingService;
+import com.example.monitor.application.HealthRelay;
 import com.example.monitor.application.UptimeHistory;
-import com.example.monitor.domain.ServiceId;
-import com.example.monitor.domain.DowntimePublisher;
 import com.example.monitor.domain.HealthProbe;
-import com.example.monitor.domain.TrackingEventStore;
+import com.example.monitor.domain.ServiceId;
 import com.example.monitor.domain.deal.DealChain;
 import com.example.monitor.domain.deal.UptimeDealRepository;
-import com.example.monitor.infrastructure.persistence.JdbcTrackingEventStore;
 import com.example.monitor.infrastructure.persistence.JdbcUptimeDealRepository;
-import com.example.monitor.infrastructure.scheduling.DealSettlementScheduler;
-import com.example.monitor.infrastructure.scheduling.DefaultServiceSubscriber;
 import com.example.monitor.infrastructure.probe.HttpHealthProbe;
+import com.example.monitor.infrastructure.scheduling.DealSettlementScheduler;
 import com.example.monitor.infrastructure.solana.HttpSolanaRpc;
-import com.example.monitor.infrastructure.solana.LoggingDowntimePublisher;
 import com.example.monitor.infrastructure.solana.OracleKey;
 import com.example.monitor.infrastructure.solana.SolanaDealChain;
-import com.example.monitor.infrastructure.solana.SolanaMemoDowntimePublisher;
 import com.example.monitor.infrastructure.solana.SolanaRpc;
 
 /** Wires the framework-free domain and application layers to their adapters. */
@@ -45,21 +36,15 @@ public class MonitorConfig {
 	}
 
 	@Bean
-	TrackingEventStore trackingEventStore(JdbcClient jdbc, TransactionTemplate transactions) {
-		return new JdbcTrackingEventStore(jdbc, transactions);
-	}
-
-	@Bean
 	HealthProbe healthProbe(MonitorProperties properties) {
 		return new HttpHealthProbe(RestClient.builder()
 			.requestFactory(HttpTimeouts.timeouts(Duration.ofMillis(properties.probeTimeoutMs()))));
 	}
 
 	@Bean
-	TrackingService trackingService(TrackingEventStore store, HealthProbe probe, DowntimePublisher publisher,
-			Clock clock, MonitorProperties properties, List<TrackingEventListener> listeners) {
-		return new TrackingService(store, probe, publisher, clock, Duration.ofMillis(properties.checkIntervalMs()),
-				listeners);
+	UptimeHistory uptimeHistory(Clock clock, MonitorProperties properties) {
+		return new UptimeHistory(clock, Duration.ofMillis(properties.checkIntervalMs()),
+				properties.history().defaultRangeSeconds(), properties.history().maxRangeSeconds());
 	}
 
 	@Bean
@@ -67,23 +52,10 @@ public class MonitorConfig {
 		return new JdbcUptimeDealRepository(jdbc);
 	}
 
+	/** Samples the provider for {@code /api/uptime}; deals run their own heartbeats in {@link DealService}. */
 	@Bean
-	UptimeHistory uptimeHistory(TrackingEventStore store, Clock clock, MonitorProperties properties) {
-		return new UptimeHistory(store, clock, properties.history().defaultRangeSeconds(),
-				properties.history().maxRangeSeconds());
-	}
-
-	@Bean
-	DefaultServiceSubscriber defaultServiceSubscriber(TrackingService tracking, MonitorProperties properties) {
-		MonitorProperties.DefaultService service = properties.defaultService();
-		return new DefaultServiceSubscriber(tracking, service.enabled() ? new ServiceId(service.id()) : null,
-				service.healthUrl());
-	}
-
-	@Bean
-	@ConditionalOnProperty(name = "monitor.blockchain.enabled", havingValue = "false")
-	DowntimePublisher loggingDowntimePublisher() {
-		return new LoggingDowntimePublisher();
+	HealthRelay healthRelay(HealthProbe probe, UptimeHistory history, Clock clock, MonitorProperties properties) {
+		return new HealthRelay(probe, properties.healthUrl(), history, clock);
 	}
 
 	@Configuration
@@ -110,28 +82,22 @@ public class MonitorConfig {
 					chain.oracleMinLamports(), chain.oracleAirdropLamports());
 		}
 
-		/** The deal oracle; it is also a {@link TrackingEventListener}, so {@code TrackingService} feeds it. */
+		/** The deal oracle: checks the provider once per round of each deal's own interval and settles the deals. */
 		@Bean
-		DealService dealService(UptimeDealRepository deals, DealChain chain, TrackingEventStore events, Clock clock,
+		DealService dealService(UptimeDealRepository deals, DealChain chain, HealthProbe probe, Clock clock,
 				MonitorProperties properties) {
 			MonitorProperties.Deal deal = properties.deal();
-			MonitorProperties.DefaultService service = properties.defaultService();
-			return new DealService(deals, chain, events, clock,
-					new DealService.Settings(service.enabled() ? new ServiceId(service.id()) : null,
-							deal.maxDurationSeconds(), deal.settleGraceSeconds(), deal.maxSettleAttempts(),
-							deal.confirmTimeoutSeconds()));
+			return new DealService(deals, chain, probe, clock,
+					new DealService.Settings(new ServiceId(properties.serviceId()), properties.healthUrl(),
+							deal.maxDurationSeconds(),
+							deal.settleGraceSeconds(), deal.maxSettleAttempts(), deal.confirmTimeoutSeconds(),
+							Math.max(1, properties.checkIntervalMs() / 1_000)));
 		}
 
 		@Bean
 		@ConditionalOnProperty(name = "monitor.scheduler.enabled", havingValue = "true", matchIfMissing = true)
 		DealSettlementScheduler dealSettlementScheduler(DealService deals) {
 			return new DealSettlementScheduler(deals);
-		}
-
-		@Bean
-		DowntimePublisher solanaDowntimePublisher(SolanaRpc rpc, OracleKey oracle, MonitorProperties properties) {
-			return new SolanaMemoDowntimePublisher(rpc, oracle, properties.blockchain().oracleMinLamports(),
-					properties.blockchain().oracleAirdropLamports());
 		}
 
 	}

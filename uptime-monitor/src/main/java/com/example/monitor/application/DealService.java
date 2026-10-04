@@ -2,89 +2,96 @@ package com.example.monitor.application;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.example.monitor.domain.HealthCheckResult;
+import com.example.monitor.domain.HealthProbe;
 import com.example.monitor.domain.ServiceId;
-import com.example.monitor.domain.TrackingEvent;
-import com.example.monitor.domain.TrackingEventStore;
 import com.example.monitor.domain.deal.DealAlreadyRegisteredException;
 import com.example.monitor.domain.deal.DealChain;
 import com.example.monitor.domain.deal.DealChain.ChainDeal;
 import com.example.monitor.domain.deal.DealChain.Closure;
 import com.example.monitor.domain.deal.DealChain.FoundClosure;
 import com.example.monitor.domain.deal.DealChain.TxStatus;
-import com.example.monitor.domain.deal.DealMeasurement;
-import com.example.monitor.domain.deal.SettlementPolicy;
 import com.example.monitor.domain.deal.UptimeDeal;
 import com.example.monitor.domain.deal.UptimeDealRepository;
-import com.example.monitor.domain.deal.Verdict;
 
 /**
  * The monitor as the oracle of the {@code uptime_deal} program. A payer proposes a deal on chain naming this
- * monitor's key as its oracle and registers it here, usually while it is still a proposal, linked to a tracked
- * service. {@link #settleDue} re-reads a proposal until the recipient accepts it (or a party cancels it); the
- * window comes from the accepted deal account ({@code starts_at}, set by the chain at acceptance), never from the
- * caller. Accepted deals are settled from the service's events:
+ * monitor's key as its oracle and registers it here, usually while it is still a proposal, linked to the provider
+ * whose health endpoint it checks. The window comes from the accepted deal account ({@code starts_at}, set by the
+ * chain at acceptance), never from the caller. {@link #settleDue} runs every few hundred milliseconds and:
  * <ul>
- * <li>{@link #onTrackingEvent}: after a {@code Downtime}, {@code InternalErrorHappened} or
- * {@code TrackingFinished} of the service, {@link SettlementPolicy} may decide the settlement at once: a failure
- * that makes 99% unreachable closes the deal (refund), and the end of tracking settles it.</li>
- * <li>{@link #settleDue}: decides deals whose window is over, sends decided settlements, and confirms sent ones
- * (resending lost ones and explaining vanished accounts from their history).</li>
+ * <li>re-reads a proposal until the recipient accepts it (or a party cancels it);</li>
+ * <li>runs each accepted deal's heartbeat at the deal's own on-chain round interval: once a round ends, it calls the
+ * provider's health endpoint and sends the UP/DOWN result as that round's observation (one probe per tick serves every
+ * deal whose round ended in it); a failed send is retried from memory;</li>
+ * <li>asks the program to settle after expiry or proven breach, and confirms sent transactions.</li>
  * </ul>
- * Methods are synchronized: deals change from the check threads, the scheduler and HTTP requests.
+ * Methods are synchronized: deals change from the scheduler and HTTP requests.
  */
-public class DealService implements TrackingEventListener {
+public class DealService {
 
 	private static final Logger log = LoggerFactory.getLogger(DealService.class);
 
 	/**
-	 * @param defaultServiceId      the service a deal is linked to when registered without one; may be {@code null}
+	 * @param serviceId             the provider this monitor checks; every deal is linked to it
+	 * @param healthUrl             the provider's health endpoint, called once per round of each deal
 	 * @param maxDurationSeconds    longest on-chain window accepted
 	 * @param settleGraceSeconds    how long after a window ends before it is settled, for the last check to land
 	 * @param maxSettleAttempts     failed sends after which a deal is {@code FAILED}
 	 * @param confirmTimeoutSeconds how long to wait for a sent settlement before sending it again
+	 * @param defaultCheckIntervalSeconds the round length suggested to wallets; any interval the program accepts works
 	 */
-	public record Settings(ServiceId defaultServiceId, long maxDurationSeconds, long settleGraceSeconds,
-			int maxSettleAttempts, long confirmTimeoutSeconds) {
+	public record Settings(ServiceId serviceId, String healthUrl, long maxDurationSeconds, long settleGraceSeconds,
+			int maxSettleAttempts, long confirmTimeoutSeconds, long defaultCheckIntervalSeconds) {
 	}
 
-	/** Where a wallet must create a deal for this oracle to settle it. */
-	public record Config(String programId, String oracle, String rpcUrl) {
+	/** Where a wallet must create a deal for this oracle to settle it, and a suggested round length. */
+	public record Config(String programId, String oracle, String rpcUrl, long checkIntervalSeconds) {
 	}
 
 	private final UptimeDealRepository deals;
 
 	private final DealChain chain;
 
-	private final TrackingEventStore events;
+	private final HealthProbe probe;
 
 	private final Clock clock;
 
 	private final Settings settings;
 
-	public DealService(UptimeDealRepository deals, DealChain chain, TrackingEventStore events, Clock clock,
-			Settings settings) {
+	private final List<PendingObservation> pendingObservations = new ArrayList<>();
+
+	/** The last round whose heartbeat ran, per deal; a restart starts with the next round that ends. */
+	private final Map<String, Integer> lastHeartbeat = new HashMap<>();
+
+	private record PendingObservation(String address, int round, boolean up) {
+	}
+
+	public DealService(UptimeDealRepository deals, DealChain chain, HealthProbe probe, Clock clock, Settings settings) {
 		this.deals = deals;
 		this.chain = chain;
-		this.events = events;
+		this.probe = probe;
 		this.clock = clock;
 		this.settings = settings;
 	}
 
 	public Config config() {
-		return new Config(chain.programId(), chain.oracleAddress(), chain.rpcUrl());
+		return new Config(chain.programId(), chain.oracleAddress(), chain.rpcUrl(), settings.defaultCheckIntervalSeconds());
 	}
 
 	/**
-	 * Starts settling an on-chain deal from a tracked service's events.
+	 * Starts checking and settling an on-chain deal, at the deal's own round interval.
 	 *
-	 * @param serviceId the service whose uptime the deal pays for, or {@code null} for the default service
+	 * @param serviceId the service whose uptime the deal pays for, or {@code null} for the checked provider
 	 * @return the deal: {@code PROPOSED} with no window while the recipient hasn't accepted, or {@code ACTIVE}
 	 * @throws IllegalArgumentException       if the address or service is missing or invalid, the account isn't a
 	 *                                        deal of the program, names another oracle, or has a duration of 0 or
@@ -95,12 +102,10 @@ public class DealService implements TrackingEventListener {
 		if (address == null || address.isBlank()) {
 			throw new IllegalArgumentException("address is required");
 		}
-		ServiceId service = serviceId != null ? serviceId : settings.defaultServiceId();
-		if (service == null) {
-			throw new IllegalArgumentException("serviceId is required: no default service is configured");
-		}
-		if (events.load(service).isEmpty()) {
-			throw new IllegalArgumentException("Service " + service + " is not tracked by this monitor");
+		ServiceId service = serviceId != null ? serviceId : settings.serviceId();
+		if (!service.equals(settings.serviceId())) {
+			throw new IllegalArgumentException(
+					"Service " + service + " is not relayed by this monitor, which relays " + settings.serviceId());
 		}
 		if (deals.find(address).isPresent()) {
 			throw new DealAlreadyRegisteredException(address);
@@ -142,35 +147,15 @@ public class DealService implements TrackingEventListener {
 		return deals.findAll();
 	}
 
-	/** Decides the open deals of the event's service that the event closes. Sending happens in {@link #settleDue}. */
-	@Override
-	public synchronized void onTrackingEvent(TrackingEvent event) {
-		List<UptimeDeal> open = deals.findActive(event.serviceId()).stream().filter(UptimeDeal::isOpen).toList();
-		if (open.isEmpty()) {
-			return;
-		}
-		List<TrackingEvent> history = events.load(event.serviceId());
-		for (UptimeDeal deal : open) {
-			if (event.occurredAt().isBefore(deal.startsAt())) {
-				continue;
-			}
-			DealMeasurement m = DealMeasurement.of(history, deal.startsAt(), deal.durationSeconds(), event.occurredAt());
-			Optional<Verdict> verdict = SettlementPolicy.onEvent(event, m);
-			if (verdict.isPresent()) {
-				log.info("{} of {} closes deal {}: {}/{} up seconds", event.type(), event.serviceId(), deal.address(),
-						verdict.get().upSeconds(), verdict.get().totalSeconds());
-				deals.update(deal.decide(verdict.get()));
-			}
-		}
-	}
-
 	/**
 	 * Advances every unfinished deal: picks up the acceptance (or cancellation) of a proposal, and for an active
-	 * deal decides it when its window is over, sends a decided settlement, or checks on a sent one. One deal's
-	 * failure never stops the others.
+	 * deal runs its heartbeat when a round has ended, decides it when its window is over, sends a decided settlement,
+	 * or checks on a sent one. One deal's failure never stops the others.
 	 */
 	public synchronized void settleDue() {
 		Instant now = clock.instant();
+		retryObservations(now);
+		Heartbeat heartbeat = new Heartbeat();
 		for (UptimeDeal deal : deals.findUnfinished()) {
 			if (deal.status() == UptimeDeal.Status.PROPOSED) {
 				UptimeDeal next = checkAccepted(deal);
@@ -181,16 +166,24 @@ public class DealService implements TrackingEventListener {
 			}
 			UptimeDeal next = deal;
 			try {
-				if (deal.isOpen()) {
-					if (now.isBefore(deal.endsAt().plusSeconds(settings.settleGraceSeconds()))) {
-						continue;
-					}
-					DealMeasurement m = DealMeasurement.of(events.load(deal.serviceId()), deal.startsAt(),
-							deal.durationSeconds(), now);
-					next = deal.decide(SettlementPolicy.atWindowEnd(m));
-					deals.update(next);
+				if (deal.signature() != null) {
+					next = checkSent(deal, now);
 				}
-				next = next.signature() == null ? send(next, now) : checkSent(next, now);
+				else {
+					ChainDeal account = chain.readDeal(deal.address());
+					if (account == null) {
+						next = closedOnChain(deal);
+					}
+					else {
+							if (account.accepted()) {
+							beat(deal, account, now, heartbeat);
+						}
+						if (account.accepted() && (account.canSettleEarly()
+									|| !now.isBefore(deal.endsAt().plusSeconds(Math.max(settings.settleGraceSeconds(), 10))))) {
+								next = send(deal, account, now);
+							}
+					}
+				}
 			}
 			catch (RuntimeException e) {
 				log.warn("Settling deal {} failed: {}", deal.address(), e.getMessage());
@@ -198,6 +191,73 @@ public class DealService implements TrackingEventListener {
 			}
 			if (!next.equals(deal)) {
 				deals.update(next);
+			}
+		}
+	}
+
+	/** One provider probe per tick, made only when some deal's round has ended, and shared by all of them. */
+	private final class Heartbeat {
+
+		private Boolean up;
+
+		boolean up() {
+			if (up == null) {
+				HealthCheckResult result = probe.check(settings.healthUrl());
+				up = result.outcome() == HealthCheckResult.Outcome.HEALTHY;
+				if (!up) {
+					log.info("{} is DOWN: {}", settings.healthUrl(), result.detail());
+				}
+			}
+			return up;
+		}
+
+	}
+
+	/**
+	 * Runs a deal's heartbeat when a new round has ended since the last one: probes the provider and records the result
+	 * as that round's observation. Rounds missed while the monitor was down aren't backfilled; the program counts them
+	 * as down.
+	 */
+	private void beat(UptimeDeal deal, ChainDeal account, Instant now, Heartbeat heartbeat) {
+		int round = account.roundEndedBy(now);
+		Integer last = lastHeartbeat.get(deal.address());
+		if (round < 0 || account.isRecorded(round) || (last != null && round <= last)) {
+			return;
+		}
+		lastHeartbeat.put(deal.address(), round);
+		boolean up = heartbeat.up();
+		try {
+			chain.recordObservation(deal.address(), account, round, up);
+			log.info("Recorded deal {} round {} as {}", deal.address(), round, up ? "UP" : "DOWN");
+		}
+		catch (RuntimeException e) {
+			log.warn("Could not report {} observation for deal {} round {}: {}", up ? "UP" : "DOWN", deal.address(),
+					round, e.getMessage());
+			pendingObservations.add(new PendingObservation(deal.address(), round, up));
+		}
+	}
+
+	/**
+	 * Resends observations whose first send failed, until one lands, the round is recorded anyway, or the deal stops
+	 * accepting observations (closed, or past its window and the program's grace).
+	 */
+	private void retryObservations(Instant now) {
+		for (PendingObservation observation : List.copyOf(pendingObservations)) {
+			try {
+				ChainDeal account = chain.readDeal(observation.address());
+				if (account == null || !account.accepted() || account.isRecorded(observation.round())
+						|| !now.isBefore(account.startsAt().plusSeconds(account.durationSeconds() + 10))) {
+					pendingObservations.remove(observation);
+					continue;
+				}
+				chain.recordObservation(observation.address(), account, observation.round(), observation.up());
+				pendingObservations.remove(observation);
+				log.info("Recorded deal {} round {} as {} on retry", observation.address(), observation.round(),
+						observation.up() ? "UP" : "DOWN");
+			}
+			catch (RuntimeException e) {
+				log.warn("Retrying the observation of deal {} round {} failed: {}", observation.address(),
+						observation.round(), e.getMessage());
 			}
 		}
 	}
@@ -226,15 +286,14 @@ public class DealService implements TrackingEventListener {
 		}
 	}
 
-	private UptimeDeal send(UptimeDeal deal, Instant now) {
-		ChainDeal account = chain.readDeal(deal.address());
-		if (account == null) {
-			return closedOnChain(deal);
+	private UptimeDeal send(UptimeDeal deal, ChainDeal account, Instant now) {
+		if (!account.canSettleEarly()
+				&& now.isBefore(deal.endsAt().plusSeconds(Math.max(settings.settleGraceSeconds(), 10)))) {
+			return deal;
 		}
-		Verdict verdict = new Verdict(deal.upSeconds(), deal.totalSeconds());
-		String signature = chain.sendSettle(deal.address(), account, verdict);
-		log.info("Settling deal {} with {}/{} up seconds: {}", deal.address(), verdict.upSeconds(),
-				verdict.totalSeconds(), signature);
+		String signature = chain.sendSettle(deal.address(), account);
+		log.info("Settling deal {} from on-chain counters {}/{} UP rounds: {}", deal.address(), account.upChecks(),
+				account.totalRounds(), signature);
 		return deal.sent(signature, now);
 	}
 
@@ -252,7 +311,7 @@ public class DealService implements TrackingEventListener {
 		}
 		log.info("Deal {} was settled by {}, paid to recipient: {}", deal.address(), found.signature(),
 				closure.paidToRecipient());
-		return deal.settledBy(found.signature(), closure.paidToRecipient(), closure.upSeconds(), closure.totalSeconds());
+		return deal.settledBy(found.signature(), closure.paidToRecipient(), closure.upChecks(), closure.totalRounds());
 	}
 
 	private UptimeDeal checkSent(UptimeDeal deal, Instant now) {

@@ -12,11 +12,7 @@ public final class DealFixtures {
 
 	public static final String PROGRAM_ID = "FVYpjzHktSRkPeUMytDPwVnAXTEf1QqVymKTnqNqfDmr";
 
-	/** The recipient's guarantee in the deals these fixtures build, unless given explicitly. */
-	public static final long GUARANTEE = 700_000_000L;
-
-	/** The program's {@code ACCEPT_TIMEOUT_SECONDS}. */
-	public static final long ACCEPT_TIMEOUT_SECONDS = 86_400;
+	public static final long GUARANTEE = 100_000_000L;
 
 	private static final byte[] DEAL = { 125, (byte) 223, (byte) 160, (byte) 234, 71, (byte) 162, (byte) 182,
 			(byte) 219 };
@@ -25,10 +21,6 @@ public final class DealFixtures {
 
 	private static final byte[] DEAL_CANCELLED = { (byte) 229, (byte) 189, 86, (byte) 176, (byte) 134, (byte) 151, 43,
 			(byte) 152 };
-
-	private static final byte PROPOSED = 0;
-
-	private static final byte ACTIVE = 1;
 
 	private DealFixtures() {
 	}
@@ -39,75 +31,180 @@ public final class DealFixtures {
 	}
 
 	/**
-	 * {@code Deal} account data of an accepted deal whose window starts at {@code startsAt}, with a
-	 * {@link #GUARANTEE} guarantee and a proposal deadline one {@link #ACCEPT_TIMEOUT_SECONDS} after it.
+	 * Starts a {@code Deal} account: active, 10 one-second rounds from {@code startsAt}, 90% required, no
+	 * guarantee, nothing recorded.
 	 */
-	public static byte[] dealData(String payer, String recipient, String oracle, long dealId, long amount,
-			long startsAt, long durationSeconds) {
-		return dealData(payer, recipient, oracle, dealId, amount, GUARANTEE, durationSeconds,
-				startsAt + ACCEPT_TIMEOUT_SECONDS, startsAt, ACTIVE);
+	public static Deal deal(String payer, String recipient, String oracle, long startsAt) {
+		return new Deal(payer, recipient, oracle, startsAt);
 	}
 
-	/** {@code Deal} account data of a proposal the recipient hasn't accepted yet. */
-	public static byte[] proposalData(String payer, String recipient, String oracle, long dealId, long amount,
-			long guarantee, long durationSeconds, long acceptDeadline) {
-		return dealData(payer, recipient, oracle, dealId, amount, guarantee, durationSeconds, acceptDeadline, 0,
-				PROPOSED);
+	public static byte[] dealData(String payer, String recipient, String oracle, long id, long amount, long startsAt,
+			long duration) {
+		return deal(payer, recipient, oracle, startsAt).dealId(id).amount(amount).window(duration, 2).data();
 	}
 
-	/**
-	 * {@code Deal} account data (154 bytes): discriminator, payer, recipient, oracle, deal_id, amount,
-	 * guarantee, duration_seconds, accept_deadline, starts_at, status, bump.
-	 */
-	public static byte[] dealData(String payer, String recipient, String oracle, long dealId, long amount,
-			long guarantee, long durationSeconds, long acceptDeadline, long startsAt, byte status) {
-		return ByteBuffer.allocate(8 + 96 + 8 * 6 + 1 + 1)
-			.order(ByteOrder.LITTLE_ENDIAN)
-			.put(DEAL)
-			.put(Base58.decodePublicKey(payer))
-			.put(Base58.decodePublicKey(recipient))
-			.put(Base58.decodePublicKey(oracle))
-			.putLong(dealId)
-			.putLong(amount)
-			.putLong(guarantee)
-			.putLong(durationSeconds)
-			.putLong(acceptDeadline)
-			.putLong(startsAt)
-			.put(status)
-			.put((byte) 254)
-			.array();
+	public static byte[] proposalData(String payer, String recipient, String oracle, long id, long amount, long stake,
+			long duration, long acceptDeadline) {
+		return deal(payer, recipient, oracle, 0).dealId(id).amount(amount).awaitingProvider(stake)
+			.acceptDeadline(acceptDeadline).window(duration, 2).data();
 	}
 
-	/**
-	 * The {@code Program data:} log line of a {@code DealCancelled} event cancelled by the payer, with no
-	 * guarantee refunded.
-	 */
+	/** A {@code Deal} account under construction; every setter returns {@code this}. */
+	public static final class Deal {
+
+		private final String payer;
+
+		private final String recipient;
+
+		private final String oracle;
+
+		private long dealId = 1;
+
+		private long amount = 500_000_000L;
+
+		private long stake;
+
+		private long acceptDeadline = 1_790_086_400L;
+
+		private boolean active = true;
+
+		private long startsAt;
+
+		private long duration = 10;
+
+		private long interval = 1;
+
+		private int minBps = 9_000;
+
+		private int up;
+
+		private int down;
+
+		private byte[] recorded;
+
+		private Deal(String payer, String recipient, String oracle, long startsAt) {
+			this.payer = payer;
+			this.recipient = recipient;
+			this.oracle = oracle;
+			this.startsAt = startsAt;
+		}
+
+		public Deal dealId(long dealId) {
+			this.dealId = dealId;
+			return this;
+		}
+
+		public Deal amount(long amount) {
+			this.amount = amount;
+			return this;
+		}
+
+		public Deal acceptDeadline(long deadline) {
+			this.acceptDeadline = deadline;
+			return this;
+		}
+
+		/** Sets a guarantee and makes the deal await the provider (starts_at 0). */
+		public Deal awaitingProvider(long stake) {
+			this.stake = stake;
+			this.active = false;
+			this.startsAt = 0;
+			return this;
+		}
+
+		public Deal window(long duration, long interval) {
+			this.duration = duration;
+			this.interval = interval;
+			return this;
+		}
+
+		public Deal minBps(int minBps) {
+			this.minBps = minBps;
+			return this;
+		}
+
+		/** Marks rounds as recorded on chain, with their UP/DOWN result. */
+		public Deal recorded(int[] rounds, boolean upResult) {
+			byte[] bits = bitmap();
+			for (int round : rounds) {
+				bits[round / 8] |= (byte) (1 << (round % 8));
+				if (upResult) {
+					up++;
+				}
+				else {
+					down++;
+				}
+			}
+			recorded = bits;
+			return this;
+		}
+
+		private byte[] bitmap() {
+			if (recorded == null) {
+				recorded = new byte[(int) ((duration / interval + 7) / 8)];
+			}
+			return recorded;
+		}
+
+		/** The raw account data, laid out like the program's {@code Deal}. */
+		public byte[] data() {
+			byte[] bits = bitmap();
+			return ByteBuffer.allocate(8 + 96 + 32 + 1 + 24 + 2 + 12 + 1 + 4 + bits.length)
+				.order(ByteOrder.LITTLE_ENDIAN)
+				.put(DEAL)
+				.put(Base58.decodePublicKey(payer))
+				.put(Base58.decodePublicKey(recipient))
+				.put(Base58.decodePublicKey(oracle))
+				.putLong(dealId)
+				.putLong(amount)
+				.putLong(stake)
+				.putLong(acceptDeadline)
+				.put((byte) (active ? 1 : 0))
+				.putLong(startsAt)
+				.putLong(duration)
+				.putLong(interval)
+				.putShort((short) minBps)
+				.putInt((int) (duration / interval))
+				.putInt(up)
+				.putInt(down)
+				.put((byte) 254)
+				.putInt(bits.length)
+				.put(bits)
+				.array();
+		}
+
+	}
+
+	/** The {@code Program data:} log line of a {@code DealCancelled} event. */
 	public static String dealCancelledLog(String deal, String payer, long amount) {
-		byte[] event = ByteBuffer.allocate(8 + 32 + 32 + 8 + 32 + 8)
+		byte[] event = ByteBuffer.allocate(8 + 32 + 32 + 8)
 			.order(ByteOrder.LITTLE_ENDIAN)
 			.put(DEAL_CANCELLED)
 			.put(Base58.decodePublicKey(deal))
 			.put(Base58.decodePublicKey(payer))
 			.putLong(amount)
-			.put(Base58.decodePublicKey(payer))
-			.putLong(0)
 			.array();
 		return "Program data: " + Base64.getEncoder().encodeToString(event);
 	}
 
-	/** The {@code Program data:} log line of a {@code DealSettled} event with a {@link #GUARANTEE} guarantee. */
-	public static String dealSettledLog(String deal, long up, long total, boolean paid, long amount) {
-		byte[] event = ByteBuffer.allocate(8 + 32 + 8 + 8 + 1 + 8 + 8)
+	/** The {@code Program data:} log line of a {@code DealSettled} event. */
+	public static String dealSettledLog(String deal, int up, int down, int total, boolean paid, long payout) {
+		byte[] event = ByteBuffer.allocate(8 + 32 + 4 * 3 + 2 + 1 + 8)
 			.order(ByteOrder.LITTLE_ENDIAN)
 			.put(DEAL_SETTLED)
 			.put(Base58.decodePublicKey(deal))
-			.putLong(up)
-			.putLong(total)
+			.putInt(up)
+			.putInt(down)
+			.putInt(total)
+			.putShort((short) 9_000)
 			.put((byte) (paid ? 1 : 0))
-			.putLong(amount)
-			.putLong(GUARANTEE)
+			.putLong(payout)
 			.array();
 		return "Program data: " + Base64.getEncoder().encodeToString(event);
+	}
+
+	public static String dealSettledLog(String deal, int up, int total, boolean paid, long payout) {
+		return dealSettledLog(deal, up, total - up, total, paid, payout);
 	}
 
 }

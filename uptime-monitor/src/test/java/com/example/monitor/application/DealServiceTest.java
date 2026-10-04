@@ -1,513 +1,227 @@
 package com.example.monitor.application;
 
-import static com.example.monitor.support.DealFixtures.GUARANTEE;
-import static com.example.monitor.support.DealFixtures.PROGRAM_ID;
-import static com.example.monitor.support.DealFixtures.dealCancelledLog;
-import static com.example.monitor.support.DealFixtures.dealData;
-import static com.example.monitor.support.DealFixtures.dealSettledLog;
-import static com.example.monitor.support.DealFixtures.newAddress;
-import static com.example.monitor.support.DealFixtures.proposalData;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.time.Duration;
 import java.time.Instant;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.NoSuchElementException;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
+import com.example.monitor.domain.HealthCheckResult;
 import com.example.monitor.domain.ServiceId;
-import com.example.monitor.domain.TrackingEvent;
-import com.example.monitor.domain.TrackingEvent.Downtime;
-import com.example.monitor.domain.TrackingEvent.InternalErrorHappened;
-import com.example.monitor.domain.TrackingEvent.TrackingFinished;
-import com.example.monitor.domain.TrackingEvent.TrackingStarted;
-import com.example.monitor.domain.deal.DealAlreadyRegisteredException;
+import com.example.monitor.domain.deal.DealChain;
+import com.example.monitor.domain.deal.DealChain.ChainDeal;
 import com.example.monitor.domain.deal.UptimeDeal;
-import com.example.monitor.domain.deal.UptimeDeal.Status;
-import com.example.monitor.infrastructure.solana.Ed25519;
-import com.example.monitor.infrastructure.solana.OracleKey;
-import com.example.monitor.infrastructure.solana.SolanaDealChain;
-import com.example.monitor.infrastructure.solana.SolanaRpc;
-import com.example.monitor.infrastructure.solana.SolanaRpc.AccountInfo;
-import com.example.monitor.infrastructure.solana.SolanaRpc.SignatureStatus;
-import com.example.monitor.infrastructure.solana.SolanaRpc.SolanaRpcException;
-import com.example.monitor.support.InMemoryTrackingEventStore;
 import com.example.monitor.support.InMemoryUptimeDealRepository;
 import com.example.monitor.support.MutableClock;
 
-/**
- * The oracle end to end below the HTTP layer: {@link DealService} with the real {@link SolanaDealChain} over a
- * mocked {@link SolanaRpc}, so the signed settle_deal bytes are checked too. The deal window is
- * {@code [T0+1, T0+11)}; the service has been tracked since {@code T0-100} with a 2 s interval.
- */
 class DealServiceTest {
 
-	static final Instant T0 = Instant.parse("2026-10-04T12:00:00Z");
+	private static final Instant START = Instant.parse("2026-10-04T12:00:00Z");
 
-	static final long AMOUNT = 500_000_000L;
+	private static final String URL = "http://provider.test/api/health";
 
-	final SolanaRpc rpc = mock(SolanaRpc.class);
+	private final DealChain chain = mock(DealChain.class);
 
-	final OracleKey oracle = OracleKey.generate();
+	private final ServiceId service = ServiceId.newId();
 
-	final MutableClock clock = new MutableClock(T0.plusMillis(300));
+	private final MutableClock clock = new MutableClock(START);
 
-	final InMemoryTrackingEventStore events = new InMemoryTrackingEventStore();
+	private final List<String> probes = new ArrayList<>();
 
-	final InMemoryUptimeDealRepository repo = new InMemoryUptimeDealRepository();
+	private HealthCheckResult health = HealthCheckResult.fromResponse(200, "UP");
 
-	final ServiceId service = ServiceId.newId();
-
-	final String deal = newAddress();
-
-	final String payer = newAddress();
-
-	final String recipient = newAddress();
-
-	DealService deals = deals(0, service);
-
-	DealService deals(long oracleMinLamports, ServiceId defaultService) {
-		return new DealService(repo, new SolanaDealChain(rpc, oracle, PROGRAM_ID, "http://rpc", oracleMinLamports, 1_000),
-				events, clock, new DealService.Settings(defaultService, 3600, 2, 3, 30));
-	}
+	private final DealService deals = new DealService(new InMemoryUptimeDealRepository(), chain, url -> {
+		probes.add(url);
+		return health;
+	}, clock, new DealService.Settings(service, URL, 3_600, 0, 3, 30, 2));
 
 	@BeforeEach
 	void setUp() {
-		append(new TrackingStarted(service, "http://p/health", Duration.ofSeconds(2), T0.minusSeconds(100)));
-		when(rpc.getAccountInfo(deal)).thenReturn(dealAccount(oracle.address()));
-		when(rpc.getLatestBlockhash()).thenReturn(new byte[32]);
-		when(rpc.sendTransaction(any())).thenReturn("sig1");
+		when(chain.programId()).thenReturn("program");
+		when(chain.oracleAddress()).thenReturn("oracle");
+		when(chain.rpcUrl()).thenReturn("http://rpc");
+	}
+
+	/** An accepted deal starting at {@code START}: {@code rounds} rounds of {@code interval} seconds, 90% required. */
+	private ChainDeal deal(String address, long interval, int rounds, int... recorded) {
+		byte[] bits = new byte[(rounds + 7) / 8];
+		for (int round : recorded) {
+			bits[round / 8] |= (byte) (1 << (round % 8));
+		}
+		ChainDeal account = new ChainDeal("payer", "recipient", "oracle", 500, 100, interval * rounds, interval, 9_000,
+				rounds, 0, 0, bits, START.plusSeconds(100), START);
+		when(chain.readDeal(address)).thenReturn(account);
+		return account;
+	}
+
+	private void tickAt(Instant at) {
+		clock.set(at);
+		deals.settleDue();
 	}
 
 	@Test
-	void registerTakesTheWindowFromTheDealAccountAndLinksTheDefaultService() {
-		UptimeDeal tracked = deals.register(deal, null);
+	void theHeartbeatRunsOncePerRoundOfTheDealsOwnInterval() {
+		ChainDeal account = deal("deal", 5, 4);
+		deals.register("deal", service);
 
-		assertThat(tracked.status()).isEqualTo(Status.ACTIVE);
-		assertThat(tracked.serviceId()).isEqualTo(service);
-		assertThat(tracked.startsAt()).isEqualTo(T0.plusSeconds(1));
-		assertThat(tracked.endsAt()).isEqualTo(T0.plusSeconds(11));
-		assertThat(tracked.payer()).isEqualTo(payer);
-		assertThat(tracked.recipient()).isEqualTo(recipient);
-		assertThat(tracked.amountLamports()).isEqualTo(AMOUNT);
-		assertThat(tracked.guaranteeLamports()).isEqualTo(GUARANTEE);
-		assertThat(deals.get(deal)).isEqualTo(tracked);
-		assertThat(deals.list()).containsExactly(tracked);
-		assertThat(deals.config()).isEqualTo(new DealService.Config(PROGRAM_ID, oracle.address(), "http://rpc"));
+		tickAt(START.plusMillis(4_900));
+		assertThat(probes).isEmpty();
+
+		tickAt(START.plusSeconds(5));
+		tickAt(START.plusSeconds(7));
+		tickAt(START.plusMillis(9_999));
+		assertThat(probes).containsExactly(URL);
+		verify(chain).recordObservation("deal", account, 0, true);
+
+		tickAt(START.plusMillis(10_200));
+		assertThat(probes).hasSize(2);
+		verify(chain).recordObservation("deal", account, 1, true);
+		verify(chain, never()).sendSettle(any(), any());
 	}
 
 	@Test
-	void registerRejectsInvalidRequests() {
-		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(null, null));
-		assertThatIllegalArgumentException().isThrownBy(() -> deals.register("not base58 0", null));
-		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(deal, ServiceId.newId()))
-			.withMessageContaining("is not tracked");
-		assertThatIllegalArgumentException().isThrownBy(() -> deals(0, null).register(deal, null))
-			.withMessageContaining("serviceId is required");
+	void anUnhealthyProviderIsRecordedAsADownRound() {
+		ChainDeal account = deal("deal", 3, 4);
+		deals.register("deal", null);
+		health = HealthCheckResult.unreachable("Connection refused");
 
-		String missing = newAddress();
-		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(missing, null))
-			.withMessageContaining("No uptime_deal account");
+		tickAt(START.plusSeconds(3));
+		health = HealthCheckResult.fromResponse(200, "DOWN");
+		tickAt(START.plusSeconds(6));
 
-		String foreign = newAddress();
-		when(rpc.getAccountInfo(foreign)).thenReturn(new AccountInfo(newAddress(), 1, new byte[0]));
-		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(foreign, null))
-			.withMessageContaining("not owned by the uptime_deal program");
-
-		String otherOracle = newAddress();
-		when(rpc.getAccountInfo(otherOracle)).thenReturn(dealAccount(newAddress()));
-		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(otherOracle, null))
-			.withMessageContaining("names oracle");
-
-		assertThat(deals.list()).isEmpty();
+		verify(chain).recordObservation("deal", account, 0, false);
+		verify(chain).recordObservation("deal", account, 1, false);
 	}
 
 	@Test
-	void registerRejectsOutOfRangeOnChainDurations() {
-		String zero = newAddress();
-		when(rpc.getAccountInfo(zero)).thenReturn(dealAccount(oracle.address(), T0, 0));
-		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(zero, null))
-			.withMessageContaining("between 1 and 3600");
-		String tooLong = newAddress();
-		when(rpc.getAccountInfo(tooLong)).thenReturn(dealAccount(oracle.address(), T0, 3601));
-		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(tooLong, null));
-		String longest = newAddress();
-		when(rpc.getAccountInfo(longest)).thenReturn(dealAccount(oracle.address(), T0, 3600));
-		assertThat(deals.register(longest, null).durationSeconds()).isEqualTo(3600);
+	void dealsWithDifferentIntervalsShareOneProbePerTick() {
+		ChainDeal fast = deal("fast", 1, 10);
+		ChainDeal slow = deal("slow", 2, 5);
+		deals.register("fast", service);
+		deals.register("slow", service);
+
+		tickAt(START.plusSeconds(2));
+		assertThat(probes).hasSize(1);
+		verify(chain).recordObservation("fast", fast, 1, true);
+		verify(chain).recordObservation("slow", slow, 0, true);
+
+		tickAt(START.plusSeconds(3));
+		assertThat(probes).hasSize(2);
+		verify(chain).recordObservation("fast", fast, 2, true);
+		verify(chain, never()).recordObservation("slow", slow, 1, true);
 	}
 
 	@Test
-	void registerRejectsDuplicatesAndUnknownLookups() {
-		deals.register(deal, service);
-		assertThatThrownBy(() -> deals.register(deal, service)).isInstanceOf(DealAlreadyRegisteredException.class);
-		assertThatThrownBy(() -> deals.get(newAddress())).isInstanceOf(NoSuchElementException.class);
+	void roundsMissedWhileTheMonitorWasAwayAreNotBackfilled() {
+		ChainDeal account = deal("deal", 1, 10);
+		deals.register("deal", service);
+
+		tickAt(START.plusSeconds(1));
+		tickAt(START.plusSeconds(9));
+
+		verify(chain).recordObservation("deal", account, 0, true);
+		verify(chain).recordObservation("deal", account, 8, true);
+		verify(chain, times(2)).recordObservation(any(), any(), anyInt(), anyBoolean());
 	}
 
 	@Test
-	void registersAProposalWithoutAWindowAndNeverSettlesItUnaccepted() {
-		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+	void aRoundAlreadyRecordedOnChainIsNotProbedAgain() {
+		deal("deal", 2, 5, 0);
+		deals.register("deal", service);
 
-		UptimeDeal tracked = deals.register(deal, null);
+		tickAt(START.plusSeconds(2));
 
-		assertThat(tracked.status()).isEqualTo(Status.PROPOSED);
-		assertThat(tracked.startsAt()).isNull();
-		assertThat(tracked.endsAt()).isNull();
-		assertThat(tracked.guaranteeLamports()).isEqualTo(GUARANTEE);
-		assertThat(tracked.acceptDeadline()).isEqualTo(T0.plusSeconds(86_400));
-
-		deals.onTrackingEvent(append(new Downtime(service, 404, "HTTP 404", T0.plusSeconds(5))));
-		clock.set(T0.plusSeconds(10_000));
-		deals.settleDue();
-		deals.settleDue();
-		assertThat(deals.get(deal).status()).isEqualTo(Status.PROPOSED);
-		verify(rpc, never()).sendTransaction(any());
+		assertThat(probes).isEmpty();
+		verify(chain, never()).recordObservation(any(), any(), anyInt(), anyBoolean());
 	}
 
 	@Test
-	void takesTheWindowFromTheAcceptanceThenSettlesIt() {
-		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
-		deals.register(deal, null);
-		clock.set(T0.plusSeconds(4));
-		deals.settleDue();
-		assertThat(deals.get(deal).status()).isEqualTo(Status.PROPOSED);
+	void aFailedReportIsRetriedOnTheNextTickWithoutProbingAgain() {
+		ChainDeal account = deal("deal", 5, 4);
+		deals.register("deal", service);
+		when(chain.recordObservation("deal", account, 0, true)).thenThrow(new IllegalStateException("node down"))
+			.thenReturn("sig");
 
-		// The recipient accepts at T0 + 5; the window runs from there, not from the proposal.
-		when(rpc.getAccountInfo(deal)).thenReturn(dealAccount(oracle.address(), T0.plusSeconds(5), 10));
-		deals.settleDue();
-		UptimeDeal accepted = deals.get(deal);
-		assertThat(accepted.status()).isEqualTo(Status.ACTIVE);
-		assertThat(accepted.startsAt()).isEqualTo(T0.plusSeconds(5));
-		assertThat(accepted.endsAt()).isEqualTo(T0.plusSeconds(15));
-		verify(rpc, never()).sendTransaction(any());
+		tickAt(START.plusSeconds(5));
+		tickAt(START.plusMillis(5_500));
+		tickAt(START.plusSeconds(6));
 
-		clock.set(T0.plusSeconds(17));
-		deals.settleDue();
-		ArgumentCaptor<byte[]> tx = ArgumentCaptor.forClass(byte[].class);
-		verify(rpc).sendTransaction(tx.capture());
-		assertSignedSettlement(tx.getValue(), 10, 10);
+		verify(chain, times(2)).recordObservation("deal", account, 0, true);
+		assertThat(probes).hasSize(1);
 	}
 
 	@Test
-	void anAcceptedDealClosesEarlyOnAFailureAfterItsAcceptance() {
-		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
-		deals.register(deal, null);
-		when(rpc.getAccountInfo(deal)).thenReturn(dealAccount(oracle.address(), T0.plusSeconds(5), 10));
-		clock.set(T0.plusSeconds(5));
-		deals.settleDue();
+	void aRetryIsDroppedOnceTheDealStopsAcceptingObservations() {
+		ChainDeal account = deal("deal", 1, 3);
+		deals.register("deal", service);
+		when(chain.recordObservation("deal", account, 2, true)).thenThrow(new IllegalStateException("node down"));
 
-		deals.onTrackingEvent(append(new Downtime(service, 404, "HTTP 404", T0.plusSeconds(8))));
+		tickAt(START.plusSeconds(3));
+		tickAt(START.plusSeconds(13));
+		tickAt(START.plusSeconds(14));
 
-		assertThat(deals.get(deal).upSeconds()).isEqualTo(8);
-		assertThat(deals.get(deal).totalSeconds()).isEqualTo(10);
+		verify(chain, times(1)).recordObservation("deal", account, 2, true);
 	}
 
 	@Test
-	void aWithdrawnOrRejectedProposalIsMarkedCancelled() {
-		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
-		deals.register(deal, null);
-		when(rpc.getAccountInfo(deal)).thenReturn(null);
-		when(rpc.getSignaturesForAddress(deal, 10)).thenReturn(List.of("rejectTx"));
-		when(rpc.getTransactionLogs("rejectTx")).thenReturn(List.of(dealCancelledLog(deal, payer, AMOUNT)));
+	void proposalsAreNotCheckedUntilAccepted() {
+		when(chain.readDeal("proposal")).thenReturn(new ChainDeal("payer", "recipient", "oracle", 500, 100, 10, 1, 9_000,
+				10, 0, 0, new byte[2], START.plusSeconds(100), null));
+		assertThat(deals.register("proposal", service).status()).isEqualTo(UptimeDeal.Status.PROPOSED);
 
-		deals.settleDue();
+		tickAt(START.plusSeconds(5));
 
-		assertThat(deals.get(deal).status()).isEqualTo(Status.CANCELLED);
-		assertThat(deals.get(deal).signature()).isEqualTo("rejectTx");
-		verify(rpc, never()).sendTransaction(any());
+		assertThat(probes).isEmpty();
+		verify(chain, never()).recordObservation(any(), any(), anyInt(), anyBoolean());
 	}
 
 	@Test
-	void anRpcFailureWhileCheckingAProposalKeepsItWaiting() {
-		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
-		deals.register(deal, null);
-		when(rpc.getAccountInfo(deal)).thenThrow(new SolanaRpcException("down"));
+	void doesNotSubmitASettlementUntilTheContractReportsAnEarlyBreachOrWindowExpiry() {
+		deal("deal", 1, 3);
+		deals.register("deal", service);
 
-		deals.settleDue();
-		deals.settleDue();
+		tickAt(START.plusMillis(500));
 
-		assertThat(deals.get(deal).status()).isEqualTo(Status.PROPOSED);
-		assertThat(deals.get(deal).attempts()).isZero();
-		assertThat(deals.get(deal).error()).isNull();
+		verify(chain, never()).sendSettle(any(), any());
 	}
 
 	@Test
-	void listsTheMostRecentProposalFirst() {
-		String older = newAddress();
-		when(rpc.getAccountInfo(older)).thenReturn(proposalAccount(T0.plusSeconds(100)));
-		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(200)));
-		deals.register(older, null);
-		deals.register(deal, null);
+	void registrationAcceptsAnyRoundIntervalAndIsLinkedToTheCheckedProvider() {
+		deal("deal", 7, 3);
 
-		assertThat(deals.list()).extracting(UptimeDeal::address).containsExactly(deal, older);
+		UptimeDeal deal = deals.register("deal", null);
+
+		assertThat(deal.serviceId()).isEqualTo(service);
+		assertThat(deal.status()).isEqualTo(UptimeDeal.Status.ACTIVE);
+		assertThat(deals.config().checkIntervalSeconds()).isEqualTo(2);
+		assertThat(deals.config().oracle()).isEqualTo("oracle");
+		assertThatIllegalArgumentException().isThrownBy(() -> deals.register("other", ServiceId.newId()))
+			.withMessageContaining("not relayed by this monitor");
+		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(" ", null));
 	}
 
 	@Test
-	void aHealthyWindowSettlesAtItsEndAndPaysTheRecipient() {
-		deals.register(deal, null);
-		clock.set(T0.plusSeconds(12).plusMillis(999));
-		deals.settleDue();
-		verify(rpc, never()).sendTransaction(any());
-
-		clock.set(T0.plusSeconds(13));
-		deals.settleDue();
-
-		ArgumentCaptor<byte[]> tx = ArgumentCaptor.forClass(byte[].class);
-		verify(rpc).sendTransaction(tx.capture());
-		assertSignedSettlement(tx.getValue(), 10, 10);
-		UptimeDeal sent = deals.get(deal);
-		assertThat(sent.status()).isEqualTo(Status.ACTIVE);
-		assertThat(sent.signature()).isEqualTo("sig1");
-
-		when(rpc.getSignatureStatus("sig1")).thenReturn(new SignatureStatus(false, null));
-		deals.settleDue();
-		assertThat(deals.get(deal).status()).isEqualTo(Status.ACTIVE);
-
-		when(rpc.getSignatureStatus("sig1")).thenReturn(new SignatureStatus(true, null));
-		when(rpc.getTransactionLogs("sig1")).thenReturn(List.of(dealSettledLog(deal, 10, 10, true, AMOUNT)));
-		deals.settleDue();
-		UptimeDeal settled = deals.get(deal);
-		assertThat(settled.status()).isEqualTo(Status.SETTLED);
-		assertThat(settled.paidToRecipient()).isTrue();
-		verify(rpc, times(1)).sendTransaction(any());
-
-		deals.settleDue();
-		verify(rpc, times(2)).getSignatureStatus("sig1");
-	}
-
-	@Test
-	void aDowntimeThatMakes99PercentUnreachableClosesTheDealAtOnce() {
-		deals.register(deal, null);
-		TrackingEvent down = append(new Downtime(service, 200, "HTTP 200, status DOWN", T0.plusSeconds(5)));
-
-		deals.onTrackingEvent(down);
-
-		UptimeDeal decided = deals.get(deal);
-		assertThat(decided.isSettling()).isTrue();
-		assertThat(decided.upSeconds()).isEqualTo(8);
-		assertThat(decided.totalSeconds()).isEqualTo(10);
-
-		clock.set(T0.plusSeconds(5));
-		deals.settleDue();
-		ArgumentCaptor<byte[]> tx = ArgumentCaptor.forClass(byte[].class);
-		verify(rpc).sendTransaction(tx.capture());
-		assertSignedSettlement(tx.getValue(), 8, 10);
-	}
-
-	@Test
-	void aFailureThatLeaves99PercentReachableKeepsTheDealOpen() {
-		String longDeal = newAddress();
-		when(rpc.getAccountInfo(longDeal)).thenReturn(dealAccount(oracle.address(), T0, 1000));
-		deals.register(longDeal, null);
-
-		deals.onTrackingEvent(append(new Downtime(service, 404, "HTTP 404", T0.plusSeconds(5))));
-		deals.onTrackingEvent(append(new InternalErrorHappened(service, 500, "HTTP 500", T0.plusSeconds(7))));
-
-		assertThat(deals.get(longDeal).isOpen()).isTrue();
-		clock.set(T0.plusSeconds(8));
-		deals.settleDue();
-		verify(rpc, never()).sendTransaction(any());
-	}
-
-	@Test
-	void trackingFinishedSettlesAtOnceWithTheRestOfTheWindowAsDown() {
-		deals.register(deal, null);
-		TrackingEvent finished = append(new TrackingFinished(service, T0.plusSeconds(5)));
-
-		deals.onTrackingEvent(finished);
-
-		assertThat(deals.get(deal).upSeconds()).isEqualTo(4);
-		assertThat(deals.get(deal).totalSeconds()).isEqualTo(10);
-	}
-
-	@Test
-	void eventsOfOtherServicesOrBeforeTheWindowAndDecidedDealsAreIgnored() {
-		deals.register(deal, null);
-		ServiceId other = ServiceId.newId();
-		events.append(other, 0, List.of(new TrackingStarted(other, "http://o", Duration.ofSeconds(2), T0)));
-		deals.onTrackingEvent(new Downtime(other, 404, "", T0.plusSeconds(5)));
-		deals.onTrackingEvent(new Downtime(service, 404, "", T0));
-		assertThat(deals.get(deal).isOpen()).isTrue();
-
-		deals.onTrackingEvent(append(new TrackingFinished(service, T0.plusSeconds(5))));
-		deals.onTrackingEvent(new Downtime(service, 404, "", T0.plusSeconds(6)));
-		assertThat(deals.get(deal).upSeconds()).isEqualTo(4);
-	}
-
-	@Test
-	void aWindowThatAlreadyEndedSettlesOnTheNextTick() {
-		String old = newAddress();
-		when(rpc.getAccountInfo(old)).thenReturn(dealAccount(oracle.address(), T0.minusSeconds(50), 10));
-		deals.register(old, null);
-		deals.settleDue();
-		assertThat(deals.get(old).signature()).isEqualTo("sig1");
-		assertThat(deals.get(old).upSeconds()).isEqualTo(10);
-	}
-
-	@Test
-	void missingLogsStillSettleWithAnUnknownVerdict() {
-		settleAndSend();
-		when(rpc.getSignatureStatus("sig1")).thenReturn(new SignatureStatus(true, null));
-		when(rpc.getTransactionLogs("sig1")).thenReturn(null);
-		deals.settleDue();
-		assertThat(deals.get(deal).status()).isEqualTo(Status.SETTLED);
-		assertThat(deals.get(deal).paidToRecipient()).isNull();
-	}
-
-	@Test
-	void retriesFailedSendsThenGivesUp() {
-		deals.register(deal, null);
-		when(rpc.sendTransaction(any())).thenThrow(new SolanaRpcException("node down"));
-		clock.set(T0.plusSeconds(13));
-		deals.settleDue();
-		deals.settleDue();
-		assertThat(deals.get(deal).status()).isEqualTo(Status.ACTIVE);
-		assertThat(deals.get(deal).attempts()).isEqualTo(2);
-		assertThat(deals.get(deal).upSeconds()).isEqualTo(10);
-		deals.settleDue();
-		assertThat(deals.get(deal).status()).isEqualTo(Status.FAILED);
-		assertThat(deals.get(deal).error()).contains("node down");
-	}
-
-	@Test
-	void failedTransactionsFailTheDeal() {
-		settleAndSend();
-		when(rpc.getSignatureStatus("sig1")).thenReturn(new SignatureStatus(true, "InstructionError"));
-		deals.settleDue();
-		assertThat(deals.get(deal).status()).isEqualTo(Status.FAILED);
-		assertThat(deals.get(deal).error()).contains("InstructionError");
-	}
-
-	@Test
-	void resendsWhenASettlementIsNotConfirmedInTime() {
-		settleAndSend();
-		when(rpc.getSignatureStatus("sig1")).thenReturn(null);
-		clock.set(T0.plusSeconds(13 + 31));
-		deals.settleDue();
-		assertThat(deals.get(deal).signature()).isNull();
-		assertThat(deals.get(deal).attempts()).isEqualTo(1);
-		when(rpc.sendTransaction(any())).thenReturn("sig2");
-		deals.settleDue();
-		assertThat(deals.get(deal).signature()).isEqualTo("sig2");
-	}
-
-	@Test
-	void aDealThatVanishedIsExplainedFromItsHistory() {
-		deals.register(deal, null);
-		when(rpc.getAccountInfo(deal)).thenReturn(null);
-		when(rpc.getSignaturesForAddress(deal, 10)).thenReturn(List.of("other", "settle"));
-		when(rpc.getTransactionLogs("other")).thenReturn(List.of(dealSettledLog(newAddress(), 1, 10, false, AMOUNT)));
-		when(rpc.getTransactionLogs("settle")).thenReturn(List.of(dealSettledLog(deal, 10, 10, true, AMOUNT)));
-		clock.set(T0.plusSeconds(13));
-		deals.settleDue();
-		UptimeDeal settled = deals.get(deal);
-		assertThat(settled.status()).isEqualTo(Status.SETTLED);
-		assertThat(settled.signature()).isEqualTo("settle");
-		assertThat(settled.paidToRecipient()).isTrue();
-	}
-
-	@Test
-	void aDealCancelledByItsPayerIsMarkedCancelled() {
-		deals.register(deal, null);
-		when(rpc.getAccountInfo(deal)).thenReturn(null);
-		when(rpc.getSignaturesForAddress(deal, 10)).thenReturn(List.of("cancel"));
-		when(rpc.getTransactionLogs("cancel")).thenReturn(List.of(dealCancelledLog(deal, payer, AMOUNT)));
-		clock.set(T0.plusSeconds(13));
-		deals.settleDue();
-		assertThat(deals.get(deal).status()).isEqualTo(Status.CANCELLED);
-	}
-
-	@Test
-	void aVanishedDealWithoutAClosingEventFails() {
-		deals.register(deal, null);
-		when(rpc.getAccountInfo(deal)).thenReturn(null);
-		when(rpc.getSignaturesForAddress(deal, 10)).thenReturn(List.of());
-		clock.set(T0.plusSeconds(13));
-		deals.settleDue();
-		assertThat(deals.get(deal).status()).isEqualTo(Status.FAILED);
-	}
-
-	@Test
-	void oneFailingDealDoesNotBlockOthers() {
-		String second = newAddress();
-		when(rpc.getAccountInfo(second)).thenReturn(dealAccount(oracle.address()));
-		deals.register(deal, null);
-		deals.register(second, null);
-		when(rpc.getAccountInfo(deal)).thenThrow(new SolanaRpcException("boom"));
-		clock.set(T0.plusSeconds(13));
-		deals.settleDue();
-		assertThat(deals.get(deal).attempts()).isEqualTo(1);
-		assertThat(deals.get(second).signature()).isEqualTo("sig1");
-	}
-
-	@Test
-	void fundsTheOracleWhenItIsLowAndToleratesAFaucetFailure() {
-		DealService funded = deals(100, service);
-		when(rpc.getBalance(oracle.address())).thenReturn(10L);
-		funded.register(deal, null);
-		verify(rpc).requestAirdrop(oracle.address(), 1_000);
-
-		String second = newAddress();
-		when(rpc.getAccountInfo(second)).thenReturn(dealAccount(oracle.address()));
-		when(rpc.getBalance(oracle.address())).thenThrow(new SolanaRpcException("no faucet"));
-		assertThat(funded.register(second, null).status()).isEqualTo(Status.ACTIVE);
-	}
-
-	@Test
-	void noFundingWhenDisabled() {
-		deals.register(deal, null);
-		verify(rpc, never()).getBalance(anyString());
-		verify(rpc, never()).requestAirdrop(anyString(), anyLong());
-	}
-
-	private void settleAndSend() {
-		deals.register(deal, null);
-		clock.set(T0.plusSeconds(13));
-		deals.settleDue();
-		assertThat(deals.get(deal).signature()).isEqualTo("sig1");
-	}
-
-	private TrackingEvent append(TrackingEvent event) {
-		events.append(event.serviceId(), events.load(event.serviceId()).size(), List.of(event));
-		return event;
-	}
-
-	private AccountInfo dealAccount(String dealOracle) {
-		return dealAccount(dealOracle, T0.plusSeconds(1), 10);
-	}
-
-	private AccountInfo dealAccount(String dealOracle, Instant startsAt, long durationSeconds) {
-		return new AccountInfo(PROGRAM_ID, AMOUNT + GUARANTEE + 2_000_000,
-				dealData(payer, recipient, dealOracle, 1, AMOUNT, startsAt.getEpochSecond(), durationSeconds));
-	}
-
-	private AccountInfo proposalAccount(Instant acceptDeadline) {
-		return new AccountInfo(PROGRAM_ID, AMOUNT + 2_000_000, proposalData(payer, recipient, oracle.address(), 1,
-				AMOUNT, GUARANTEE, 10, acceptDeadline.getEpochSecond()));
-	}
-
-	/** Checks the oracle's signature and the up/total encoded at the end of the settle_deal data. */
-	private void assertSignedSettlement(byte[] tx, long up, long total) {
-		byte[] message = Arrays.copyOfRange(tx, 65, tx.length);
-		assertThat(Ed25519.verify(oracle.publicKey(), message, Arrays.copyOfRange(tx, 1, 65))).isTrue();
-		ByteBuffer data = ByteBuffer.wrap(message, message.length - 16, 16).order(ByteOrder.LITTLE_ENDIAN);
-		assertThat(data.getLong()).isEqualTo(up);
-		assertThat(data.getLong()).isEqualTo(total);
+	void roundEndedByFollowsTheDealsWindow() {
+		ChainDeal account = deal("deal", 2, 3);
+		assertThat(account.roundEndedBy(START.plusMillis(1_999))).isEqualTo(-1);
+		assertThat(account.roundEndedBy(START.plusSeconds(2))).isZero();
+		assertThat(account.roundEndedBy(START.plusSeconds(6))).isEqualTo(2);
+		assertThat(account.roundEndedBy(START.plusSeconds(8))).isEqualTo(-1);
+		assertThat(account.roundEndedBy(START.minusSeconds(3))).isEqualTo(-1);
+		ChainDeal proposal = new ChainDeal("p", "r", "o", 1, 1, 4, 2, 1, 2, 0, 0, new byte[1], START, null);
+		assertThat(proposal.roundEndedBy(START.plusSeconds(4))).isEqualTo(-1);
 	}
 
 }

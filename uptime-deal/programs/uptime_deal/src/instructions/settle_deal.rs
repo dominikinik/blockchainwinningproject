@@ -4,75 +4,83 @@ use crate::{
     constants::*,
     error::DealError,
     events::DealSettled,
-    logic::{self, UptimeError},
+    logic,
     state::{Deal, DealStatus},
 };
 
 /// Accounts of `settle_deal`. Anchor closes `deal` to `payer` after the handler runs.
 #[derive(Accounts)]
 pub struct SettleDeal<'info> {
-    /// Reports the uptime; must be the deal's oracle.
-    pub oracle: Signer<'info>,
+    /// Anyone: pays the fee. The outcome doesn't depend on who triggers it.
+    pub caller: Signer<'info>,
     #[account(
         mut,
         seeds = [DEAL_SEED, deal.payer.as_ref(), &deal.deal_id.to_le_bytes()],
         bump = deal.bump,
-        has_one = oracle @ DealError::UnauthorizedOracle,
         has_one = payer,
         has_one = recipient,
         close = payer
     )]
     pub deal: Account<'info, Deal>,
-    /// CHECK: must be `deal.payer`; gets the rent back, and both deposits when uptime is 99% or less.
+    /// CHECK: must be `deal.payer`; gets the rent back, and the whole escrow on a breach.
     #[account(mut)]
     pub payer: UncheckedAccount<'info>,
-    /// CHECK: must be `deal.recipient`; gets both deposits when uptime is above 99%.
+    /// CHECK: must be `deal.recipient`; gets the whole escrow when the SLA is met.
     #[account(mut)]
     pub recipient: UncheckedAccount<'info>,
 }
 
-/// Judges the reported uptime and pays both deposits to the recipient or to the payer.
+/// Judges the SLA from the deal's own counters and pays the whole escrow to the winner.
+///
+/// Takes no arguments: the verdict is `up_checks * 10_000 >= min_uptime_bps * total_rounds`, read
+/// entirely from on-chain state, with unobserved rounds counted as down.
 ///
 /// # Arguments
 ///
 /// * `ctx` - the `SettleDeal` accounts, already checked against the deal.
-/// * `up_seconds` - seconds the application was up during the period.
-/// * `total_seconds` - length of the period in seconds.
 ///
 /// # Returns
 ///
 /// `Ok(())` after the payout and `DealSettled`; Anchor then closes the deal to the payer, which
-/// returns the rent and, when uptime was 99% or less, both deposits.
+/// returns the rent and, on a breach, the whole escrow.
 ///
 /// # Errors
 ///
-/// * `DealError::DealNotActive` - the recipient hasn't accepted the deal, so no window was measured.
-/// * `DealError::InvalidUptime` - `total_seconds == 0` or `up_seconds > total_seconds`.
-pub fn handle_settle_deal(ctx: Context<SettleDeal>, up_seconds: u64, total_seconds: u64) -> Result<()> {
-    require!(ctx.accounts.deal.status == DealStatus::Active, DealError::DealNotActive);
-    let paid_to_recipient = logic::uptime_above_threshold(up_seconds, total_seconds)
-        .map_err(|e: UptimeError| {
-            msg!("invalid uptime: {:?}", e);
-            DealError::InvalidUptime
-        })?;
-
+/// * `DealError::DealNotActive` - the provider never locked its guarantee (cancel instead).
+/// * `DealError::SettleTooEarly` - the window plus `OBSERVATION_GRACE_SECONDS` hasn't passed.
+/// * `DealError::Overflow` - payment plus guarantee overflows a u64.
+pub fn handle_settle_deal(ctx: Context<SettleDeal>) -> Result<()> {
     let deal = &mut ctx.accounts.deal;
-    let (amount, guarantee) = (deal.amount_lamports, deal.guarantee_lamports);
+    require!(deal.status == DealStatus::Active, DealError::DealNotActive);
+    let now = Clock::get()?.unix_timestamp;
+    require!(
+        logic::settle_allowed(deal.starts_at, deal.duration_seconds, now)
+            || logic::early_breach_is_proven(
+                deal.up_checks,
+                deal.down_checks,
+                deal.total_rounds,
+                deal.min_uptime_bps,
+            ),
+        DealError::SettleTooEarly
+    );
+
+    let paid_to_recipient = logic::sla_met(deal.up_checks, deal.total_rounds, deal.min_uptime_bps);
+    let payout = deal.amount_lamports.checked_add(deal.provider_stake_lamports).ok_or(DealError::Overflow)?;
     if paid_to_recipient {
         // The program owns `deal`, so it can debit it directly.
-        let both = amount.checked_add(guarantee).ok_or(ProgramError::ArithmeticOverflow)?;
-        deal.sub_lamports(both)?;
-        ctx.accounts.recipient.add_lamports(both)?;
+        deal.sub_lamports(payout)?;
+        ctx.accounts.recipient.add_lamports(payout)?;
     }
-    // Otherwise both deposits stay in `deal` and `close = payer` returns them with the rent.
+    // On a breach the escrow stays in `deal` and `close = payer` returns it with the rent.
 
     emit!(DealSettled {
         deal: deal.key(),
-        up_seconds,
-        total_seconds,
+        up_checks: deal.up_checks,
+        down_checks: deal.down_checks,
+        total_rounds: deal.total_rounds,
+        min_uptime_bps: deal.min_uptime_bps,
         paid_to_recipient,
-        amount_lamports: amount,
-        guarantee_lamports: guarantee,
+        payout_lamports: payout,
     });
     Ok(())
 }

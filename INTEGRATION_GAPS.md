@@ -35,11 +35,11 @@ The mock service assigns an ID and start/end timestamps, then returns the create
 
 - **Uptime deal, end to end (`/deal`):** a two-sided agreement on the real `uptime_deal` program.
   - The payer's wallet signs `create_deal`, which proposes the deal and locks the payment.
-  - `POST /api/deals` registers the proposal with `uptime-monitor`, which is the program's oracle. It links the deal to a tracked service (by default the provider, `uptime-service`) and re-reads the proposal until it is accepted or cancelled.
+  - `POST /api/deals` registers the proposal with `uptime-monitor`, which is the program's oracle. It links the deal to the service the monitor relays (the provider, `uptime-service`) and re-reads the proposal until it is accepted or cancelled.
   - The provider sees the proposal under "Proposals for you" and signs `accept_deal`. That locks its guarantee and starts the uptime window on chain; the program refuses the acceptance if the terms differ from the ones the provider was shown.
-  - The monitor settles from the service's events. A failed check that makes more than 99% uptime unreachable closes the deal at once, ending tracking settles it with the uptime so far, and otherwise it settles when the window (for example 10 s) ends. The program pays both deposits to the provider when uptime is above 99%, and to the payer otherwise.
+  - Each registered, accepted deal gets a heartbeat at its own on-chain round interval: when a round ends, the monitor calls the provider's `/api/health` and reports the result as that round's UP/DOWN observation. A failed report is retried from memory. The contract owns the counters and payout rule; anyone can call `settle_deal` after expiry, and the monitor may call it early once on-chain DOWN counters prove the threshold unreachable.
   - The page shows the verdict and the provider's on-chain balance. Covered by `frontend/e2e` (Playwright) and runnable by hand with `scripts/run-deal-demo.sh`, using two browser windows.
-  - What it measures is the provider's health as checked by the monitor every 2 s, not a customer endpoint.
+  - What it measures is the provider's health, checked once per round, not a customer endpoint.
   - Tracked deals are stored in `monitor-db`, so they survive a monitor restart. If the monitor is down for good, either party can reclaim its deposit with `cancel_deal` ("Reclaim deposits" on the page) 10 minutes after the window ends. A proposal can be withdrawn by the payer or rejected by the provider at any time.
 
 - The Monitoring page reads the Java service's own `GET /api/application/state` and `GET /api/uptime?from=...&to=...` endpoints. The timeline shows recorded `UP` or `DOWN` seconds for the **Java service**, refreshing every 10 seconds. It does not measure customer API endpoints.
