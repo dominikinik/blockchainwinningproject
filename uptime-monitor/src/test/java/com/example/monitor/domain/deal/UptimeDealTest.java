@@ -14,10 +14,10 @@ class UptimeDealTest {
 
 	static final Instant T0 = Instant.parse("2026-10-04T12:00:00Z");
 
-	UptimeDeal deal = UptimeDeal.register("Deal", ServiceId.newId(), "Payer", "Recipient", 500, 700, 10,
+	UptimeDeal deal = UptimeDeal.register("Deal", "http://p/health", "Payer", "Recipient", 500, 700, 10,
 			T0.plusSeconds(86_400), T0, T0);
 
-	UptimeDeal proposal = UptimeDeal.register("Prop", ServiceId.newId(), "Payer", "Recipient", 500, 700, 10,
+	UptimeDeal proposal = UptimeDeal.register("Prop", "http://p/health", "Payer", "Recipient", 500, 700, 10,
 			T0.plusSeconds(86_400), null, T0);
 
 	@Test
@@ -40,8 +40,28 @@ class UptimeDealTest {
 	@Test
 	void anActiveDealNeedsAWindowStart() {
 		org.assertj.core.api.Assertions.assertThatIllegalArgumentException()
-			.isThrownBy(() -> new UptimeDeal("D", ServiceId.newId(), "P", "R", 1, 1, 10, T0, null, Status.ACTIVE, null,
+			.isThrownBy(() -> new UptimeDeal("D", ServiceId.newId(), "http://p/health", "P", "R", 1, 1, 10, T0, null, Status.ACTIVE, null,
 					null, null, null, null, 0, null, T0));
+	}
+
+	@Test
+	void everyDealHasItsOwnStableServiceAndHealthUrl() {
+		assertThat(deal.serviceId()).isEqualTo(UptimeDeal.serviceIdFor("Deal"));
+		assertThat(UptimeDeal.serviceIdFor("Deal")).isEqualTo(UptimeDeal.serviceIdFor("Deal"));
+		assertThat(proposal.serviceId()).isNotEqualTo(deal.serviceId());
+		assertThat(deal.healthUrl()).isEqualTo("http://p/health");
+		org.assertj.core.api.Assertions.assertThatNullPointerException()
+			.isThrownBy(() -> UptimeDeal.register("D", null, "P", "R", 1, 1, 10, T0, T0, T0));
+	}
+
+	@Test
+	void onlySettledCancelledAndFailedDealsAreFinished() {
+		assertThat(proposal.isFinished()).isFalse();
+		assertThat(deal.isFinished()).isFalse();
+		assertThat(deal.decide(new Verdict(10, 10)).isFinished()).isFalse();
+		assertThat(deal.decide(new Verdict(10, 10)).settled(true).isFinished()).isTrue();
+		assertThat(proposal.cancelled("c").isFinished()).isTrue();
+		assertThat(deal.failed("x").isFinished()).isTrue();
 	}
 
 	@Test

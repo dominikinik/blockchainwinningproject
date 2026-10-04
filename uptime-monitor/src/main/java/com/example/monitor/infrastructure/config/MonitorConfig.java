@@ -9,11 +9,13 @@ import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestClient;
 
 import com.example.monitor.application.DealService;
+import com.example.monitor.application.ServiceMonitor;
 import com.example.monitor.application.TrackingEventListener;
 import com.example.monitor.application.TrackingService;
 import com.example.monitor.application.UptimeHistory;
@@ -110,15 +112,19 @@ public class MonitorConfig {
 					chain.oracleMinLamports(), chain.oracleAirdropLamports());
 		}
 
-		/** The deal oracle; it is also a {@link TrackingEventListener}, so {@code TrackingService} feeds it. */
+		/**
+		 * The deal oracle; it is also a {@link TrackingEventListener}, so {@code TrackingService} feeds it. It
+		 * starts and stops its deals' tracking through {@code TrackingService} as the {@link ServiceMonitor},
+		 * injected lazily to break the cycle.
+		 */
 		@Bean
-		DealService dealService(UptimeDealRepository deals, DealChain chain, TrackingEventStore events, Clock clock,
-				MonitorProperties properties) {
+		DealService dealService(UptimeDealRepository deals, DealChain chain, TrackingEventStore events,
+				@Lazy ServiceMonitor monitor, Clock clock, MonitorProperties properties) {
 			MonitorProperties.Deal deal = properties.deal();
 			MonitorProperties.DefaultService service = properties.defaultService();
-			return new DealService(deals, chain, events, clock,
-					new DealService.Settings(service.enabled() ? new ServiceId(service.id()) : null,
-							deal.maxDurationSeconds(), deal.settleGraceSeconds(), deal.maxSettleAttempts(),
+			return new DealService(deals, chain, events, monitor, clock,
+					new DealService.Settings(service.enabled() ? service.healthUrl() : null, deal.maxDurationSeconds(),
+							deal.settleGraceSeconds(), deal.startGraceSeconds(), deal.maxSettleAttempts(),
 							deal.confirmTimeoutSeconds()));
 		}
 

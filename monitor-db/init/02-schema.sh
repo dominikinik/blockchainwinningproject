@@ -22,10 +22,12 @@ CREATE TABLE IF NOT EXISTS tracking_event (
 
 -- Deals of the uptime_deal Solana program that this monitor settles as their oracle. One row per deal,
 -- updated in place as it advances (PROPOSED -> ACTIVE at acceptance -> SETTLED / FAILED / CANCELLED).
--- starts_at stays NULL until the recipient accepts.
+-- starts_at stays NULL until the recipient accepts. service_id is the deal's own tracked service, which checks
+-- health_url from the acceptance until the deal is finished.
 CREATE TABLE IF NOT EXISTS uptime_deal (
     address           VARCHAR(44) PRIMARY KEY,
     service_id        UUID NOT NULL,
+    health_url        TEXT NOT NULL,
     payer             VARCHAR(44) NOT NULL,
     recipient         VARCHAR(44) NOT NULL,
     amount_lamports   BIGINT NOT NULL CHECK (amount_lamports >= 0),
@@ -44,5 +46,10 @@ CREATE TABLE IF NOT EXISTS uptime_deal (
     error             TEXT,
     registered_at     TIMESTAMP(6) WITH TIME ZONE NOT NULL
 );
+
+-- Databases created before deals had their own health URL: earlier deals were measured on the provider.
+-- The default only fills existing rows; afterwards the column matches a freshly created one.
+ALTER TABLE uptime_deal ADD COLUMN IF NOT EXISTS health_url TEXT NOT NULL DEFAULT 'http://localhost:8080/api/health';
+ALTER TABLE uptime_deal ALTER COLUMN health_url DROP DEFAULT;
 SQL
 done

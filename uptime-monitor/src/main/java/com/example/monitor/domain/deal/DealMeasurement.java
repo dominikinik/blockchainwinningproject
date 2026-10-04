@@ -15,7 +15,8 @@ import com.example.monitor.domain.TrackingEvent.TrackingStarted;
  * A deal window measured from the events of its service, as of {@code now}. All values are whole seconds.
  * <ul>
  * <li>{@code covered}: seconds of the elapsed window ({@code [start, min(end, now))}) during which the service
- * was being tracked.</li>
+ * was being tracked. When the service's first {@code TrackingStarted} comes at most {@code startGrace} after the
+ * window start (the oracle noticing the acceptance), the time before it counts as tracked too.</li>
  * <li>Each {@code Downtime} that has happened inside the window marks one check interval from its time as down
  * ({@code [t, t + interval)}, cut at the window end; overlapping intervals count once). {@code down} is the part
  * of that inside the elapsed window (capped at {@code covered}), {@code downAhead} the part still to come.</li>
@@ -35,18 +36,31 @@ public record DealMeasurement(long total, long covered, long down, long upSoFar,
 		return Math.max(0, upSoFar + remaining - downAhead);
 	}
 
+	/** Measures a window with no start grace: untracked time is never up. */
+	public static DealMeasurement of(List<TrackingEvent> history, Instant start, long total, Instant now) {
+		return of(history, start, total, now, Duration.ZERO);
+	}
+
 	/**
 	 * Measures a window.
 	 *
-	 * @param history all events of the service, oldest first
-	 * @param start   window start (inclusive)
-	 * @param total   window length in seconds
-	 * @param now     the current time; events after it are ignored
+	 * @param history    all events of the service, oldest first
+	 * @param start      window start (inclusive)
+	 * @param total      window length in seconds
+	 * @param now        the current time; events after it are ignored
+	 * @param startGrace how late after {@code start} the first tracking may begin and still cover the window from
+	 *                   its start
 	 */
-	public static DealMeasurement of(List<TrackingEvent> history, Instant start, long total, Instant now) {
+	public static DealMeasurement of(List<TrackingEvent> history, Instant start, long total, Instant now,
+			Duration startGrace) {
 		Instant end = start.plusSeconds(total);
 		Instant elapsedEnd = now.isBefore(end) ? (now.isBefore(start) ? start : now) : end;
 		long coveredMillis = 0;
+		if (!history.isEmpty() && history.getFirst() instanceof TrackingStarted first
+				&& first.occurredAt().isAfter(start) && !first.occurredAt().isAfter(start.plus(startGrace))
+				&& !first.occurredAt().isAfter(now)) {
+			coveredMillis += overlapMillis(start, first.occurredAt(), start, elapsedEnd);
+		}
 		Instant periodStart = null;
 		Duration interval = Duration.ZERO;
 		List<Instant[]> downs = new ArrayList<>();

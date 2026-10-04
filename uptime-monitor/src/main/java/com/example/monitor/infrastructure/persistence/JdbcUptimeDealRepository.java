@@ -21,7 +21,7 @@ import com.example.monitor.domain.deal.UptimeDealRepository;
 /** {@link UptimeDealRepository} on the {@code uptime_deal} table of the {@code monitor-db} module. */
 public class JdbcUptimeDealRepository implements UptimeDealRepository {
 
-	private static final String COLUMNS = "address, service_id, payer, recipient, amount_lamports, "
+	private static final String COLUMNS = "address, service_id, health_url, payer, recipient, amount_lamports, "
 			+ "guarantee_lamports, duration_seconds, accept_deadline, starts_at, status, up_seconds, total_seconds, "
 			+ "paid_to_recipient, signature, sent_at, attempts, error, registered_at";
 
@@ -35,8 +35,8 @@ public class JdbcUptimeDealRepository implements UptimeDealRepository {
 	public void add(UptimeDeal deal) {
 		try {
 			jdbc.sql("INSERT INTO uptime_deal (" + COLUMNS
-					+ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-				.params(deal.address(), deal.serviceId().value(), deal.payer(), deal.recipient(), deal.amountLamports(),
+					+ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+				.params(deal.address(), deal.serviceId().value(), deal.healthUrl(), deal.payer(), deal.recipient(), deal.amountLamports(),
 						deal.guaranteeLamports(), deal.durationSeconds(), ts(deal.acceptDeadline()), ts(deal.startsAt()),
 						deal.status().name(), deal.upSeconds(), deal.totalSeconds(), deal.paidToRecipient(),
 						deal.signature(), ts(deal.sentAt()), deal.attempts(), deal.error(), ts(deal.registeredAt()))
@@ -103,7 +103,7 @@ public class JdbcUptimeDealRepository implements UptimeDealRepository {
 
 	private static UptimeDeal map(ResultSet rs) throws SQLException {
 		return new UptimeDeal(rs.getString("address"), new ServiceId(rs.getObject("service_id", UUID.class)),
-				rs.getString("payer"), rs.getString("recipient"), rs.getLong("amount_lamports"),
+				rs.getString("health_url"), rs.getString("payer"), rs.getString("recipient"), rs.getLong("amount_lamports"),
 				rs.getLong("guarantee_lamports"), rs.getLong("duration_seconds"), instant(rs, "accept_deadline"),
 				instant(rs, "starts_at"), Status.valueOf(rs.getString("status")),
 				rs.getObject("up_seconds", Long.class), rs.getObject("total_seconds", Long.class),
