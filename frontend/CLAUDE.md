@@ -15,7 +15,7 @@ npm test                                        # all tests once (Vitest, jsdom;
 npm run test:watch                              # watch mode
 npx vitest run src/lib/format.test.ts           # single file
 npx vitest run -t "settles an ended SLA"        # single test by name
-npm run test:e2e                                # Playwright, real stack (~45s; see "Uptime deal" below)
+npm run test:e2e                                # Playwright, real stack (~80s; see "Uptime deal" below)
 ```
 
 ## Tests
@@ -69,7 +69,9 @@ Configuration comes from `src/config/solana.ts`:
 
 To test by hand, run `../scripts/run-deal-demo.sh`. It starts a validator on :8899 with the program, `uptime-service` on :8080, `uptime-monitor` on :8082 (with `monitor-db`) and Vite on :5173 in burner mode. Then open `http://localhost:5173/deal` in two windows, one for the provider and one for the payer. Each window gets its own burner wallet; don't reload or disconnect either one during the demo.
 
-`npm run test:e2e` (`playwright.config.ts`, `e2e/`) starts its own stack on separate ports (validator :18899, provider :18080 and monitor :18082 on the `monitor_test` database via `e2e/start-backend.sh`, Vite :5174). Each test uses two browser contexts (payer and provider, each with its own burner wallet), and the provider opens the proposal from "Proposals for you". It runs three flows:
-- a 10-second deal that keeps the service up, asserting the provider ends with its guarantee back plus the payment on chain;
-- one that simulates an outage, asserting the payer gets its payment back plus the provider's guarantee (the monitor closes that deal early on the first failed check);
-- a rejected proposal. It needs `anchor build` in `../uptime-deal`, Docker, Java and the Solana CLI. It is a cross-module test, so it is not part of `scripts/test-all.sh`; run it when you change the deal flow. The scripts reuse a running `monitor-db` container, because `docker compose up` from another worktree would recreate it on that worktree's `data/` directory.
+`npm run test:e2e` (`playwright.config.ts`, `e2e/`) starts its own stack on separate ports (validator :18899, provider :18080 and monitor :18082 on the `monitor_test` database via `e2e/start-backend.sh`, Vite :5174). It runs three flows:
+- a 10-second deal without a guarantee that keeps the service up, asserting the recipient gets the payment on chain;
+- one that simulates an outage, asserting the payer gets its payment back;
+- a two-wallet deal with a guarantee: two browser contexts (payer and provider, each with its own burner wallet); the provider copies its address with "Copy my address", opens the proposal from "Proposals for you" and accepts it, and the test asserts the provider ends with the payment plus its guarantee back on chain.
+
+It needs `anchor build` in `../uptime-deal`, Docker, Java and the Solana CLI. It is a cross-module test, so it is not part of `scripts/test-all.sh`; run it when you change the deal flow. The scripts reuse a running `monitor-db` container, because `docker compose up` from another worktree would recreate it on that worktree's `data/` directory.

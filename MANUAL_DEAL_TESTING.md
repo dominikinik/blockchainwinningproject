@@ -5,7 +5,7 @@ This guide walks through the real on-chain flow on a local Solana validator. It 
 - **Payout:** the service is up for the entire deal window, so the recipient gets the escrow.
 - **Refund:** the service fails a health check during the window, so the payer gets the escrow back.
 
-The page is `/deal`. This is separate from the mock SLA creation and settlement flows elsewhere in the frontend.
+The page is `/deal`. This is separate from the mock SLA creation and settlement flows elsewhere in the frontend. Use two browser windows, one for the payer and one for the provider. Each window gets its own Burner Wallet; do not reload either window during a deal.
 
 ## What you need
 
@@ -26,6 +26,8 @@ From the repository root:
 cd uptime-deal && anchor build --ignore-keys
 cd .. && ./scripts/run-deal-demo.sh
 ```
+
+If port 8899 is occupied, choose a free RPC port, for example `DEMO_RPC_PORT=8893 ./scripts/run-deal-demo.sh`. The script passes it to the validator, monitor and frontend.
 
 The `anchor build --ignore-keys` step is needed when the local deploy keypair does not match the program ID declared in source. It skips that local keypair check; it does not change the program ID. The demo script then starts a fresh validator on port `8899` with the built program, reuses or starts PostgreSQL (`monitor-db`), starts the health provider (`uptime-service` on :8080) and the monitor (`uptime-monitor` on :8082, the deal oracle), and starts the frontend with Burner Wallet enabled. It prints a ready message when all services respond. Press Ctrl-C in that terminal to stop the validator, both services, and the frontend. PostgreSQL remains running and keeps its data.
 
@@ -90,50 +92,38 @@ The monitor's deal config should report the same RPC URL as the frontend:
 curl http://localhost:8082/api/deals/config
 ```
 
-For the alternate-port setup, its `rpcUrl` should be `http://127.0.0.1:8891`. A network mismatch warning on the page means the frontend and backend are pointed at different clusters; fix the environment variables and restart both.
+For the alternate-port setup, its `rpcUrl` should match `DEMO_RPC_PORT` (for example `http://127.0.0.1:8893`). A network mismatch warning on the page means the frontend and backend are pointed at different clusters; fix the environment variables and restart both.
 
-## Create a recipient address
+## Prepare the two wallets
 
-The recipient can be any valid Solana public address that is different from the connected payer. The recipient does not need to connect or sign, and does not need funds beforehand. To keep a local recipient keypair for balance checks, create one once:
-
-```sh
-cd uptime-deal
-mkdir -p .anchor
-solana-keygen new --no-bip39-passphrase --silent --outfile .anchor/demo-recipient-keypair.json
-solana-keygen pubkey .anchor/demo-recipient-keypair.json
-```
-
-Paste the printed public key into the page's **Recipient address** field. The keypair is ignored by Git under `.anchor/`; keep it local. Never paste the keypair file, private key, or recovery phrase into the page. If the file already exists, reuse it instead of running the `new` command again.
+Open `/deal` in two separate browser windows. Connect **Burner Wallet** in each window. Click **Airdrop 2 SOL** in both: the payer needs the payment and rent, and the provider needs the guarantee and transaction fees. In the provider window, click **Copy my address** and paste that public address into the payer window's **Recipient address** field. Keep both windows open; reloading creates a new Burner Wallet key.
 
 ## Test a successful payout
 
-1. Open `/deal`, click **Select Wallet**, and choose **Burner Wallet**. This is a throwaway in-browser wallet for local testing; no browser wallet extension is required.
-2. Click **Airdrop 2 SOL**. Wait until the payer balance updates before submitting. A new or reset local ledger does not have the burner's previous SOL.
-3. Enter the recipient public key, set **Amount** to `0.5` SOL, and set **Window** to `10` seconds. The amount must be at least `0.001` SOL; the recipient cannot equal the payer.
-4. Click **Create deal** and approve the transaction if prompted.
-5. Keep the uptime service in the **UP** state for the whole window. Wait for the deal to settle.
+1. In the payer window, enter the provider's address, set **Payment** to `0.5` SOL, **Provider guarantee** to `0.1` SOL, **Window** to `20` seconds, **Check interval** to `2` seconds and **Minimum uptime** to `90%`.
+2. Click **Create deal**. The payment is locked and the proposal appears under **Proposals for you** in the provider window.
+3. In the provider window, click **View proposal**, then **Accept and lock guarantee**. The provider's `0.1` SOL is locked and the window starts.
+4. Keep the service **UP**. The on-chain counters should show ten UP rounds. After the window and 10-second observation grace, the monitor should submit settlement. Either wallet can also click **Settle now** once it appears.
 
-Expected result: **Paid to recipient**, with all five two-second rounds reported UP. The recipient balance should increase by `0.5 SOL`.
-
-The program's rule is strictly **greater than 99%**. For a 10-second deal, all 10 seconds must be up to pay the recipient.
+Expected result: **SLA met · escrow paid to recipient**. The provider receives the `0.5` SOL payment and gets its `0.1` SOL guarantee back, less transaction fees. The rule is uptime **at least** the configured threshold.
 
 ## Test a refund after an outage
 
-1. Create a second 10-second deal using the same funded payer and a different recipient address.
-2. As soon as the deal starts, click **Simulate outage**. Leave the service down for at least three seconds so the monitor's once-per-round health check (every 2 s with the default interval) sees it.
-3. Click **Restore service**. The monitor reports each failed/healthy probe directly as DOWN/UP for its completed round. Once the on-chain counters prove the 99% threshold is unreachable, the monitor can submit settlement early; otherwise anyone can settle after expiry.
+1. Ensure the service is **UP**, then create and accept a second deal with the same terms and wallets.
+2. As soon as the provider accepts, click **Simulate outage** and leave the service **DOWN** for at least six seconds, so several of its two-second rounds are observed as DOWN.
+3. Click **Restore service**. The oracle sends the probe results as DOWN/UP observations. Once the on-chain DOWN count makes the threshold unreachable, the monitor may settle early; otherwise anyone can settle after expiry and the observation grace.
 
-Expected result: **Refunded to payer**; the recipient receives no SOL. At or below 99% uptime, the on-chain program closes the deal and returns the escrow to the payer. Transaction fees are still paid in local test SOL.
+Expected result: **SLA breached · escrow paid to payer**. The payer receives the payment and provider guarantee, less transaction fees.
 
 ## What the page shows
 
 - **Current state** reflects the uptime service's controllable UP/DOWN state.
 - **Oracle** is the service key that signs settlement transactions.
-- **Measured** is the uptime the monitor reported for the on-chain deal window, from its health checks.
-- **Deal** updates from ACTIVE to SETTLED and shows whether the recipient was paid or the payer was refunded.
+- **On-chain counters** show UP, DOWN and unobserved rounds in the deal window. Unobserved rounds count as DOWN at settlement.
+- **Deal** shows the program's terms and final payout after settlement.
 - **Recipient balance** is read from the same RPC as the payer wallet.
 
-The monitor stores deals in `monitor-db`, so restarting it doesn't lose them; it carries on settling after it starts again. If it stays down, the on-chain escrow remains recoverable by the payer after the program's cancellation timeout (10 minutes after the deal window ends).
+The monitor stores deal registrations in `monitor-db`, so restarting it doesn't lose them. Its pending observation retries live in memory, however, and missed rounds count as DOWN. The on-chain deal can be settled by anyone after the window and observation grace, even if the monitor is down.
 
 ## Troubleshooting
 

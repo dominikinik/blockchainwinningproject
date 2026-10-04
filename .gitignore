@@ -12,6 +12,10 @@ dist/
 # Local secret keypairs
 /scripts/keypair.json
 /scripts/another-keypair.json
+/uptime-service/.oracle-keypair.json
+
+# Data from the retired uptime-db container; keep local PostgreSQL files out of Git
+/uptime-db/data/
 
 # Local Claude Code workspace (plans, notes)
 /.claude/
