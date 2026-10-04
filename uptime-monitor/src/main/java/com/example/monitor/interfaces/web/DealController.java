@@ -43,8 +43,9 @@ public class DealController {
 	@PostMapping
 	@ResponseStatus(HttpStatus.CREATED)
 	@Operation(summary = "Settle a deal from a tracked service's events",
-			description = "The deal must exist on chain and name this monitor's oracle; its window comes from the deal "
-					+ "account. It closes early (refund) when a failure makes more than 99% uptime unreachable, settles "
+			description = "The deal must exist on chain and name this monitor's oracle. A proposal is tracked as "
+					+ "PROPOSED until its recipient accepts it on chain; the window then runs from the acceptance, read "
+					+ "from the deal account. It closes early (refund) when a failure makes more than 99% uptime unreachable, settles "
 					+ "when tracking of the service finishes, and otherwise settles when the window ends. Without "
 					+ "serviceId the deal is measured against the default service. 400 for an invalid request or deal, "
 					+ "409 if already registered, 502 if the RPC node fails, 503 if the blockchain is disabled.")
@@ -60,7 +61,7 @@ public class DealController {
 	}
 
 	@GetMapping
-	@Operation(summary = "All deals, newest window first")
+	@Operation(summary = "All deals, most recently proposed first")
 	public List<DealResponse> list() {
 		return deals().list().stream().map(DealResponse::of).toList();
 	}
@@ -82,15 +83,20 @@ public class DealController {
 			UUID serviceId) {
 	}
 
-	/** Same shape as the deal JSON the frontend reads, plus {@code serviceId}. */
+	/**
+	 * Same shape as the deal JSON the frontend reads, plus {@code serviceId}. {@code startsAt}/{@code endsAt} are
+	 * {@code null} while the deal is {@code PROPOSED}.
+	 */
 	public record DealResponse(String address, UUID serviceId, String payer, String recipient, long amountLamports,
-			long durationSeconds, Instant startsAt, Instant endsAt, UptimeDeal.Status status, Long upSeconds,
-			Long totalSeconds, Boolean paidToRecipient, String signature, Instant sentAt, int attempts, String error) {
+			long guaranteeLamports, long durationSeconds, Instant acceptDeadline, Instant startsAt, Instant endsAt,
+			UptimeDeal.Status status, Long upSeconds, Long totalSeconds, Boolean paidToRecipient, String signature,
+			Instant sentAt, int attempts, String error) {
 
 		static DealResponse of(UptimeDeal d) {
 			return new DealResponse(d.address(), d.serviceId().value(), d.payer(), d.recipient(), d.amountLamports(),
-					d.durationSeconds(), d.startsAt(), d.endsAt(), d.status(), d.upSeconds(), d.totalSeconds(),
-					d.paidToRecipient(), d.signature(), d.sentAt(), d.attempts(), d.error());
+					d.guaranteeLamports(), d.durationSeconds(), d.acceptDeadline(), d.startsAt(), d.endsAt(), d.status(),
+					d.upSeconds(), d.totalSeconds(), d.paidToRecipient(), d.signature(), d.sentAt(), d.attempts(),
+					d.error());
 		}
 
 	}

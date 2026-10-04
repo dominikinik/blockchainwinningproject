@@ -87,8 +87,10 @@ service_id|uuid||NO
 payer|character varying||NO
 recipient|character varying||NO
 amount_lamports|bigint||NO
-starts_at|timestamp with time zone|6|NO
+guarantee_lamports|bigint||NO
 duration_seconds|bigint||NO
+accept_deadline|timestamp with time zone|6|NO
+starts_at|timestamp with time zone|6|YES
 status|character varying||NO
 up_seconds|bigint||YES
 total_seconds|bigint||YES
@@ -147,19 +149,20 @@ rejects "INSERT INTO tracking_event (id, service_id, version, type, occurred_at)
 pass "id cannot be set by hand"
 
 D=Dea1AddressDea1AddressDea1AddressDea1Addre
-deal() { echo "INSERT INTO uptime_deal (address, service_id, payer, recipient, amount_lamports, starts_at, duration_seconds, status, registered_at) VALUES ($1)"; }
-psql monitor_test -c "$(deal "'$D', '$S', 'P', 'R', 1000000, now(), 10, 'ACTIVE', now()")"
+deal() { echo "INSERT INTO uptime_deal (address, service_id, payer, recipient, amount_lamports, guarantee_lamports, accept_deadline, starts_at, duration_seconds, status, registered_at) VALUES ($1)"; }
+psql monitor_test -c "$(deal "'$D', '$S', 'P', 'R', 1000000, 7000000, now(), NULL, 10, 'PROPOSED', now()")"
 [ "$(psql monitor_test -c "SELECT attempts FROM uptime_deal WHERE address = '$D'")" = 0 ] \
 	|| fail "attempts must default to 0"
-pass "a deal row is accepted and attempts defaults to 0"
-rejects "$(deal "'$D', '$S', 'P', 'R', 1000000, now(), 10, 'ACTIVE', now()")" 'duplicate key'
+pass "a proposal row without a window start is accepted and attempts defaults to 0"
+rejects "$(deal "'$D', '$S', 'P', 'R', 1000000, 7000000, now(), now(), 10, 'ACTIVE', now()")" 'duplicate key'
 pass "a second deal with the same address is rejected"
-rejects "$(deal "'x1', '$S', 'P', 'R', 1000000, now(), 10, 'PENDING', now()")" 'check constraint'
-rejects "$(deal "'x2', '$S', 'P', 'R', 1000000, now(), 0, 'ACTIVE', now()")" 'check constraint'
-rejects "$(deal "'x3', '$S', 'P', 'R', -1, now(), 10, 'ACTIVE', now()")" 'check constraint'
-pass "unknown deal statuses, zero durations and negative amounts are rejected"
-rejects "$(deal "'x4', NULL, 'P', 'R', 1000000, now(), 10, 'ACTIVE', now()")" 'not-null constraint'
-rejects "$(deal "'x5', '$S', 'P', 'R', 1000000, NULL, 10, 'ACTIVE', now()")" 'not-null constraint'
-pass "deals without a service or a start are rejected"
+rejects "$(deal "'x1', '$S', 'P', 'R', 1000000, 0, now(), now(), 10, 'PENDING', now()")" 'check constraint'
+rejects "$(deal "'x2', '$S', 'P', 'R', 1000000, 0, now(), now(), 0, 'ACTIVE', now()")" 'check constraint'
+rejects "$(deal "'x3', '$S', 'P', 'R', -1, 0, now(), now(), 10, 'ACTIVE', now()")" 'check constraint'
+rejects "$(deal "'x6', '$S', 'P', 'R', 1000000, -1, now(), now(), 10, 'ACTIVE', now()")" 'check constraint'
+pass "unknown deal statuses, zero durations and negative amounts or guarantees are rejected"
+rejects "$(deal "'x4', NULL, 'P', 'R', 1000000, 0, now(), now(), 10, 'ACTIVE', now()")" 'not-null constraint'
+rejects "$(deal "'x5', '$S', 'P', 'R', 1000000, 0, NULL, now(), 10, 'ACTIVE', now()")" 'not-null constraint'
+pass "deals without a service or an accept deadline are rejected"
 
 echo "monitor-db: $PASSED checks passed"

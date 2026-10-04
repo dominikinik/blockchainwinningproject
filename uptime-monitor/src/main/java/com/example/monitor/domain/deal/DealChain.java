@@ -9,12 +9,21 @@ import java.time.Instant;
 public interface DealChain {
 
 	/**
-	 * An on-chain {@code Deal} account.
+	 * An on-chain {@code Deal} account: a proposal until the recipient accepts it, then an active deal.
 	 *
-	 * @param startsAt chain time at creation; the window starts here
+	 * @param amountLamports    the payer's payment, locked at proposal
+	 * @param guaranteeLamports the recipient's guarantee, locked at acceptance
+	 * @param acceptDeadline    chain time from which the proposal can no longer be accepted
+	 * @param startsAt          chain time of the acceptance, where the window starts; {@code null} for a proposal
 	 */
-	record ChainDeal(String payer, String recipient, String oracle, long amountLamports, Instant startsAt,
-			long durationSeconds) {
+	record ChainDeal(String payer, String recipient, String oracle, long amountLamports, long guaranteeLamports,
+			long durationSeconds, Instant acceptDeadline, Instant startsAt) {
+
+		/** Whether the recipient accepted, so the window runs. */
+		public boolean accepted() {
+			return startsAt != null;
+		}
+
 	}
 
 	/**

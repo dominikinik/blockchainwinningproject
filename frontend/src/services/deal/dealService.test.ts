@@ -2,9 +2,9 @@
 // PDA hashing rejects jsdom's cross-realm Uint8Array; these tests need no DOM.
 import { Keypair, PublicKey, type Connection, type Transaction } from '@solana/web3.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { dealApi } from './dealApi'
+import { dealApi, type TrackedDeal } from './dealApi'
 import { dealAddress } from './dealProgram'
-import { cancelDeal, openDeal, requestAirdrop, waitForConfirmation } from './dealService'
+import { acceptDeal, cancelDeal, openDeal, requestAirdrop, waitForConfirmation } from './dealService'
 
 vi.mock('./dealApi', () => ({ dealApi: { register: vi.fn() } }))
 
@@ -12,6 +12,7 @@ const programId = 'EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r'
 const config = { programId, oracle: Keypair.generate().publicKey.toBase58(), rpcUrl: 'http://rpc' }
 const payer = Keypair.generate().publicKey
 const recipient = Keypair.generate().publicKey.toBase58()
+const terms = { amountLamports: 500_000_000n, guaranteeLamports: 700_000_000n, durationSeconds: 10 }
 
 function connectionWith(...statuses: unknown[]) {
   const getSignatureStatuses = vi.fn()
@@ -55,12 +56,12 @@ describe('waitForConfirmation', () => {
 describe('openDeal', () => {
   beforeEach(() => { vi.mocked(dealApi.register).mockReset() })
 
-  it('sends create_deal, waits for it, then registers the deal address', async () => {
+  it('sends create_deal with both deposits, waits for it, then registers the deal address', async () => {
     const connection = connectionWith({ confirmationStatus: 'confirmed', err: null })
     const sendTransaction = vi.fn().mockResolvedValue('sig')
     vi.mocked(dealApi.register).mockResolvedValue({ address: 'D' } as never)
 
-    await expect(openDeal({ connection, payer, sendTransaction, config, recipient, amountLamports: 500_000_000n, durationSeconds: 10, dealId: 5n }))
+    await expect(openDeal({ connection, payer, sendTransaction, config, recipient, ...terms, dealId: 5n }))
       .resolves.toEqual({ address: 'D' })
 
     const tx: Transaction = sendTransaction.mock.calls[0][0]
@@ -70,25 +71,27 @@ describe('openDeal', () => {
     expect(tx.instructions[0].keys[1].pubkey.toBase58()).toBe(recipient)
     expect(tx.instructions[0].keys[2].pubkey.toBase58()).toBe(config.oracle)
     expect(tx.instructions[0].data.readBigUInt64LE(16)).toBe(500_000_000n)
+    expect(tx.instructions[0].data.readBigUInt64LE(24)).toBe(700_000_000n)
+    expect(tx.instructions[0].data.readBigUInt64LE(32)).toBe(10n)
+    expect(tx.instructions[0].data).toHaveLength(40)
     expect(dealApi.register).toHaveBeenCalledWith(dealAddress(tx.instructions[0].programId, payer, 5n).toBase58())
-    expect(tx.instructions[0].data.readBigUInt64LE(24)).toBe(10n)
-    expect(tx.instructions[0].data).toHaveLength(32)
   })
 
   it.each([
-    ['an invalid recipient', 'nope', 1_000_000n, 'Enter a valid recipient address.'],
-    ['the payer as recipient', payer.toBase58(), 1_000_000n, 'The recipient must be another wallet.'],
-    ['an amount below the minimum', recipient, 999_999n, 'The escrow must be at least 0.001 SOL.'],
-  ])('rejects %s before sending', async (_name, to, amountLamports, message) => {
+    ['an invalid provider', { recipient: 'nope' }, 'Enter a valid provider address.'],
+    ['the payer as provider', { recipient: payer.toBase58() }, 'The provider must be another wallet.'],
+    ['a payment below the minimum', { amountLamports: 999_999n }, 'The payment must be at least 0.001 SOL.'],
+    ['a guarantee below the minimum', { guaranteeLamports: 999_999n }, 'The guarantee must be at least 0.001 SOL.'],
+  ])('rejects %s before sending', async (_name, override, message) => {
     const sendTransaction = vi.fn()
-    await expect(openDeal({ connection: connectionWith(), payer, sendTransaction, config, recipient: to, amountLamports, durationSeconds: 10 }))
+    await expect(openDeal({ connection: connectionWith(), payer, sendTransaction, config, recipient, ...terms, ...override }))
       .rejects.toThrow(message)
     expect(sendTransaction).not.toHaveBeenCalled()
   })
 
   it.each([0, -5, 1.5, 86_401, Number.NaN])('rejects a window of %s before sending', async (durationSeconds) => {
     const sendTransaction = vi.fn()
-    await expect(openDeal({ connection: connectionWith(), payer, sendTransaction, config, recipient, amountLamports: 1_000_000n, durationSeconds }))
+    await expect(openDeal({ connection: connectionWith(), payer, sendTransaction, config, recipient, ...terms, durationSeconds }))
       .rejects.toThrow('The window must be a whole number of 1 to 86400 seconds.')
     expect(sendTransaction).not.toHaveBeenCalled()
   })
@@ -96,23 +99,67 @@ describe('openDeal', () => {
   it('names the deal address and the cancel_deal fallback when registration fails', async () => {
     const connection = connectionWith({ confirmationStatus: 'confirmed', err: null })
     vi.mocked(dealApi.register).mockRejectedValue(new Error('Deal names oracle X'))
-    const error = await openDeal({ connection, payer, sendTransaction: vi.fn().mockResolvedValue('sig'), config, recipient, amountLamports: 1_000_000n, durationSeconds: 10, dealId: 9n })
+    const error = await openDeal({ connection, payer, sendTransaction: vi.fn().mockResolvedValue('sig'), config, recipient, ...terms, dealId: 9n })
       .catch((e: Error) => e)
     expect(error).toBeInstanceOf(Error)
     const address = dealAddress(new PublicKey(programId), payer, 9n).toBase58()
     expect((error as Error).message).toContain(address)
     expect((error as Error).message).toContain('Deal names oracle X')
-    expect((error as Error).message).toContain('cancel_deal 10 minutes after the window ends')
+    expect((error as Error).message).toContain('withdraw the proposal with cancel_deal')
   })
 
   it('does not register when the wallet rejects or the transaction fails', async () => {
     const rejected = vi.fn().mockRejectedValue(new Error('User rejected the request.'))
-    await expect(openDeal({ connection: connectionWith(), payer, sendTransaction: rejected, config, recipient, amountLamports: 1_000_000n, durationSeconds: 10 }))
+    await expect(openDeal({ connection: connectionWith(), payer, sendTransaction: rejected, config, recipient, ...terms }))
       .rejects.toThrow('User rejected')
     const failing = connectionWith({ confirmationStatus: 'confirmed', err: 'boom' })
-    await expect(openDeal({ connection: failing, payer, sendTransaction: vi.fn().mockResolvedValue('sig'), config, recipient, amountLamports: 1_000_000n, durationSeconds: 10 }))
+    await expect(openDeal({ connection: failing, payer, sendTransaction: vi.fn().mockResolvedValue('sig'), config, recipient, ...terms }))
       .rejects.toThrow('Transaction failed')
     expect(dealApi.register).not.toHaveBeenCalled()
+  })
+})
+
+describe('acceptDeal', () => {
+  const provider = new PublicKey(recipient)
+  const deal = Keypair.generate().publicKey.toBase58()
+  const proposal = {
+    address: deal, payer: payer.toBase58(), recipient, amountLamports: 500_000_000, guaranteeLamports: 700_000_000, durationSeconds: 10,
+    status: 'PROPOSED',
+  } as TrackedDeal
+
+  it('sends accept_deal with the terms the provider was shown and waits for confirmation', async () => {
+    const connection = connectionWith({ confirmationStatus: 'confirmed', err: null })
+    const sendTransaction = vi.fn().mockResolvedValue('sig')
+    await expect(acceptDeal({ connection, recipient: provider, sendTransaction, config, deal: proposal })).resolves.toBeUndefined()
+
+    const tx: Transaction = sendTransaction.mock.calls[0][0]
+    const ix = tx.instructions[0]
+    expect(ix.programId.toBase58()).toBe(programId)
+    expect([...ix.data.subarray(0, 8)]).toEqual([76, 156, 34, 30, 129, 136, 76, 244])
+    expect(ix.keys.map((k) => k.pubkey.toBase58()).slice(0, 2)).toEqual([recipient, deal])
+    expect(ix.data.readBigUInt64LE(8)).toBe(500_000_000n)
+    expect(ix.data.readBigUInt64LE(16)).toBe(700_000_000n)
+    expect(ix.data.readBigUInt64LE(24)).toBe(10n)
+    expect(new PublicKey(ix.data.subarray(32, 64)).toBase58()).toBe(config.oracle)
+    expect(connection.getSignatureStatuses).toHaveBeenCalledWith(['sig'])
+  })
+
+  it.each([
+    ['another wallet', { recipient: Keypair.generate().publicKey.toBase58() }, 'Only the provider named in the deal can accept it.'],
+    ['an accepted deal', { status: 'ACTIVE' }, 'Only a proposal can be accepted.'],
+  ])('refuses %s before sending', async (_name, override, message) => {
+    const sendTransaction = vi.fn()
+    await expect(acceptDeal({ connection: connectionWith(), recipient: provider, sendTransaction, config, deal: { ...proposal, ...override } as TrackedDeal }))
+      .rejects.toThrow(message)
+    expect(sendTransaction).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a rejected wallet and a refused acceptance', async () => {
+    await expect(acceptDeal({ connection: connectionWith(), recipient: provider, sendTransaction: vi.fn().mockRejectedValue(new Error('User rejected the request.')), config, deal: proposal }))
+      .rejects.toThrow('User rejected')
+    const failing = connectionWith({ confirmationStatus: 'confirmed', err: { InstructionError: [0, { Custom: 6010 }] } })
+    await expect(acceptDeal({ connection: failing, recipient: provider, sendTransaction: vi.fn().mockResolvedValue('sig'), config, deal: proposal }))
+      .rejects.toThrow('Transaction failed')
   })
 })
 
@@ -126,26 +173,29 @@ describe('requestAirdrop', () => {
 })
 
 describe('cancelDeal', () => {
-  const deal = Keypair.generate().publicKey
+  const deal = { address: Keypair.generate().publicKey.toBase58(), payer: payer.toBase58(), recipient }
 
-  it('sends cancel_deal signed by the payer and waits for confirmation', async () => {
+  it.each([
+    ['the payer', payer],
+    ['the provider', new PublicKey(recipient)],
+  ])('sends cancel_deal signed by %s with both parties and waits for confirmation', async (_name, signer) => {
     const connection = connectionWith({ confirmationStatus: 'confirmed', err: null })
     const sendTransaction = vi.fn().mockResolvedValue('sig')
-    await expect(cancelDeal({ connection, payer, sendTransaction, programId: new PublicKey(programId), deal })).resolves.toBeUndefined()
+    await expect(cancelDeal({ connection, signer, sendTransaction, programId: new PublicKey(programId), deal })).resolves.toBeUndefined()
     const tx: Transaction = sendTransaction.mock.calls[0][0]
     expect(sendTransaction.mock.calls[0][1]).toBe(connection)
     expect(tx.instructions).toHaveLength(1)
     expect([...tx.instructions[0].data]).toEqual([158, 86, 193, 45, 168, 111, 48, 29])
-    expect(tx.instructions[0].keys.map((k) => k.pubkey.toBase58())).toEqual([payer.toBase58(), deal.toBase58()])
+    expect(tx.instructions[0].keys.map((k) => k.pubkey.toBase58())).toEqual([signer.toBase58(), deal.address, deal.payer, deal.recipient])
     expect(connection.getSignatureStatuses).toHaveBeenCalledWith(['sig'])
   })
 
   it('surfaces a rejected wallet and a failed transaction', async () => {
     const programKey = new PublicKey(programId)
-    await expect(cancelDeal({ connection: connectionWith(), payer, sendTransaction: vi.fn().mockRejectedValue(new Error('User rejected the request.')), programId: programKey, deal }))
+    await expect(cancelDeal({ connection: connectionWith(), signer: payer, sendTransaction: vi.fn().mockRejectedValue(new Error('User rejected the request.')), programId: programKey, deal }))
       .rejects.toThrow('User rejected')
     const failing = connectionWith({ confirmationStatus: 'confirmed', err: { InstructionError: [0, { Custom: 6005 }] } })
-    await expect(cancelDeal({ connection: failing, payer, sendTransaction: vi.fn().mockResolvedValue('sig'), programId: programKey, deal }))
+    await expect(cancelDeal({ connection: failing, signer: payer, sendTransaction: vi.fn().mockResolvedValue('sig'), programId: programKey, deal }))
       .rejects.toThrow('Transaction failed')
   })
 })

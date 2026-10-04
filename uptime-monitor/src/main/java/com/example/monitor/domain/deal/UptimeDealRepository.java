@@ -16,11 +16,11 @@ public interface UptimeDealRepository {
 
 	Optional<UptimeDeal> find(String address);
 
-	/** Every deal, newest window first. */
+	/** Every deal, most recently proposed (latest accept deadline) first. */
 	List<UptimeDeal> findAll();
 
-	/** Every {@code ACTIVE} deal. */
-	List<UptimeDeal> findActive();
+	/** Every deal that is still {@code PROPOSED} or {@code ACTIVE}. */
+	List<UptimeDeal> findUnfinished();
 
 	/** Every {@code ACTIVE} deal of one service. */
 	List<UptimeDeal> findActive(ServiceId serviceId);

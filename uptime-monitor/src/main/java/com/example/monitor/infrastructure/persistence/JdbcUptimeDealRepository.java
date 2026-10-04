@@ -21,9 +21,9 @@ import com.example.monitor.domain.deal.UptimeDealRepository;
 /** {@link UptimeDealRepository} on the {@code uptime_deal} table of the {@code monitor-db} module. */
 public class JdbcUptimeDealRepository implements UptimeDealRepository {
 
-	private static final String COLUMNS = "address, service_id, payer, recipient, amount_lamports, starts_at, "
-			+ "duration_seconds, status, up_seconds, total_seconds, paid_to_recipient, signature, sent_at, attempts, "
-			+ "error, registered_at";
+	private static final String COLUMNS = "address, service_id, payer, recipient, amount_lamports, "
+			+ "guarantee_lamports, duration_seconds, accept_deadline, starts_at, status, up_seconds, total_seconds, "
+			+ "paid_to_recipient, signature, sent_at, attempts, error, registered_at";
 
 	private final JdbcClient jdbc;
 
@@ -34,11 +34,12 @@ public class JdbcUptimeDealRepository implements UptimeDealRepository {
 	@Override
 	public void add(UptimeDeal deal) {
 		try {
-			jdbc.sql("INSERT INTO uptime_deal (" + COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			jdbc.sql("INSERT INTO uptime_deal (" + COLUMNS
+					+ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 				.params(deal.address(), deal.serviceId().value(), deal.payer(), deal.recipient(), deal.amountLamports(),
-						ts(deal.startsAt()), deal.durationSeconds(), deal.status().name(), deal.upSeconds(),
-						deal.totalSeconds(), deal.paidToRecipient(), deal.signature(), ts(deal.sentAt()), deal.attempts(),
-						deal.error(), ts(deal.registeredAt()))
+						deal.guaranteeLamports(), deal.durationSeconds(), ts(deal.acceptDeadline()), ts(deal.startsAt()),
+						deal.status().name(), deal.upSeconds(), deal.totalSeconds(), deal.paidToRecipient(),
+						deal.signature(), ts(deal.sentAt()), deal.attempts(), deal.error(), ts(deal.registeredAt()))
 				.update();
 		}
 		catch (DuplicateKeyException e) {
@@ -48,10 +49,11 @@ public class JdbcUptimeDealRepository implements UptimeDealRepository {
 
 	@Override
 	public void update(UptimeDeal deal) {
-		int rows = jdbc.sql("UPDATE uptime_deal SET status = ?, up_seconds = ?, total_seconds = ?, paid_to_recipient = ?, "
-				+ "signature = ?, sent_at = ?, attempts = ?, error = ? WHERE address = ?")
-			.params(deal.status().name(), deal.upSeconds(), deal.totalSeconds(), deal.paidToRecipient(), deal.signature(),
-					ts(deal.sentAt()), deal.attempts(), deal.error(), deal.address())
+		int rows = jdbc.sql("UPDATE uptime_deal SET starts_at = ?, status = ?, up_seconds = ?, total_seconds = ?, "
+				+ "paid_to_recipient = ?, signature = ?, sent_at = ?, attempts = ?, error = ? WHERE address = ?")
+			.params(ts(deal.startsAt()), deal.status().name(), deal.upSeconds(), deal.totalSeconds(),
+					deal.paidToRecipient(), deal.signature(), ts(deal.sentAt()), deal.attempts(), deal.error(),
+					deal.address())
 			.update();
 		if (rows == 0) {
 			throw new NoSuchElementException("Deal " + deal.address() + " is not registered");
@@ -68,12 +70,13 @@ public class JdbcUptimeDealRepository implements UptimeDealRepository {
 
 	@Override
 	public List<UptimeDeal> findAll() {
-		return query("SELECT " + COLUMNS + " FROM uptime_deal ORDER BY starts_at DESC, address");
+		return query("SELECT " + COLUMNS + " FROM uptime_deal ORDER BY accept_deadline DESC, address");
 	}
 
 	@Override
-	public List<UptimeDeal> findActive() {
-		return query("SELECT " + COLUMNS + " FROM uptime_deal WHERE status = 'ACTIVE' ORDER BY starts_at, address");
+	public List<UptimeDeal> findUnfinished() {
+		return query("SELECT " + COLUMNS
+				+ " FROM uptime_deal WHERE status IN ('PROPOSED', 'ACTIVE') ORDER BY accept_deadline, address");
 	}
 
 	@Override
@@ -101,7 +104,8 @@ public class JdbcUptimeDealRepository implements UptimeDealRepository {
 	private static UptimeDeal map(ResultSet rs) throws SQLException {
 		return new UptimeDeal(rs.getString("address"), new ServiceId(rs.getObject("service_id", UUID.class)),
 				rs.getString("payer"), rs.getString("recipient"), rs.getLong("amount_lamports"),
-				rs.getLong("duration_seconds"), instant(rs, "starts_at"), Status.valueOf(rs.getString("status")),
+				rs.getLong("guarantee_lamports"), rs.getLong("duration_seconds"), instant(rs, "accept_deadline"),
+				instant(rs, "starts_at"), Status.valueOf(rs.getString("status")),
 				rs.getObject("up_seconds", Long.class), rs.getObject("total_seconds", Long.class),
 				rs.getObject("paid_to_recipient", Boolean.class), rs.getString("signature"), instant(rs, "sent_at"),
 				rs.getInt("attempts"), rs.getString("error"), instant(rs, "registered_at"));

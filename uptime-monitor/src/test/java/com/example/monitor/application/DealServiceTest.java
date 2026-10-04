@@ -1,10 +1,12 @@
 package com.example.monitor.application;
 
+import static com.example.monitor.support.DealFixtures.GUARANTEE;
 import static com.example.monitor.support.DealFixtures.PROGRAM_ID;
 import static com.example.monitor.support.DealFixtures.dealCancelledLog;
 import static com.example.monitor.support.DealFixtures.dealData;
 import static com.example.monitor.support.DealFixtures.dealSettledLog;
 import static com.example.monitor.support.DealFixtures.newAddress;
+import static com.example.monitor.support.DealFixtures.proposalData;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -104,6 +106,7 @@ class DealServiceTest {
 		assertThat(tracked.payer()).isEqualTo(payer);
 		assertThat(tracked.recipient()).isEqualTo(recipient);
 		assertThat(tracked.amountLamports()).isEqualTo(AMOUNT);
+		assertThat(tracked.guaranteeLamports()).isEqualTo(GUARANTEE);
 		assertThat(deals.get(deal)).isEqualTo(tracked);
 		assertThat(deals.list()).containsExactly(tracked);
 		assertThat(deals.config()).isEqualTo(new DealService.Config(PROGRAM_ID, oracle.address(), "http://rpc"));
@@ -154,6 +157,104 @@ class DealServiceTest {
 		deals.register(deal, service);
 		assertThatThrownBy(() -> deals.register(deal, service)).isInstanceOf(DealAlreadyRegisteredException.class);
 		assertThatThrownBy(() -> deals.get(newAddress())).isInstanceOf(NoSuchElementException.class);
+	}
+
+	@Test
+	void registersAProposalWithoutAWindowAndNeverSettlesItUnaccepted() {
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+
+		UptimeDeal tracked = deals.register(deal, null);
+
+		assertThat(tracked.status()).isEqualTo(Status.PROPOSED);
+		assertThat(tracked.startsAt()).isNull();
+		assertThat(tracked.endsAt()).isNull();
+		assertThat(tracked.guaranteeLamports()).isEqualTo(GUARANTEE);
+		assertThat(tracked.acceptDeadline()).isEqualTo(T0.plusSeconds(86_400));
+
+		deals.onTrackingEvent(append(new Downtime(service, 404, "HTTP 404", T0.plusSeconds(5))));
+		clock.set(T0.plusSeconds(10_000));
+		deals.settleDue();
+		deals.settleDue();
+		assertThat(deals.get(deal).status()).isEqualTo(Status.PROPOSED);
+		verify(rpc, never()).sendTransaction(any());
+	}
+
+	@Test
+	void takesTheWindowFromTheAcceptanceThenSettlesIt() {
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+		deals.register(deal, null);
+		clock.set(T0.plusSeconds(4));
+		deals.settleDue();
+		assertThat(deals.get(deal).status()).isEqualTo(Status.PROPOSED);
+
+		// The recipient accepts at T0 + 5; the window runs from there, not from the proposal.
+		when(rpc.getAccountInfo(deal)).thenReturn(dealAccount(oracle.address(), T0.plusSeconds(5), 10));
+		deals.settleDue();
+		UptimeDeal accepted = deals.get(deal);
+		assertThat(accepted.status()).isEqualTo(Status.ACTIVE);
+		assertThat(accepted.startsAt()).isEqualTo(T0.plusSeconds(5));
+		assertThat(accepted.endsAt()).isEqualTo(T0.plusSeconds(15));
+		verify(rpc, never()).sendTransaction(any());
+
+		clock.set(T0.plusSeconds(17));
+		deals.settleDue();
+		ArgumentCaptor<byte[]> tx = ArgumentCaptor.forClass(byte[].class);
+		verify(rpc).sendTransaction(tx.capture());
+		assertSignedSettlement(tx.getValue(), 10, 10);
+	}
+
+	@Test
+	void anAcceptedDealClosesEarlyOnAFailureAfterItsAcceptance() {
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+		deals.register(deal, null);
+		when(rpc.getAccountInfo(deal)).thenReturn(dealAccount(oracle.address(), T0.plusSeconds(5), 10));
+		clock.set(T0.plusSeconds(5));
+		deals.settleDue();
+
+		deals.onTrackingEvent(append(new Downtime(service, 404, "HTTP 404", T0.plusSeconds(8))));
+
+		assertThat(deals.get(deal).upSeconds()).isEqualTo(8);
+		assertThat(deals.get(deal).totalSeconds()).isEqualTo(10);
+	}
+
+	@Test
+	void aWithdrawnOrRejectedProposalIsMarkedCancelled() {
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+		deals.register(deal, null);
+		when(rpc.getAccountInfo(deal)).thenReturn(null);
+		when(rpc.getSignaturesForAddress(deal, 10)).thenReturn(List.of("rejectTx"));
+		when(rpc.getTransactionLogs("rejectTx")).thenReturn(List.of(dealCancelledLog(deal, payer, AMOUNT)));
+
+		deals.settleDue();
+
+		assertThat(deals.get(deal).status()).isEqualTo(Status.CANCELLED);
+		assertThat(deals.get(deal).signature()).isEqualTo("rejectTx");
+		verify(rpc, never()).sendTransaction(any());
+	}
+
+	@Test
+	void anRpcFailureWhileCheckingAProposalKeepsItWaiting() {
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+		deals.register(deal, null);
+		when(rpc.getAccountInfo(deal)).thenThrow(new SolanaRpcException("down"));
+
+		deals.settleDue();
+		deals.settleDue();
+
+		assertThat(deals.get(deal).status()).isEqualTo(Status.PROPOSED);
+		assertThat(deals.get(deal).attempts()).isZero();
+		assertThat(deals.get(deal).error()).isNull();
+	}
+
+	@Test
+	void listsTheMostRecentProposalFirst() {
+		String older = newAddress();
+		when(rpc.getAccountInfo(older)).thenReturn(proposalAccount(T0.plusSeconds(100)));
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(200)));
+		deals.register(older, null);
+		deals.register(deal, null);
+
+		assertThat(deals.list()).extracting(UptimeDeal::address).containsExactly(deal, older);
 	}
 
 	@Test
@@ -391,8 +492,13 @@ class DealServiceTest {
 	}
 
 	private AccountInfo dealAccount(String dealOracle, Instant startsAt, long durationSeconds) {
-		return new AccountInfo(PROGRAM_ID, AMOUNT + 2_000_000,
+		return new AccountInfo(PROGRAM_ID, AMOUNT + GUARANTEE + 2_000_000,
 				dealData(payer, recipient, dealOracle, 1, AMOUNT, startsAt.getEpochSecond(), durationSeconds));
+	}
+
+	private AccountInfo proposalAccount(Instant acceptDeadline) {
+		return new AccountInfo(PROGRAM_ID, AMOUNT + 2_000_000, proposalData(payer, recipient, oracle.address(), 1,
+				AMOUNT, GUARANTEE, 10, acceptDeadline.getEpochSecond()));
 	}
 
 	/** Checks the oracle's signature and the up/total encoded at the end of the settle_deal data. */

@@ -235,6 +235,28 @@ class UptimeMonitorApplicationTests {
 	}
 
 	@Test
+	void registersAProposalBeforeItsRecipientAccepts() throws Exception {
+		String service = subscribe(null);
+		String deal = DealFixtures.newAddress();
+		long deadline = Instant.now().getEpochSecond() + 86_400;
+		when(rpc.getAccountInfo(deal)).thenReturn(new AccountInfo(DealFixtures.PROGRAM_ID, 1, DealFixtures.proposalData(
+				DealFixtures.newAddress(), DealFixtures.newAddress(), oracle.address(), 1, 5_000_000, 7_000_000, 10,
+				deadline)));
+
+		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
+			.content("{\"address\":\"" + deal + "\",\"serviceId\":\"" + service + "\"}"))
+			.andExpect(status().isCreated())
+			.andExpect(jsonPath("$.status").value("PROPOSED"))
+			.andExpect(jsonPath("$.amountLamports").value(5_000_000))
+			.andExpect(jsonPath("$.guaranteeLamports").value(7_000_000))
+			.andExpect(jsonPath("$.acceptDeadline").value(Instant.ofEpochSecond(deadline).toString()))
+			.andExpect(jsonPath("$.startsAt").doesNotExist())
+			.andExpect(jsonPath("$.endsAt").doesNotExist());
+		mvc.perform(get("/api/deals/" + deal)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PROPOSED"));
+		mvc.perform(delete("/api/subscriptions/" + service)).andExpect(status().isOk());
+	}
+
+	@Test
 	void dealErrorsMapToProblems() throws Exception {
 		String service = subscribe(null);
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON).content("{}"))

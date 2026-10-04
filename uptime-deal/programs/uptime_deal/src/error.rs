@@ -15,4 +15,16 @@ pub enum DealError {
     InvalidDuration,
     #[msg("The deal can be cancelled only CANCEL_TIMEOUT_SECONDS after its window ends")]
     CancelTooEarly,
+    #[msg("Deal guarantee is below the minimum")]
+    GuaranteeTooSmall,
+    #[msg("The deal is not a proposal waiting for acceptance")]
+    DealNotProposed,
+    #[msg("The deal has not been accepted yet")]
+    DealNotActive,
+    #[msg("The proposal can no longer be accepted")]
+    AcceptExpired,
+    #[msg("The accepted terms differ from the deal's terms")]
+    TermsMismatch,
+    #[msg("Only the deal's payer or recipient can cancel it")]
+    NotAParty,
 }

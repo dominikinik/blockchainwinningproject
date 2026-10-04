@@ -33,7 +33,14 @@ The mock service assigns an ID and start/end timestamps, then returns the create
 
 ## Available now
 
-- **Uptime deal, end to end (`/deal`):** the wallet signs the real `uptime_deal` `create_deal` instruction, which locks SOL and fixes the uptime window on chain. `POST /api/deals` registers the deal with `uptime-monitor`, which is the program's oracle. After the window (for example 10 s), the service sends `settle_deal` with its own recorded up/total seconds. The program pays the recipient when uptime is above 99% and refunds the payer otherwise. The page shows the verdict and the recipient's on-chain balance. Covered by `frontend/e2e` (Playwright) and runnable by hand with `scripts/run-deal-demo.sh`. What it measures is the uptime-service's own health, not a customer endpoint. Tracked deals live in uptime-monitor's data store, so they survive service restarts; settlement happens after the window ends.
+- **Uptime deal, end to end (`/deal`):** a two-sided agreement on the real `uptime_deal` program.
+  - The payer's wallet signs `create_deal`, which proposes the deal and locks the payment.
+  - `POST /api/deals` registers the proposal with `uptime-monitor`, which is the program's oracle. It links the deal to a tracked service (by default the provider, `uptime-service`) and re-reads the proposal until it is accepted or cancelled.
+  - The provider sees the proposal under "Proposals for you" and signs `accept_deal`. That locks its guarantee and starts the uptime window on chain; the program refuses the acceptance if the terms differ from the ones the provider was shown.
+  - The monitor settles from the service's events. A failed check that makes more than 99% uptime unreachable closes the deal at once, ending tracking settles it with the uptime so far, and otherwise it settles when the window (for example 10 s) ends. The program pays both deposits to the provider when uptime is above 99%, and to the payer otherwise.
+  - The page shows the verdict and the provider's on-chain balance. Covered by `frontend/e2e` (Playwright) and runnable by hand with `scripts/run-deal-demo.sh`, using two browser windows.
+  - What it measures is the provider's health as checked by the monitor every 2 s, not a customer endpoint.
+  - Tracked deals are stored in `monitor-db`, so they survive a monitor restart. If the monitor is down for good, either party can reclaim its deposit with `cancel_deal` ("Reclaim deposits" on the page) 10 minutes after the window ends. A proposal can be withdrawn by the payer or rejected by the provider at any time.
 
 - The Monitoring page reads the Java service's own `GET /api/application/state` and `GET /api/uptime?from=...&to=...` endpoints. The timeline shows recorded `UP` or `DOWN` seconds for the **Java service**, refreshing every 10 seconds. It does not measure customer API endpoints.
 - Vite proxies `/api/application` requests to `uptime-service` during development (default `http://localhost:8080`, or `SLANA_UPTIME_SERVICE_TARGET`), and the rest of `/api` to `uptime-monitor`, so the browser does not need CORS.

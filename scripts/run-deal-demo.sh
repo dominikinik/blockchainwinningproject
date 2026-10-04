@@ -4,7 +4,9 @@
 #   - uptime-service on :8080, the health provider (no database)
 #   - uptime-monitor on :8082, the deal oracle and uptime history (PostgreSQL from monitor-db)
 #   - the frontend on :5173 with the in-browser burner wallet
-# Then open http://localhost:5173/deal, connect "Burner Wallet", press "Airdrop 2 SOL" and create a deal.
+# Then open http://localhost:5173/deal in two windows (provider and payer). In each, connect "Burner Wallet"
+# and press "Airdrop 2 SOL". The payer proposes a deal to the provider's address ("Copy my address"); the
+# provider accepts it under "Proposals for you". Don't reload either window: that gives its burner wallet a new key.
 # Needs Docker, Java 21 + Maven, Node and the Solana/Anchor toolchain (scripts/setup-toolchain.sh).
 set -eu
 

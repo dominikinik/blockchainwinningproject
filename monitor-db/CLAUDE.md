@@ -44,8 +44,8 @@ To re-initialise the schema, run `down`, delete `monitor-db/data/`, then start a
 
 `uptime_deal` has one row per deal that the monitor settles as the oracle, updated in place:
 - `address VARCHAR(44)` is the **primary key**. `service_id UUID` is the tracked service the deal is measured against.
-- `payer`, `recipient`, `amount_lamports` (≥ 0), `starts_at` and `duration_seconds` (≥ 1) come from the chain.
-- `status` must be one of `ACTIVE`, `SETTLED`, `FAILED`, `CANCELLED` (enforced by a CHECK).
+- `payer`, `recipient`, `amount_lamports` (≥ 0), `guarantee_lamports` (≥ 0), `duration_seconds` (≥ 1) and `accept_deadline` come from the chain. `starts_at` is the chain time of the recipient's acceptance; it is NULL while the deal is a proposal.
+- `status` must be one of `PROPOSED`, `ACTIVE`, `SETTLED`, `FAILED`, `CANCELLED` (enforced by a CHECK).
 - The settlement fields are NULL until they're set: `up_seconds`, `total_seconds`, `paid_to_recipient`, `signature`, `sent_at` and `error`. `attempts` defaults to 0. `registered_at` is required.
 
 The schema must stay in step with `JdbcTrackingEventStore`, `JdbcUptimeDealRepository` and with `uptime-monitor/src/test/resources/schema.sql`, the H2 copy its tests use. If you change one, change all three, then recreate `data/`.
@@ -57,6 +57,6 @@ The schema must stay in step with `JdbcTrackingEventStore`, `JdbcUptimeDealRepos
 - the exact columns, types, nullability and primary keys of `tracking_event` and `uptime_deal`,
 - that times are stored as absolute instants and `id` follows insertion order,
 - that a duplicate version, an unknown type, a version below 1, NULLs in the required columns, and a hand-set `id` are all rejected,
-- that a deal row is accepted with `attempts` defaulting to 0, and that duplicate addresses, unknown statuses, zero durations, negative amounts and deals without a service or start are rejected.
+- that a proposal row without a window start is accepted with `attempts` defaulting to 0, and that duplicate addresses, unknown statuses, zero durations, negative amounts or guarantees, and deals without a service or accept deadline are rejected.
 
 It never touches the real `monitor-db` container or `data/`. When you change the schema or add an init script, update the expected values in this script in the same change.

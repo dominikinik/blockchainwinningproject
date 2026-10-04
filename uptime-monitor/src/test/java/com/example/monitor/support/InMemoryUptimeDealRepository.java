@@ -15,7 +15,7 @@ import com.example.monitor.domain.deal.UptimeDealRepository;
 /** Test fake of {@link UptimeDealRepository}; {@code UptimeDealRepositoryContract} keeps it honest. */
 public class InMemoryUptimeDealRepository implements UptimeDealRepository {
 
-	private static final Comparator<UptimeDeal> BY_WINDOW = Comparator.comparing(UptimeDeal::startsAt)
+	private static final Comparator<UptimeDeal> BY_DEADLINE = Comparator.comparing(UptimeDeal::acceptDeadline)
 		.thenComparing(UptimeDeal::address);
 
 	private final Map<String, UptimeDeal> deals = new LinkedHashMap<>();
@@ -42,18 +42,23 @@ public class InMemoryUptimeDealRepository implements UptimeDealRepository {
 	@Override
 	public synchronized List<UptimeDeal> findAll() {
 		return deals.values().stream()
-			.sorted(Comparator.comparing(UptimeDeal::startsAt).reversed().thenComparing(UptimeDeal::address))
+			.sorted(Comparator.comparing(UptimeDeal::acceptDeadline).reversed().thenComparing(UptimeDeal::address))
 			.toList();
 	}
 
 	@Override
-	public synchronized List<UptimeDeal> findActive() {
-		return deals.values().stream().filter(d -> d.status() == UptimeDeal.Status.ACTIVE).sorted(BY_WINDOW).toList();
+	public synchronized List<UptimeDeal> findUnfinished() {
+		return deals.values().stream()
+			.filter(d -> d.status() == UptimeDeal.Status.PROPOSED || d.status() == UptimeDeal.Status.ACTIVE)
+			.sorted(BY_DEADLINE)
+			.toList();
 	}
 
 	@Override
 	public synchronized List<UptimeDeal> findActive(ServiceId serviceId) {
-		return findActive().stream().filter(d -> d.serviceId().equals(serviceId)).toList();
+		return findUnfinished().stream()
+			.filter(d -> d.status() == UptimeDeal.Status.ACTIVE && d.serviceId().equals(serviceId))
+			.toList();
 	}
 
 }

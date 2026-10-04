@@ -68,14 +68,15 @@ public class SolanaDealChain implements DealChain {
 			throw new IllegalArgumentException("Account " + address + " is not owned by the uptime_deal program");
 		}
 		DealAccount deal = DealProgram.decodeDeal(account.data());
-		return new ChainDeal(deal.payer(), deal.recipient(), deal.oracle(), deal.amountLamports(), deal.startsAt(),
-				deal.durationSeconds());
+		return new ChainDeal(deal.payer(), deal.recipient(), deal.oracle(), deal.amountLamports(),
+				deal.guaranteeLamports(), deal.durationSeconds(), deal.acceptDeadline(), deal.startsAt());
 	}
 
 	@Override
 	public String sendSettle(String address, ChainDeal deal, Verdict verdict) {
 		DealAccount account = new DealAccount(deal.payer(), deal.recipient(), deal.oracle(), 0, deal.amountLamports(),
-				deal.startsAt(), deal.durationSeconds());
+				deal.guaranteeLamports(), deal.durationSeconds(), deal.acceptDeadline(), deal.startsAt(),
+				deal.accepted() ? DealProgram.DealStatus.ACTIVE : DealProgram.DealStatus.PROPOSED);
 		byte[] tx = SolanaTransaction.signed(oracle, List.of(DealProgram.settleInstruction(programId, oracle.address(),
 				address, account, verdict.upSeconds(), verdict.totalSeconds())), rpc.getLatestBlockhash());
 		return rpc.sendTransaction(tx);

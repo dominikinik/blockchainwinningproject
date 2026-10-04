@@ -17,8 +17,10 @@ use solana_transaction::Transaction;
 use uptime_deal::{error::DealError, state::Deal, DEAL_SEED};
 
 pub const SOL: u64 = 1_000_000_000;
-/// Escrow used by most tests.
+/// Payer's payment used by most tests.
 pub const AMOUNT: u64 = 2 * SOL;
+/// Recipient's guarantee used by most tests; differs from `AMOUNT` so balances tell them apart.
+pub const GUARANTEE: u64 = 3 * SOL;
 /// Uptime window used by most tests, in seconds.
 pub const DURATION: u64 = 60;
 
@@ -28,7 +30,7 @@ pub type TxResult = Result<TransactionMetadata, FailedTransactionMetadata>;
 ///
 /// # Arguments
 ///
-/// * `payer` - the wallet that funded the deal.
+/// * `payer` - the wallet that proposed the deal.
 /// * `deal_id` - the payer-chosen deal id.
 ///
 /// # Returns
@@ -92,6 +94,19 @@ pub fn assert_ok(res: TxResult) -> TransactionMetadata {
     }
 }
 
+/// The terms passed to `accept_deal`.
+#[derive(Clone, Copy, Debug)]
+pub struct Terms {
+    /// The payer's payment.
+    pub amount: u64,
+    /// The recipient's guarantee.
+    pub guarantee: u64,
+    /// Window length in seconds.
+    pub duration: u64,
+    /// The oracle.
+    pub oracle: Pubkey,
+}
+
 /// An in-process chain with the program loaded and the three parties of a deal.
 pub struct Env {
     pub svm: LiteSVM,
@@ -105,14 +120,15 @@ impl Env {
     ///
     /// # Returns
     ///
-    /// An `Env` whose payer and oracle hold 10 SOL each. The recipient has no account yet,
-    /// so tests also cover paying a wallet that doesn't exist.
+    /// An `Env` whose payer, recipient and oracle hold 10 SOL each. The recipient needs funds because
+    /// it signs `accept_deal` and locks the guarantee.
     pub fn new() -> Self {
         let mut svm = LiteSVM::new();
         svm.add_program(uptime_deal::ID, include_bytes!("../../../../target/deploy/uptime_deal.so"))
             .unwrap();
         let (payer, recipient, oracle) = (Keypair::new(), Keypair::new(), Keypair::new());
         svm.airdrop(&payer.pubkey(), 10 * SOL).unwrap();
+        svm.airdrop(&recipient.pubkey(), 10 * SOL).unwrap();
         svm.airdrop(&oracle.pubkey(), 10 * SOL).unwrap();
         Env { svm, payer, recipient, oracle }
     }
@@ -181,11 +197,12 @@ impl Env {
     ///
     /// # Arguments
     ///
-    /// * `payer` - the funding wallet (must sign the transaction).
-    /// * `recipient` - the wallet paid on high uptime.
+    /// * `payer` - the proposing wallet (must sign the transaction).
+    /// * `recipient` - the wallet that must accept and is paid on high uptime.
     /// * `oracle` - the key allowed to settle.
     /// * `deal_id` - the payer-chosen id.
-    /// * `amount` - lamports to escrow.
+    /// * `amount` - lamports the payer locks now.
+    /// * `guarantee` - lamports the recipient must lock on acceptance.
     /// * `duration` - uptime window in seconds.
     ///
     /// # Returns
@@ -197,6 +214,7 @@ impl Env {
         oracle: &Pubkey,
         deal_id: u64,
         amount: u64,
+        guarantee: u64,
         duration: u64,
     ) -> Instruction {
         Instruction {
@@ -209,7 +227,43 @@ impl Env {
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
-            data: uptime_deal::instruction::CreateDeal { deal_id, amount_lamports: amount, duration_seconds: duration }.data(),
+            data: uptime_deal::instruction::CreateDeal {
+                deal_id,
+                amount_lamports: amount,
+                guarantee_lamports: guarantee,
+                duration_seconds: duration,
+            }
+            .data(),
+        }
+    }
+
+    /// Builds an `accept_deal` instruction.
+    ///
+    /// # Arguments
+    ///
+    /// * `recipient` - the signer accepting the deal and paying the guarantee.
+    /// * `deal` - the deal address.
+    /// * `terms` - the terms the recipient agrees to.
+    ///
+    /// # Returns
+    ///
+    /// The instruction.
+    pub fn accept_ix(recipient: &Pubkey, deal: &Pubkey, terms: Terms) -> Instruction {
+        Instruction {
+            program_id: uptime_deal::ID,
+            accounts: uptime_deal::accounts::AcceptDeal {
+                recipient: *recipient,
+                deal: *deal,
+                system_program: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: uptime_deal::instruction::AcceptDeal {
+                amount_lamports: terms.amount,
+                guarantee_lamports: terms.guarantee,
+                duration_seconds: terms.duration,
+                oracle: terms.oracle,
+            }
+            .data(),
         }
     }
 
@@ -245,16 +299,24 @@ impl Env {
     ///
     /// # Arguments
     ///
-    /// * `payer` - the signer claiming to be the deal's payer.
+    /// * `signer` - the key claiming to be the deal's payer or recipient.
     /// * `deal` - the deal address.
+    /// * `payer` - the account passed as the deal's payer.
+    /// * `recipient` - the account passed as the deal's recipient.
     ///
     /// # Returns
     ///
     /// The instruction.
-    pub fn cancel_ix(payer: &Pubkey, deal: &Pubkey) -> Instruction {
+    pub fn cancel_ix(signer: &Pubkey, deal: &Pubkey, payer: &Pubkey, recipient: &Pubkey) -> Instruction {
         Instruction {
             program_id: uptime_deal::ID,
-            accounts: uptime_deal::accounts::CancelDeal { payer: *payer, deal: *deal }.to_account_metas(None),
+            accounts: uptime_deal::accounts::CancelDeal {
+                signer: *signer,
+                deal: *deal,
+                payer: *payer,
+                recipient: *recipient,
+            }
+            .to_account_metas(None),
             data: uptime_deal::instruction::CancelDeal {}.data(),
         }
     }
@@ -279,42 +341,107 @@ impl Env {
         self.svm.set_sysvar::<Clock>(&clock);
     }
 
-    /// Creates a deal between this env's payer, recipient and oracle with a `DURATION` window.
+    /// The terms of a deal between this env's parties with `GUARANTEE` and a `DURATION` window.
+    ///
+    /// # Arguments
+    ///
+    /// * `amount` - the payer's payment.
+    ///
+    /// # Returns
+    ///
+    /// The terms a matching `accept_deal` must carry.
+    pub fn terms(&self, amount: u64) -> Terms {
+        Terms { amount, guarantee: GUARANTEE, duration: DURATION, oracle: self.oracle.pubkey() }
+    }
+
+    /// Proposes a deal between this env's payer, recipient and oracle with `GUARANTEE` and a
+    /// `DURATION` window.
     ///
     /// # Arguments
     ///
     /// * `deal_id` - the payer-chosen id.
-    /// * `amount` - lamports to escrow.
+    /// * `amount` - the payer's payment.
     ///
     /// # Returns
     ///
     /// The transaction result, signed and paid by the payer.
-    pub fn create(&mut self, deal_id: u64, amount: u64) -> TxResult {
-        self.create_for(deal_id, amount, DURATION)
+    pub fn propose(&mut self, deal_id: u64, amount: u64) -> TxResult {
+        self.create_for(deal_id, amount, GUARANTEE, DURATION)
     }
 
-    /// Creates a deal between this env's payer, recipient and oracle.
+    /// Proposes a deal between this env's payer, recipient and oracle.
     ///
     /// # Arguments
     ///
     /// * `deal_id` - the payer-chosen id.
-    /// * `amount` - lamports to escrow.
+    /// * `amount` - the payer's payment.
+    /// * `guarantee` - the guarantee the recipient must lock.
     /// * `duration` - uptime window in seconds.
     ///
     /// # Returns
     ///
     /// The transaction result, signed and paid by the payer.
-    pub fn create_for(&mut self, deal_id: u64, amount: u64, duration: u64) -> TxResult {
+    pub fn create_for(&mut self, deal_id: u64, amount: u64, guarantee: u64, duration: u64) -> TxResult {
         let ix = Self::create_ix(
             &self.payer.pubkey(),
             &self.recipient.pubkey(),
             &self.oracle.pubkey(),
             deal_id,
             amount,
+            guarantee,
             duration,
         );
         let payer = self.payer.insecure_clone();
         self.send(&[ix], &payer, &[])
+    }
+
+    /// Accepts one of this env's deals as the recipient, with the terms stored in the deal.
+    ///
+    /// # Arguments
+    ///
+    /// * `deal_id` - the id the payer used.
+    ///
+    /// # Returns
+    ///
+    /// The transaction result, signed and paid by the recipient.
+    pub fn accept(&mut self, deal_id: u64) -> TxResult {
+        let deal = self.deal(&deal_pda(&self.payer.pubkey(), deal_id));
+        let terms = Terms {
+            amount: deal.amount_lamports,
+            guarantee: deal.guarantee_lamports,
+            duration: deal.duration_seconds,
+            oracle: deal.oracle,
+        };
+        let recipient = self.recipient.insecure_clone();
+        self.accept_as(&recipient, deal_id, terms)
+    }
+
+    /// Accepts one of this env's deals with an arbitrary signer and terms.
+    ///
+    /// # Arguments
+    ///
+    /// * `signer` - the key claiming to be the recipient; also pays the fee.
+    /// * `deal_id` - the id the payer used.
+    /// * `terms` - the terms the signer agrees to.
+    ///
+    /// # Returns
+    ///
+    /// The transaction result.
+    pub fn accept_as(&mut self, signer: &Keypair, deal_id: u64, terms: Terms) -> TxResult {
+        let deal = deal_pda(&self.payer.pubkey(), deal_id);
+        let ix = Self::accept_ix(&signer.pubkey(), &deal, terms);
+        self.send(&[ix], signer, &[])
+    }
+
+    /// Proposes and accepts a deal with `GUARANTEE` and a `DURATION` window; panics if either fails.
+    ///
+    /// # Arguments
+    ///
+    /// * `deal_id` - the payer-chosen id.
+    /// * `amount` - the payer's payment.
+    pub fn open(&mut self, deal_id: u64, amount: u64) {
+        assert_ok(self.propose(deal_id, amount));
+        assert_ok(self.accept(deal_id));
     }
 
     /// Cancels one of this env's deals, signed and paid by the payer.
@@ -335,7 +462,7 @@ impl Env {
     ///
     /// # Arguments
     ///
-    /// * `signer` - the key claiming to be the payer; also pays the fee.
+    /// * `signer` - the key claiming to be the payer or the recipient; also pays the fee.
     /// * `deal_id` - the id the payer used.
     ///
     /// # Returns
@@ -343,7 +470,7 @@ impl Env {
     /// The transaction result.
     pub fn cancel_as(&mut self, signer: &Keypair, deal_id: u64) -> TxResult {
         let deal = deal_pda(&self.payer.pubkey(), deal_id);
-        let ix = Self::cancel_ix(&signer.pubkey(), &deal);
+        let ix = Self::cancel_ix(&signer.pubkey(), &deal, &self.payer.pubkey(), &self.recipient.pubkey());
         self.send(&[ix], signer, &[])
     }
 

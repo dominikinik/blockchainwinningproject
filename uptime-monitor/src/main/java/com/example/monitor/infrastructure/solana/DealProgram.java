@@ -30,27 +30,46 @@ public final class DealProgram {
 	static final byte[] DEAL_CANCELLED_DISCRIMINATOR = { (byte) 229, (byte) 189, 86, (byte) 176, (byte) 134,
 			(byte) 151, 43, (byte) 152 };
 
-	/** Discriminator, payer, recipient, oracle, deal_id, amount_lamports, starts_at, duration_seconds, bump. */
-	private static final int DEAL_ACCOUNT_SIZE = 8 + 32 * 3 + 8 + 8 + 8 + 8 + 1;
+	/**
+	 * Discriminator, payer, recipient, oracle, deal_id, amount_lamports, guarantee_lamports, duration_seconds,
+	 * accept_deadline, starts_at, status, bump.
+	 */
+	private static final int DEAL_ACCOUNT_SIZE = 8 + 32 * 3 + 8 * 6 + 1 + 1;
 
 	private static final String EVENT_LOG_PREFIX = "Program data: ";
 
 	private DealProgram() {
 	}
 
+	/** The on-chain {@code DealStatus}. A settled or cancelled deal is closed, so it has no status. */
+	public enum DealStatus {
+
+		/** The payer proposed the deal; the recipient hasn't accepted it, so no window runs. */
+		PROPOSED,
+		/** The recipient accepted and locked its guarantee; the window runs from {@code starts_at}. */
+		ACTIVE
+
+	}
+
 	/**
 	 * A decoded {@code Deal} account.
 	 *
-	 * @param payer          Base58 wallet that funded the escrow
-	 * @param recipient      Base58 wallet paid when uptime is above 99%
-	 * @param oracle         Base58 key allowed to settle
-	 * @param dealId         the payer-chosen id
-	 * @param amountLamports the escrowed lamports
-	 * @param startsAt        chain time at which the deal was created; the window starts here
-	 * @param durationSeconds length of the window in seconds, as stored on chain
+	 * @param payer             Base58 wallet that proposed the deal and paid {@code amountLamports}
+	 * @param recipient         Base58 wallet that must accept, pays {@code guaranteeLamports}, and receives
+	 *                          both deposits when uptime is above 99%
+	 * @param oracle            Base58 key allowed to settle
+	 * @param dealId            the payer-chosen id
+	 * @param amountLamports    the payer's payment
+	 * @param guaranteeLamports the recipient's guarantee, locked when it accepts
+	 * @param durationSeconds   length of the window in seconds, as stored on chain
+	 * @param acceptDeadline    chain time from which the proposal can no longer be accepted
+	 * @param startsAt          chain time at which the recipient accepted and the window started;
+	 *                          {@code null} while {@code PROPOSED}
+	 * @param status            whether the deal is a proposal or accepted
 	 */
 	public record DealAccount(String payer, String recipient, String oracle, long dealId, long amountLamports,
-			Instant startsAt, long durationSeconds) {
+			long guaranteeLamports, long durationSeconds, Instant acceptDeadline, Instant startsAt,
+			DealStatus status) {
 	}
 
 	/**
@@ -71,15 +90,30 @@ public final class DealProgram {
 	 *
 	 * @param data the raw account data
 	 * @return the decoded deal
-	 * @throws IllegalArgumentException if the data is too short or isn't a {@code Deal}
+	 * @throws IllegalArgumentException if the data is too short, isn't a {@code Deal}, or holds an unknown
+	 *                                  status
 	 */
 	public static DealAccount decodeDeal(byte[] data) {
 		if (data.length < DEAL_ACCOUNT_SIZE || !Arrays.equals(data, 0, 8, DEAL_DISCRIMINATOR, 0, 8)) {
 			throw new IllegalArgumentException("Account is not an uptime_deal Deal");
 		}
 		ByteBuffer buf = ByteBuffer.wrap(data, 8, data.length - 8).order(ByteOrder.LITTLE_ENDIAN);
-		return new DealAccount(readKey(buf), readKey(buf), readKey(buf), buf.getLong(), buf.getLong(),
-				Instant.ofEpochSecond(buf.getLong()), buf.getLong());
+		String payer = readKey(buf);
+		String recipient = readKey(buf);
+		String oracle = readKey(buf);
+		long dealId = buf.getLong();
+		long amount = buf.getLong();
+		long guarantee = buf.getLong();
+		long duration = buf.getLong();
+		Instant acceptDeadline = Instant.ofEpochSecond(buf.getLong());
+		long startsAt = buf.getLong();
+		DealStatus status = switch (buf.get()) {
+			case 0 -> DealStatus.PROPOSED;
+			case 1 -> DealStatus.ACTIVE;
+			default -> throw new IllegalArgumentException("Deal account has an unknown status");
+		};
+		return new DealAccount(payer, recipient, oracle, dealId, amount, guarantee, duration, acceptDeadline,
+				status == DealStatus.ACTIVE ? Instant.ofEpochSecond(startsAt) : null, status);
 	}
 
 	/**

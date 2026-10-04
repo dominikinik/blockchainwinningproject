@@ -25,9 +25,11 @@ import com.example.monitor.domain.deal.UptimeDealRepository;
 import com.example.monitor.domain.deal.Verdict;
 
 /**
- * The monitor as the oracle of the {@code uptime_deal} program. A wallet creates a deal on chain naming this
- * monitor's key as its oracle and registers it here, linked to a tracked service. The window comes from the
- * deal account, never from the caller. Deals are settled from the service's events:
+ * The monitor as the oracle of the {@code uptime_deal} program. A payer proposes a deal on chain naming this
+ * monitor's key as its oracle and registers it here, usually while it is still a proposal, linked to a tracked
+ * service. {@link #settleDue} re-reads a proposal until the recipient accepts it (or a party cancels it); the
+ * window comes from the accepted deal account ({@code starts_at}, set by the chain at acceptance), never from the
+ * caller. Accepted deals are settled from the service's events:
  * <ul>
  * <li>{@link #onTrackingEvent}: after a {@code Downtime}, {@code InternalErrorHappened} or
  * {@code TrackingFinished} of the service, {@link SettlementPolicy} may decide the settlement at once: a failure
@@ -83,6 +85,7 @@ public class DealService implements TrackingEventListener {
 	 * Starts settling an on-chain deal from a tracked service's events.
 	 *
 	 * @param serviceId the service whose uptime the deal pays for, or {@code null} for the default service
+	 * @return the deal: {@code PROPOSED} with no window while the recipient hasn't accepted, or {@code ACTIVE}
 	 * @throws IllegalArgumentException       if the address or service is missing or invalid, the account isn't a
 	 *                                        deal of the program, names another oracle, or has a duration of 0 or
 	 *                                        above the maximum
@@ -116,10 +119,16 @@ public class DealService implements TrackingEventListener {
 		}
 		chain.ensureOracleFunded();
 		UptimeDeal tracked = UptimeDeal.register(address, service, deal.payer(), deal.recipient(),
-				deal.amountLamports(), deal.durationSeconds(), deal.startsAt(), clock.instant());
+				deal.amountLamports(), deal.guaranteeLamports(), deal.durationSeconds(), deal.acceptDeadline(),
+				deal.startsAt(), clock.instant());
 		deals.add(tracked);
-		log.info("Settling deal {} of service {} from {} to {}", address, service, tracked.startsAt(),
-				tracked.endsAt());
+		if (deal.accepted()) {
+			log.info("Settling deal {} of service {} from {} to {}", address, service, tracked.startsAt(),
+					tracked.endsAt());
+		}
+		else {
+			log.info("Watching proposal {} of service {} until its recipient accepts it", address, service);
+		}
 		return tracked;
 	}
 
@@ -128,7 +137,7 @@ public class DealService implements TrackingEventListener {
 		return deals.find(address).orElseThrow(() -> new NoSuchElementException("Deal " + address + " is not registered"));
 	}
 
-	/** Every deal, newest window first. */
+	/** Every deal, most recently proposed first. */
 	public List<UptimeDeal> list() {
 		return deals.findAll();
 	}
@@ -156,12 +165,20 @@ public class DealService implements TrackingEventListener {
 	}
 
 	/**
-	 * Advances every active deal: decides it when its window is over, sends a decided settlement, or checks on a
-	 * sent one. One deal's failure never stops the others.
+	 * Advances every unfinished deal: picks up the acceptance (or cancellation) of a proposal, and for an active
+	 * deal decides it when its window is over, sends a decided settlement, or checks on a sent one. One deal's
+	 * failure never stops the others.
 	 */
 	public synchronized void settleDue() {
 		Instant now = clock.instant();
-		for (UptimeDeal deal : deals.findActive()) {
+		for (UptimeDeal deal : deals.findUnfinished()) {
+			if (deal.status() == UptimeDeal.Status.PROPOSED) {
+				UptimeDeal next = checkAccepted(deal);
+				if (!next.equals(deal)) {
+					deals.update(next);
+				}
+				continue;
+			}
 			UptimeDeal next = deal;
 			try {
 				if (deal.isOpen()) {
@@ -182,6 +199,30 @@ public class DealService implements TrackingEventListener {
 			if (!next.equals(deal)) {
 				deals.update(next);
 			}
+		}
+	}
+
+	/**
+	 * Re-reads a proposal: accepted (the window starts at the acceptance), closed (withdrawn or rejected), or still
+	 * waiting. A read failure leaves it waiting for the next tick, since nothing is due yet.
+	 */
+	private UptimeDeal checkAccepted(UptimeDeal deal) {
+		try {
+			ChainDeal account = chain.readDeal(deal.address());
+			if (account == null) {
+				return closedOnChain(deal);
+			}
+			if (!account.accepted()) {
+				return deal;
+			}
+			UptimeDeal accepted = deal.accepted(account.startsAt());
+			log.info("Deal {} was accepted; settling it from {} to {}", deal.address(), accepted.startsAt(),
+					accepted.endsAt());
+			return accepted;
+		}
+		catch (RuntimeException e) {
+			log.warn("Checking proposal {} failed: {}", deal.address(), e.getMessage());
+			return deal;
 		}
 	}
 

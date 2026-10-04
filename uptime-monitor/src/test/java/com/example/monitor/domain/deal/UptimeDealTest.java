@@ -14,7 +14,35 @@ class UptimeDealTest {
 
 	static final Instant T0 = Instant.parse("2026-10-04T12:00:00Z");
 
-	UptimeDeal deal = UptimeDeal.register("Deal", ServiceId.newId(), "Payer", "Recipient", 500, 10, T0, T0);
+	UptimeDeal deal = UptimeDeal.register("Deal", ServiceId.newId(), "Payer", "Recipient", 500, 700, 10,
+			T0.plusSeconds(86_400), T0, T0);
+
+	UptimeDeal proposal = UptimeDeal.register("Prop", ServiceId.newId(), "Payer", "Recipient", 500, 700, 10,
+			T0.plusSeconds(86_400), null, T0);
+
+	@Test
+	void aProposalHasNoWindowAndCannotBeDecidedUntilAccepted() {
+		assertThat(proposal.status()).isEqualTo(Status.PROPOSED);
+		assertThat(proposal.startsAt()).isNull();
+		assertThat(proposal.endsAt()).isNull();
+		assertThat(proposal.isOpen()).isFalse();
+		assertThatIllegalStateException().isThrownBy(() -> proposal.decide(new Verdict(10, 10)));
+
+		UptimeDeal accepted = proposal.accepted(T0.plusSeconds(5));
+		assertThat(accepted.status()).isEqualTo(Status.ACTIVE);
+		assertThat(accepted.startsAt()).isEqualTo(T0.plusSeconds(5));
+		assertThat(accepted.endsAt()).isEqualTo(T0.plusSeconds(15));
+		assertThat(accepted.isOpen()).isTrue();
+		assertThat(accepted.guaranteeLamports()).isEqualTo(700);
+		assertThatIllegalStateException().isThrownBy(() -> accepted.accepted(T0));
+	}
+
+	@Test
+	void anActiveDealNeedsAWindowStart() {
+		org.assertj.core.api.Assertions.assertThatIllegalArgumentException()
+			.isThrownBy(() -> new UptimeDeal("D", ServiceId.newId(), "P", "R", 1, 1, 10, T0, null, Status.ACTIVE, null,
+					null, null, null, null, 0, null, T0));
+	}
 
 	@Test
 	void aNewDealIsOpenWithTheWindowFromTheChain() {
