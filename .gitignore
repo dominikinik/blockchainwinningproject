@@ -24,5 +24,3 @@ frontend/playwright-report/
 # Editor settings
 .vscode/
 
-# Local data files of the removed uptime-db module (its container may still be running)
-/uptime-db/

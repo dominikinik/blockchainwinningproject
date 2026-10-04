@@ -3,7 +3,7 @@
 #   stop:   docker compose -f monitor-db/docker-compose.yml down
 # Data is persisted in monitor-db/data/ (git-ignored). Scripts in init/ run only when data/ is empty;
 # to re-initialise the schema, stop the container and delete data/.
-# Port 5433 (the old uptime-db used 5432).
+# Published on host port 5433.
 name: monitor-db
 
 services:
