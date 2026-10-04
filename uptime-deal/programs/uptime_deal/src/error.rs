@@ -37,4 +37,8 @@ pub enum DealError {
     SettleTooEarly,
     #[msg("Arithmetic overflow")]
     Overflow,
+    #[msg("Round has not started yet on the chain clock")]
+    RoundNotStarted,
+    #[msg("The provider acceptance deadline has passed")]
+    AcceptExpired,
 }

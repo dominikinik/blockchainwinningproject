@@ -1,58 +1,17 @@
 # CLAUDE.md — uptime-deal
 
-The `uptime_deal` Solana program (Rust, Anchor 1.1.2). It is an uptime SLA whose outcome is decided on chain. A customer (the **payer**) locks a payment, and the provider (the **recipient**) can be required to lock a performance guarantee. A monitor (the **oracle**) records, round by round, whether the service was UP or DOWN. The program keeps those counters in the deal account. Once the window is over, **anyone** can call `settle_deal`. The program compares its own counters with the deal's threshold and pays the whole escrow (payment plus guarantee) to the provider when the SLA is met, or to the customer on a breach. Monitors observe; the program decides. Keep this file in step with changes to the module's behavior, architecture, or commands.
+The `uptime_deal` Solana program (Rust, Anchor 1.1.2). It is an uptime agreement between a payer (the customer) and a recipient (the provider), and both put money in. The payer proposes the deal and locks its payment. The recipient accepts it by signing the same terms and locking a guarantee; only then does the uptime window start on chain. An oracle reports the application's measured uptime over that window. If uptime is strictly above 99%, the recipient receives both deposits; otherwise the payer does. A proposal can be withdrawn or rejected at any time, and if the oracle never settles an accepted deal, either party can cancel it after a timeout and each gets its own deposit back. Keep this file in step with changes to the module's behavior, architecture, or commands.
 
 ## Flow
 
-1. `create_deal(deal_id: u64, amount_lamports: u64, provider_stake_lamports: u64, duration_seconds: u64, check_interval_seconds: u64, min_uptime_bps: u16)`, signed by the **payer**. It creates the `Deal` PDA (seeds `["deal", payer, deal_id (u64 LE)]`) and moves `amount_lamports` into it. It stores the `recipient` and `oracle` addresses passed as accounts, the terms, and `total_rounds = duration / interval`, and it allocates a bitmap with one bit per round. Rules:
-   - `amount_lamports >= MIN_DEAL_LAMPORTS` (1,000,000, which is above the rent-exempt minimum of an empty wallet, so paying a recipient that doesn't exist yet works);
-   - recipient ≠ payer;
-   - `1 <= duration_seconds <= MAX_DEAL_DURATION_SECONDS` (86,400);
-   - the interval divides the duration into 1..`MAX_ROUNDS` (8,192) rounds;
-   - `1 <= min_uptime_bps <= 10_000`.
+1. `create_deal(deal_id: u64, amount_lamports: u64, guarantee_lamports: u64, duration_seconds: u64)`, signed by the **payer**. It creates the `Deal` PDA (seeds `["deal", payer, deal_id (u64 LE)]`) as a **proposal** (`status = Proposed`, `starts_at = 0`). It stores the payer, the `recipient` and `oracle` addresses passed as accounts, the payment, the guarantee the recipient must lock, `duration_seconds`, and `accept_deadline` (chain time + `ACCEPT_TIMEOUT_SECONDS`, 86,400). It then moves only `amount_lamports` from the payer into the deal. Rules: both amounts `>= MIN_DEAL_LAMPORTS` (1,000,000, above the rent-exempt minimum of an empty wallet), recipient ≠ payer, and `1 <= duration_seconds <= MAX_DEAL_DURATION_SECONDS` (86,400).
+2. `accept_deal(amount_lamports, guarantee_lamports, duration_seconds, oracle: Pubkey)`, signed by the deal's **recipient** (`has_one = recipient`). The arguments are the terms the recipient agrees to; the program rejects the acceptance unless they equal the stored terms (`TermsMismatch`). Without this check, a payer could cancel a proposal and re-create it at the same address (same `deal_id`) with harsher terms while the recipient's acceptance is in flight. It also needs `status == Proposed` (`DealNotProposed`) and `now < accept_deadline` (`AcceptExpired`). It moves `guarantee_lamports` from the recipient into the deal, sets `starts_at` to the chain clock and `status = Active`. The window is `[starts_at, starts_at + duration_seconds)`; because it is on chain, whoever registers the deal with the oracle can't change it.
+3. `settle_deal(up_seconds: u64, total_seconds: u64)`, signed by the deal's **oracle**. It needs `status == Active` (`DealNotActive`), `total_seconds > 0` and `up_seconds <= total_seconds`. If `up_seconds * 100 > total_seconds * 99` (exact integer math), both deposits go to the recipient; otherwise they stay in the deal. Anchor's `close = payer` then closes the deal and returns its rent, and on a refund both deposits too, to the payer. A settled deal no longer exists, so it can't be settled twice, and its `deal_id` can be reused.
+4. `cancel_deal()`, signed by the deal's **payer or recipient** (anyone else gets `NotAParty`). The accounts are `signer`, `deal`, `payer` and `recipient`. A **proposal** can be cancelled at any time: the payer withdraws it, or the recipient rejects it. An **accepted** deal can be cancelled once the chain time is at least `starts_at + duration_seconds + CANCEL_TIMEOUT_SECONDS` (600; `CancelTooEarly` before). In that case the guarantee goes back to the recipient first. In both cases the deal closes to the payer, returning the payment and the rent. Until the timeout only the oracle can close an accepted deal; after it, all three can, and whichever lands first wins. This means a lost oracle key, a restarted or failed oracle, or a deal that was never registered can't lock the deposits forever.
 
-   With `provider_stake_lamports == 0` the deal is `Active` at once and the window starts at the chain clock (`starts_at`). Otherwise the deal is `AwaitingProvider` and `starts_at` is 0.
-2. `accept_deal()`, signed by the **recipient**. It moves `provider_stake_lamports` into the deal, sets `Active`, and starts the window now. A deal can be accepted once.
-3. `record_observation(round: u32, up: bool)`, signed by the deal's **oracle**. It adds one round to `up_checks` or `down_checks` and sets the round's bit. It requires all of the following:
-   - the deal is `Active`;
-   - `round < total_rounds`;
-   - the round has **ended** on the chain clock (`now >= starts_at + (round + 1) * interval`);
-   - observations are still open (`now < ends_at + OBSERVATION_GRACE_SECONDS`, which is 10);
-   - the round's bit is not set yet.
+The oracle is `uptime-monitor`. It measures uptime from the health-check events of a tracked service (by default the provider, `uptime-service`), registers deals via `POST /api/deals` (usually while they are still proposals), picks up the acceptance from the chain, and settles them with its own key. It settles at once when a failed check makes more than 99% unreachable or tracking ends, and otherwise at the end of the window (see `uptime-monitor/CLAUDE.md`). On the frontend `/deal` page the payer proposes and the provider accepts with their wallets. The program trusts the oracle's numbers. It does not check that the window is over when the oracle settles: the oracle's chain clock may differ from its own.
 
-   Rounds may arrive in any order, and none can be counted twice. The oracle reports only UP or DOWN. It never sends totals or a verdict.
-4. `settle_deal()`, signed by **anyone**: the signer only pays the fee. It has no arguments. It requires an `Active` deal and `now >= ends_at + OBSERVATION_GRACE_SECONDS`, exactly when observations close, so the outcome can't depend on who acts first. The verdict is `up_checks * 10_000 >= min_uptime_bps * total_rounds`, in exact u64 integer math. **Rounds that were never observed count as down.**
-   - If the SLA is met, the payment plus the guarantee go to the recipient.
-   - Otherwise the escrow stays in the deal, and Anchor's `close = payer` returns it to the payer together with the rent. The rent always goes back to the payer.
-
-   A settled deal no longer exists, so it can't be settled twice (3012), and its `deal_id` can be reused.
-5. `cancel_deal()`, signed by the **payer**, works only while the deal is `AwaitingProvider`. It closes the deal and returns the payment and the rent. An active deal can't be cancelled; settling it is permissionless, so its escrow is never stuck.
-
-Uptime-service is the default oracle. It samples its own health during each round and sends `record_observation` once the round ends. Its Postgres history (`uptime-db`) is for the dashboard only and is never read for settlement. See `uptime-service/CLAUDE.md`, "Uptime deals". The frontend `/deal` page creates, accepts and settles deals with the wallet, and reads the counters straight from the account.
-
-Trust model: the payer names the oracle in `create_deal`, and the provider accepts it by calling `accept_deal`. The provider must check it first; the frontend warns when it isn't the service's key. The oracle is trusted to report honestly what it saw. It can't invent rounds that haven't ended, count a round twice, report after the grace period, change the terms, or move funds. If it goes silent, its rounds count as down. Neither party can feed the counters.
-
-Events:
-- `DealCreated` (the terms), `DealStarted` (`starts_at`, `ends_at`), `ObservationRecorded` (the round, `up`, the counters after it), `DealSettled` (the counters, `min_uptime_bps`, `paid_to_recipient`, `payout_lamports`) and `DealCancelled`. Each starts with the deal's pubkey.
-
-Errors (`DealError`, codes 6000+, append only):
-- `AmountTooSmall`, `RecipientIsPayer`, `UnauthorizedOracle`, `InvalidUptime` (no longer returned), `InvalidDuration`, `CancelTooEarly` (no longer returned), `InvalidCheckInterval`, `InvalidThreshold`, `DealNotActive`, `DealAlreadyActive`, `RoundOutOfRange`, `RoundNotEnded`, `RoundAlreadyRecorded`, `ObservationsClosed`, `SettleTooEarly`, `Overflow`.
-- If `payer` or `recipient` doesn't match the deal, Anchor fails `settle_deal`, `accept_deal` and `cancel_deal` with `ConstraintHasOne` (2001).
-
-## Account layout
-
-`Deal` (Borsh, after the 8-byte discriminator), in order:
-- `payer`, `recipient`, `oracle`: 32-byte pubkeys;
-- `deal_id`, `amount_lamports`, `provider_stake_lamports`: u64;
-- `status`: u8, 0 = `AwaitingProvider`, 1 = `Active`;
-- `starts_at`: i64;
-- `duration_seconds`, `check_interval_seconds`: u64;
-- `min_uptime_bps`: u16;
-- `total_rounds`, `up_checks`, `down_checks`: u32;
-- `bump`: u8;
-- `recorded`: u32 length prefix, then the bitmap. Bit `r % 8` of byte `r / 8` is set once round `r` is recorded.
-
-The account size is `Deal::space(total_rounds)`, which is `Deal::FIXED_SPACE` (172) plus `ceil(rounds / 8)`. `uptime-service` (`DealProgram.java`) and the frontend (`dealProgram.ts`) decode this layout by hand. Change all three together.
+Events: `DealCreated` (terms and `accept_deadline`), `DealAccepted` (`starts_at`), `DealSettled` (`paid_to_recipient` tells which side got both deposits; then `amount_lamports`, `guarantee_lamports`) and `DealCancelled` (`cancelled_by`, `guarantee_refunded_lamports`). New event fields go at the end, because `uptime-monitor` decodes event prefixes. Errors (`DealError`, codes 6000+, append only): `AmountTooSmall`, `RecipientIsPayer`, `UnauthorizedOracle`, `InvalidUptime`, `InvalidDuration`, `CancelTooEarly`, `GuaranteeTooSmall`, `DealNotProposed`, `DealNotActive`, `AcceptExpired`, `TermsMismatch`, `NotAParty`. If `payer` or `recipient` doesn't match the deal, Anchor fails `settle_deal` and `cancel_deal` (and `accept_deal`, for a signer other than the recipient) with `ConstraintHasOne` (2001).
 
 ## Commands
 
@@ -69,20 +28,14 @@ cargo test threshold_boundary         # single test by name
 
 ## Layout
 
-- `programs/uptime_deal/src/lib.rs`: the `#[program]` entry points. Each delegates to `instructions/<name>.rs::handle_<name>`.
-- `instructions/{create_deal,accept_deal,record_observation,settle_deal,cancel_deal}.rs`: each holds its `#[derive(Accounts)]` struct and handler. `create_deal::start` activates a deal; `accept_deal` uses it too.
-- `logic.rs`: the pure rules with no Solana types (`sla_met`, `total_rounds`, `round_ended`, `observations_open`, `settle_allowed`, the bitmap helpers `is_recorded` / `mark_recorded`, and the validators), with unit tests in the same file.
-- `state.rs` (`Deal`, `DealStatus`).
-- `constants.rs` (`DEAL_SEED`, `BPS_DENOMINATOR`, `MIN_DEAL_LAMPORTS`, `MAX_DEAL_DURATION_SECONDS`, `MAX_ROUNDS`, `OBSERVATION_GRACE_SECONDS`, exported in the IDL).
-- `error.rs`, `events.rs`.
-- `tests/`: LiteSVM tests run the built program in-process, with no validator.
-  - `common/mod.rs` is the harness. It holds the parties, starts the chain at `T0`, and has instruction builders, `Terms` (default: 10 rounds of 6 s at 90%), `observe_all` / `pattern(up, down, missed)` and `to_settlement`.
-  - `test_e2e.rs` covers the full flows:
-    - UP and DOWN observations updating the account, and out-of-order rounds;
-    - the provider winning payment plus guarantee, and the customer winning both;
-    - the inclusive threshold boundary, unobserved rounds counting as down, and a stranger settling from on-chain state alone;
-    - settling twice, lamport conservation across deals, and cancelling an unaccepted deal.
-  - `test_errors.rs` covers every rejection: the create terms; accept by the wrong signer, twice, or without funds; observations from unauthorized signers, duplicate rounds, out-of-range, unfinished or late rounds, or a deal not yet active; settlement too early, before acceptance, or with swapped wallets; and cancel. Each checks that nothing moved.
+- `programs/uptime_deal/src/lib.rs`: the `#[program]` entry points, which delegate to `instructions/<name>.rs::handle_<name>`.
+- `instructions/create_deal.rs`, `instructions/accept_deal.rs`, `instructions/settle_deal.rs`, `instructions/cancel_deal.rs`: each holds its `#[derive(Accounts)]` struct and handler.
+- `logic.rs`: the pure rules with no Solana types (`uptime_above_threshold`, `amount_is_valid`, `duration_is_valid`, `cancel_allowed`, `accept_deadline`, `accept_open`, and `Terms` with `terms_match`), with unit tests in the same file.
+- `state.rs` (`Deal`, `DealStatus`). The `Deal` account is 154 bytes: discriminator, payer, recipient, oracle, deal_id, amount_lamports, guarantee_lamports, duration_seconds, accept_deadline, starts_at, status (1 byte: 0 `Proposed`, 1 `Active`), bump. `uptime-service` decodes this layout by hand (`DealProgram`), so update it there too.
+- `constants.rs` (`DEAL_SEED`, `UPTIME_THRESHOLD_PERCENT`, `MIN_DEAL_LAMPORTS`, `MAX_DEAL_DURATION_SECONDS`, `CANCEL_TIMEOUT_SECONDS`, `ACCEPT_TIMEOUT_SECONDS`, exported in the IDL), `error.rs`, `events.rs`.
+- `tests/`: LiteSVM tests run the built program in-process, with no validator. `common/mod.rs` is the harness: it holds the parties (all funded, since the recipient pays the guarantee), has instruction builders, and has `propose`/`accept`/`open` helpers.
+  - `test_e2e.rs` covers the full propose → accept → report → payout flows: both deposits to the recipient above 99%, both to the payer at or below, the strict boundary, multiple deals with lamport conservation, settling twice, withdrawing and rejecting a proposal, either party cancelling an accepted deal after the timeout, and a late settlement beating the cancel.
+  - `test_errors.rs` covers every rejection and checks that it moves no lamports. That includes accepting with each mismatched term, and a proposal replaced at the same address while its acceptance is in flight.
 
 ## Conventions
 
@@ -90,4 +43,4 @@ Every public function, including the test harness helpers, has a rustdoc comment
 
 ## Program ID and keys
 
-The program ID is `EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r`, used in `declare_id!` and `Anchor.toml`. Its deploy keypair, `target/deploy/uptime_deal-keypair.json`, is gitignored. The tests don't need it, because LiteSVM loads the `.so` under `declare_id!`. To deploy from a fresh clone, copy the keypair in, or run `anchor keys sync` to adopt a new ID. The account layout changed incompatibly in the on-chain settlement refactor: redeploy (or restart the local validator) and create new deals. Deals created by the old program can't be decoded.
+The program ID is `EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r`, used in `declare_id!` and `Anchor.toml`. Its deploy keypair, `target/deploy/uptime_deal-keypair.json`, is gitignored. The tests don't need it because LiteSVM loads the `.so` under `declare_id!`. To deploy from a fresh clone, copy the keypair in, or run `anchor keys sync` to adopt a new ID.

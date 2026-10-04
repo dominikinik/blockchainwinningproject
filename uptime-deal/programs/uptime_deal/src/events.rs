@@ -13,6 +13,7 @@ pub struct DealCreated {
     pub check_interval_seconds: u64,
     pub min_uptime_bps: u16,
     pub total_rounds: u32,
+    pub accept_deadline: i64,
 }
 
 /// Emitted when the window starts: by `create_deal` without a guarantee, or by `accept_deal`.

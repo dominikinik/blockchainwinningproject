@@ -106,6 +106,11 @@ pub fn round_ended(starts_at: i64, check_interval_seconds: u64, round: u32, now:
     now as i128 >= starts_at as i128 + (round as i128 + 1) * check_interval_seconds as i128
 }
 
+/// Decides whether a round has started on the chain clock.
+pub fn round_started(starts_at: i64, check_interval_seconds: u64, round: u32, now: i64) -> bool {
+    now as i128 >= starts_at as i128 + round as i128 * check_interval_seconds as i128
+}
+
 /// Decides whether the deal still accepts observations.
 ///
 /// # Arguments
@@ -134,6 +139,15 @@ pub fn observations_open(starts_at: i64, duration_seconds: u64, now: i64) -> boo
 /// `true` once `now >= starts_at + duration_seconds + OBSERVATION_GRACE_SECONDS`.
 pub fn settle_allowed(starts_at: i64, duration_seconds: u64, now: i64) -> bool {
     now as i128 >= starts_at as i128 + duration_seconds as i128 + OBSERVATION_GRACE_SECONDS as i128
+}
+
+/// An SLA can be settled early once even treating every unobserved round as UP cannot meet its threshold.
+pub fn early_breach_is_proven(up_checks: u32, down_checks: u32, total_rounds: u32, min_uptime_bps: u16) -> bool {
+    if total_rounds == 0 || up_checks.saturating_add(down_checks) > total_rounds {
+        return false;
+    }
+    let maximum_possible_up = total_rounds - down_checks;
+    !sla_met(maximum_possible_up, total_rounds, min_uptime_bps)
 }
 
 /// Tells whether a round's bit is set.

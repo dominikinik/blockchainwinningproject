@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js'
-import { BACKEND_URL, RPC_URL } from './env'
+import { PROVIDER_URL, RPC_URL } from './env'
 
 const connection = new Connection(RPC_URL, 'confirmed')
 const ESCROW_SOL = 0.5
@@ -19,7 +19,7 @@ async function connectFundedWallet(page: Page): Promise<string> {
 }
 
 /**
- * Creates a 10-second deal of ten 1-second rounds to a new wallet. The threshold is 80%, so a round lost
+ * Creates a 10-second deal of five 2-second rounds to a new wallet. The threshold is 80%, so a round lost
  * to registration latency at the start can't flip the outcome, while a multi-second outage does.
  */
 async function createTenSecondDeal(page: Page): Promise<string> {
@@ -28,7 +28,7 @@ async function createTenSecondDeal(page: Page): Promise<string> {
   await page.getByLabel('Payment (SOL)').fill(String(ESCROW_SOL))
   await page.getByLabel('Provider guarantee (SOL)').fill('0')
   await page.getByLabel('Window (seconds)').fill('10')
-  await page.getByLabel('Check interval (seconds)').fill('1')
+  await page.getByLabel('Check interval (seconds)').fill('2')
   await page.getByLabel('Minimum uptime (%)').fill('80')
   await page.getByRole('button', { name: 'Create deal' }).click()
   await expect(page.getByTestId('deal-verdict')).toContainText('Monitoring', { timeout: 20_000 })
@@ -41,7 +41,7 @@ async function upRounds(page: Page): Promise<number> {
 }
 
 test.afterEach(async ({ request }) => {
-  await request.post(`${BACKEND_URL}/api/application/start`)
+  await request.post(`${PROVIDER_URL}/api/application/start`)
 })
 
 test('the program pays the recipient when on-chain observations meet the threshold', async ({ page }, testInfo) => {
@@ -53,7 +53,7 @@ test('the program pays the recipient when on-chain observations meet the thresho
   await expect.poll(() => upRounds(page), { timeout: 20_000 }).toBeGreaterThan(0)
 
   await expect(page.getByTestId('deal-verdict')).toHaveText('SLA met · escrow paid to recipient', { timeout: SETTLE_TIMEOUT_MS })
-  expect(await upRounds(page)).toBeGreaterThanOrEqual(8)
+  expect(await upRounds(page)).toBeGreaterThanOrEqual(4)
   await expect(page.getByTestId('recipient-balance')).toHaveText(`${ESCROW_SOL} SOL`)
 
   // The money really moved on chain: the recipient got exactly the escrow, the payer paid it plus fees.

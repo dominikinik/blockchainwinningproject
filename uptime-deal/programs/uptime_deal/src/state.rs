@@ -30,6 +30,8 @@ pub struct Deal {
     pub amount_lamports: u64,
     /// The provider's performance guarantee, in lamports (0 means none, and the deal starts at once).
     pub provider_stake_lamports: u64,
+    /// Last chain time when the provider may accept; informational after activation.
+    pub accept_deadline: i64,
     pub status: DealStatus,
     /// Chain time (unix seconds) when the deal became active; the window starts here. 0 until then.
     pub starts_at: i64,
@@ -55,7 +57,7 @@ pub struct Deal {
 impl Deal {
     /// Bytes of a `Deal` before its bitmap, including the 8-byte discriminator and the bitmap's
     /// 4-byte length prefix.
-    pub const FIXED_SPACE: usize = 8 + 32 * 3 + 8 * 3 + 1 + 8 * 3 + 2 + 4 * 3 + 1 + 4;
+    pub const FIXED_SPACE: usize = 8 + 32 * 3 + 8 * 4 + 1 + 8 * 3 + 2 + 4 * 3 + 1 + 4;
 
     /// Computes the account size of a deal.
     ///

@@ -39,6 +39,7 @@ pub struct AcceptDeal<'info> {
 /// * A system program error if the recipient lacks the lamports.
 pub fn handle_accept_deal(ctx: Context<AcceptDeal>) -> Result<()> {
     require!(ctx.accounts.deal.status == DealStatus::AwaitingProvider, DealError::DealAlreadyActive);
+    require!(Clock::get()?.unix_timestamp <= ctx.accounts.deal.accept_deadline, DealError::AcceptExpired);
 
     system_program::transfer(
         CpiContext::new(

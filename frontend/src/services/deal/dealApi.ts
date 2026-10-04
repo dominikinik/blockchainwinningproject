@@ -6,6 +6,8 @@ export interface DealConfig {
   oracle: string
   /** RPC URL of the cluster the service settles on. */
   rpcUrl: string
+  /** Health-probe interval; deal rounds must match this sampling interval. */
+  checkIntervalSeconds: number
 }
 
 export type DealStatus = 'AWAITING_PROVIDER' | 'ACTIVE' | 'SETTLED' | 'FAILED' | 'CANCELLED'

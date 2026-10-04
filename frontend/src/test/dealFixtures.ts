@@ -9,10 +9,10 @@ import type { PublicKey } from '@solana/web3.js'
  */
 export function dealBytes(fields: {
   payer: PublicKey; recipient: PublicKey; oracle: PublicKey; dealId?: bigint; amount?: bigint; stake?: bigint; active?: boolean
-  startsAt?: bigint; duration?: bigint; interval?: bigint; minBps?: number; total?: number; up?: number; down?: number; recorded?: number[]
+  acceptDeadline?: bigint; startsAt?: bigint; duration?: bigint; interval?: bigint; minBps?: number; total?: number; up?: number; down?: number; recorded?: number[]
 }): Uint8Array {
   const recorded = fields.recorded ?? [0, 0]
-  const data = new Uint8Array(172 + recorded.length)
+  const data = new Uint8Array(180 + recorded.length)
   const view = new DataView(data.buffer)
   data.set([125, 223, 160, 234, 71, 162, 182, 219], 0)
   data.set(fields.payer.toBytes(), 8)
@@ -21,17 +21,18 @@ export function dealBytes(fields: {
   view.setBigUint64(104, fields.dealId ?? 1n, true)
   view.setBigUint64(112, fields.amount ?? 500_000_000n, true)
   view.setBigUint64(120, fields.stake ?? 0n, true)
-  data[128] = fields.active === false ? 0 : 1
-  view.setBigInt64(129, fields.startsAt ?? 1_790_000_000n, true)
-  view.setBigUint64(137, fields.duration ?? 10n, true)
-  view.setBigUint64(145, fields.interval ?? 1n, true)
-  view.setUint16(153, fields.minBps ?? 9_900, true)
-  view.setUint32(155, fields.total ?? 10, true)
-  view.setUint32(159, fields.up ?? 0, true)
-  view.setUint32(163, fields.down ?? 0, true)
-  data[167] = 254
-  view.setUint32(168, recorded.length, true)
-  data.set(recorded, 172)
+  view.setBigInt64(128, fields.acceptDeadline ?? 1_790_086_400n, true)
+  data[136] = fields.active === false ? 0 : 1
+  view.setBigInt64(137, fields.startsAt ?? 1_790_000_000n, true)
+  view.setBigUint64(145, fields.duration ?? 10n, true)
+  view.setBigUint64(153, fields.interval ?? 1n, true)
+  view.setUint16(161, fields.minBps ?? 9_900, true)
+  view.setUint32(163, fields.total ?? 10, true)
+  view.setUint32(167, fields.up ?? 0, true)
+  view.setUint32(171, fields.down ?? 0, true)
+  data[175] = 254
+  view.setUint32(176, recorded.length, true)
+  data.set(recorded, 180)
   return data
 }
 

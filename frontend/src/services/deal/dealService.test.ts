@@ -11,7 +11,7 @@ vi.mock('./dealApi', () => ({ dealApi: { register: vi.fn() } }))
 
 const programId = 'EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r'
 const programKey = new PublicKey(programId)
-const config = { programId, oracle: Keypair.generate().publicKey.toBase58(), rpcUrl: 'http://rpc' }
+const config = { programId, oracle: Keypair.generate().publicKey.toBase58(), rpcUrl: 'http://rpc', checkIntervalSeconds: 1 }
 const payer = Keypair.generate().publicKey
 const recipient = Keypair.generate().publicKey.toBase58()
 

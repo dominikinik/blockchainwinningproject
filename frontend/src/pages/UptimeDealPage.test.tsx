@@ -29,7 +29,7 @@ vi.mock('../config/solana', async (importActual) => ({
 }))
 vi.mock('../services/uptime/uptimeService', () => ({ uptimeService: { getState: vi.fn() } }))
 
-const config = { programId: 'EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r', oracle: ORACLE, rpcUrl: 'http://127.0.0.1:8899' }
+const config = { programId: 'EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r', oracle: ORACLE, rpcUrl: 'http://127.0.0.1:8899', checkIntervalSeconds: 2 }
 const nowSeconds = () => Math.floor(Date.now() / 1000)
 
 function trackedDeal(overrides: Partial<TrackedDeal> = {}): TrackedDeal {
@@ -42,7 +42,7 @@ function trackedDeal(overrides: Partial<TrackedDeal> = {}): TrackedDeal {
 
 function chainDeal(overrides: Partial<OnChainDeal> = {}): OnChainDeal {
   return {
-    payer: WALLET, recipient: PROVIDER, oracle: ORACLE, dealId: 1n, amountLamports: 500_000_000n, providerStakeLamports: 0n, active: true,
+    payer: WALLET, recipient: PROVIDER, oracle: ORACLE, dealId: 1n, amountLamports: 500_000_000n, providerStakeLamports: 0n, acceptDeadline: nowSeconds() + 86_400, active: true,
     startsAt: nowSeconds() - 1, durationSeconds: 10, checkIntervalSeconds: 1, minUptimeBps: 9_900, totalRounds: 10, upChecks: 0, downChecks: 0,
     recorded: new Uint8Array(2), ...overrides,
   }
@@ -122,7 +122,7 @@ describe('UptimeDealPage', () => {
 
     expect(openDeal).toHaveBeenCalledWith(expect.objectContaining({
       connection, payer: new PublicKey(WALLET), sendTransaction, config, recipient: PROVIDER, amountLamports: 500_000_000n,
-      providerStakeLamports: 100_000_000n, durationSeconds: 10, checkIntervalSeconds: 1, minUptimeBps: 9_900,
+      providerStakeLamports: 100_000_000n, durationSeconds: 10, checkIntervalSeconds: 2, minUptimeBps: 9_900,
     }))
     expect(await screen.findByTestId('deal-verdict')).toHaveTextContent(/Monitoring · \d+s left/)
     expect(await screen.findByTestId('deal-counters')).toHaveTextContent('3 up · 0 down · 7 unobserved / 10 rounds')

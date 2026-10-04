@@ -2,12 +2,12 @@
 
 ## Current frontend → service contract
 
-The browser calls relative `/api` URLs on the Vite origin. `frontend/vite.config.ts` proxies them to **`uptime-service`**, default `http://localhost:8080` (`SLANA_UPTIME_SERVICE_TARGET` overrides it). The frontend never calls `uptime-db` directly. Both requests use `GET`, `Accept: application/json`, no request body, `cache: no-store`, and a 4-second client timeout. The Monitoring page sends them on mount, every 10 seconds, and when the user presses Refresh.
+The browser calls relative `/api` URLs on the Vite origin. `frontend/vite.config.ts` proxies `/api/application` to **`uptime-service`** (default `http://localhost:8080`, `SLANA_UPTIME_SERVICE_TARGET` overrides it) and the rest of `/api` to **`uptime-monitor`**. Both requests use `GET`, `Accept: application/json`, no request body, `cache: no-store`, and a 4-second client timeout. The Monitoring page sends them on mount, every 10 seconds, and when the user presses Refresh.
 
 | Frontend request | Java endpoint and expected response | Frontend behavior |
 | --- | --- | --- |
 | `GET /api/application/state` | `uptime-service` returns `{ "status": "UP" }` or `{ "status": "DOWN" }`. | Shows the **Java service's own** current state. A failed request, non-2xx status, or unexpected shape shows `Backend unavailable`. |
-| `GET /api/uptime?from=<ISO-8601>&to=<ISO-8601>` | `uptime-service` returns an array of `{ "time": "2026-10-03T12:00:00Z", "down": false }` entries, one per second in the inclusive range. `down: true` draws red; `false` draws green. | Requests 300 completed seconds ending two seconds before the browser's current second, groups them into up to 60 timeline blocks, and shows an error if the request or response is invalid. Missing backend records are reported as `down` by the Java service. |
+| `GET /api/uptime?from=<ISO-8601>&to=<ISO-8601>` | `uptime-monitor` returns an array of `{ "time": "2026-10-03T12:00:00Z", "down": false }` entries, one per second in the inclusive range. `down: true` draws red; `false` draws green. | Requests 300 completed seconds ending two seconds before the browser's current second, groups them into up to 60 timeline blocks, and shows an error if the request or response is invalid. Missing backend records are reported as `down`. |
 
 These are **read-only** requests. The frontend does not call `POST /api/application/start` or `/stop`. The Java service checks its own logical state; it does not check the HTTPS endpoint entered in Create SLA.
 
@@ -15,7 +15,7 @@ These are **read-only** requests. The frontend does not call `POST /api/applicat
 
 ### Create SLA data boundary
 
-Submitting the Create SLA form calls `slaService.createSLA()` **inside the browser**. Nothing is sent to `uptime-service`, `uptime-db`, or Solana. The service receives this `CreateSLAInput` object and saves a new SLA in `localStorage`:
+Submitting the Create SLA form calls `slaService.createSLA()` **inside the browser**. Nothing is sent to `uptime-service`, `uptime-monitor`, or Solana. The service receives this `CreateSLAInput` object and saves a new SLA in `localStorage`:
 
 | Field | Value passed to the mock repository |
 | --- | --- |
@@ -33,16 +33,17 @@ The mock service assigns an ID and start/end timestamps, then returns the create
 
 ## Available now
 
-- **Uptime deal, end to end (`/deal`): monitors observe, Solana decides.**
-  - The customer's wallet signs `create_deal`. It locks the payment and fixes every term on chain: window, check interval, minimum uptime in bps, and an optional provider guarantee. With a guarantee, the provider locks it with `accept_deal`.
-  - `uptime-service` is the program's oracle. It finds the deal through `POST /api/deals` or by discovering accounts that name it. It sends one `record_observation(round, up)` per round, and the program counts each round at most once, only after the round has ended.
-  - After the window and a 10 s observation grace, **anyone** can call `settle_deal`, which takes no arguments: the service, or "Settle now" on the page. The program compares `up_checks` with `min_uptime_bps × total_rounds` (unobserved rounds count as down) and pays the whole escrow to the provider or to the customer.
-  - The page reads the counters and the verdict from the chain. `uptime-db` is not involved in settlement.
-  - Covered by `frontend/e2e` (Playwright) and runnable by hand with `scripts/run-deal-demo.sh`. The monitor checks the Java service's own health, not a customer endpoint. The service rediscovers open deals after a restart, and rounds missed while it was down count as down.
-  - Still open: one trusted monitor, with no multi-monitor consensus, staking or slashing; native SOL only.
+- **Uptime deal, end to end (`/deal`):** a two-sided agreement on the real `uptime_deal` program.
+  - The payer's wallet signs `create_deal`, which proposes the deal and locks the payment.
+  - `POST /api/deals` registers the proposal with `uptime-monitor`, which is the program's oracle. It links the deal to a tracked service (by default the provider, `uptime-service`) and re-reads the proposal until it is accepted or cancelled.
+  - The provider sees the proposal under "Proposals for you" and signs `accept_deal`. That locks its guarantee and starts the uptime window on chain; the program refuses the acceptance if the terms differ from the ones the provider was shown.
+  - Every probe result is persisted and immediately reported as one UP/DOWN round observation; the monitor does not scan Postgres history to reconstruct rounds. Deal rounds must match the monitor sampling interval. The contract owns the counters and payout rule; anyone can call `settle_deal` after expiry, and the monitor may call it early once on-chain DOWN counters prove the threshold unreachable.
+  - The page shows the verdict and the provider's on-chain balance. Covered by `frontend/e2e` (Playwright) and runnable by hand with `scripts/run-deal-demo.sh`, using two browser windows.
+  - What it measures is the provider's health as checked by the monitor every 2 s, not a customer endpoint.
+  - Tracked deals are stored in `monitor-db`, so they survive a monitor restart. If the monitor is down for good, either party can reclaim its deposit with `cancel_deal` ("Reclaim deposits" on the page) 10 minutes after the window ends. A proposal can be withdrawn by the payer or rejected by the provider at any time.
 
 - The Monitoring page reads the Java service's own `GET /api/application/state` and `GET /api/uptime?from=...&to=...` endpoints. The timeline shows recorded `UP` or `DOWN` seconds for the **Java service**, refreshing every 10 seconds. It does not measure customer API endpoints.
-- Vite proxies relative `/api` requests to `uptime-service` during development, so the browser does not need CORS. The target is `http://localhost:8080` by default, or `SLANA_UPTIME_SERVICE_TARGET`.
+- Vite proxies `/api/application` requests to `uptime-service` during development (default `http://localhost:8080`, or `SLANA_UPTIME_SERVICE_TARGET`), and the rest of `/api` to `uptime-monitor`, so the browser does not need CORS.
 - The Create SLA page calls `frontend/src/services/solana/slaService.ts#createSLA`. It stores the customer payment and provider guarantee in browser `localStorage`; it does not call a backend, create a Solana account, or transfer SOL.
 - Demo terms can expire in 30 seconds or a few minutes. The post-expiry action records a mock settlement request for new agreements, with no recipient or transaction because customer endpoint observations are unavailable.
 

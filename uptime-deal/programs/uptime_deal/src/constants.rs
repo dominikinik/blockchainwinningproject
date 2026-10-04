@@ -26,3 +26,7 @@ pub const MAX_ROUNDS: u64 = 8_192;
 /// Settlement opens exactly when observations close, so the outcome can't depend on who acts first.
 #[constant]
 pub const OBSERVATION_GRACE_SECONDS: i64 = 10;
+
+/// Time a provider has to accept a proposed deal.
+#[constant]
+pub const ACCEPT_TIMEOUT_SECONDS: i64 = 86_400;

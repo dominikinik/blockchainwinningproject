@@ -25,8 +25,8 @@ pub struct RecordObservation<'info> {
 /// Adds one monitoring round to the deal's on-chain counters.
 ///
 /// The oracle only reports what it saw (UP or DOWN); it never reports totals or a verdict. Each
-/// round can be recorded once, only after it has ended on the chain clock, and only until the
-/// observation grace after the window closes.
+/// round can be recorded once. DOWN may be reported as soon as its round starts; UP is accepted only
+/// after the round ends. Observations close after the window's grace period.
 ///
 /// # Arguments
 ///
@@ -51,7 +51,12 @@ pub fn handle_record_observation(ctx: Context<RecordObservation>, round: u32, up
     require!(deal.status == DealStatus::Active, DealError::DealNotActive);
     require!(round < deal.total_rounds, DealError::RoundOutOfRange);
     let now = Clock::get()?.unix_timestamp;
-    require!(logic::round_ended(deal.starts_at, deal.check_interval_seconds, round, now), DealError::RoundNotEnded);
+    if up {
+        require!(logic::round_ended(deal.starts_at, deal.check_interval_seconds, round, now), DealError::RoundNotEnded);
+    }
+    else {
+        require!(logic::round_started(deal.starts_at, deal.check_interval_seconds, round, now), DealError::RoundNotStarted);
+    }
     require!(logic::observations_open(deal.starts_at, deal.duration_seconds, now), DealError::ObservationsClosed);
     require!(logic::mark_recorded(&mut deal.recorded, round), DealError::RoundAlreadyRecorded);
 

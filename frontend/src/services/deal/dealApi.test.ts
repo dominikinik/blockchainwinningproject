@@ -10,8 +10,8 @@ describe('dealApi', () => {
   afterEach(() => { vi.unstubAllGlobals() })
 
   it('reads the config', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ programId: 'P', oracle: 'O', rpcUrl: 'R' }))
-    await expect(dealApi.getConfig()).resolves.toEqual({ programId: 'P', oracle: 'O', rpcUrl: 'R' })
+    fetchMock.mockResolvedValue(jsonResponse({ programId: 'P', oracle: 'O', rpcUrl: 'R', checkIntervalSeconds: 2 }))
+    await expect(dealApi.getConfig()).resolves.toEqual({ programId: 'P', oracle: 'O', rpcUrl: 'R', checkIntervalSeconds: 2 })
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/deals/config')
     expect(init.headers).toEqual({ Accept: 'application/json' })

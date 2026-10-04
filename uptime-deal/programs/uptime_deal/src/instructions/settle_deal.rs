@@ -53,7 +53,16 @@ pub fn handle_settle_deal(ctx: Context<SettleDeal>) -> Result<()> {
     let deal = &mut ctx.accounts.deal;
     require!(deal.status == DealStatus::Active, DealError::DealNotActive);
     let now = Clock::get()?.unix_timestamp;
-    require!(logic::settle_allowed(deal.starts_at, deal.duration_seconds, now), DealError::SettleTooEarly);
+    require!(
+        logic::settle_allowed(deal.starts_at, deal.duration_seconds, now)
+            || logic::early_breach_is_proven(
+                deal.up_checks,
+                deal.down_checks,
+                deal.total_rounds,
+                deal.min_uptime_bps,
+            ),
+        DealError::SettleTooEarly
+    );
 
     let paid_to_recipient = logic::sla_met(deal.up_checks, deal.total_rounds, deal.min_uptime_bps);
     let payout = deal.amount_lamports.checked_add(deal.provider_stake_lamports).ok_or(DealError::Overflow)?;

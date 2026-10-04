@@ -93,6 +93,9 @@ pub fn handle_create_deal(
     deal.deal_id = deal_id;
     deal.amount_lamports = amount_lamports;
     deal.provider_stake_lamports = provider_stake_lamports;
+    deal.accept_deadline = Clock::get()?.unix_timestamp
+        .checked_add(ACCEPT_TIMEOUT_SECONDS)
+        .ok_or(DealError::Overflow)?;
     deal.duration_seconds = duration_seconds;
     deal.check_interval_seconds = check_interval_seconds;
     deal.min_uptime_bps = min_uptime_bps;
@@ -113,6 +116,7 @@ pub fn handle_create_deal(
         check_interval_seconds,
         min_uptime_bps,
         total_rounds,
+        accept_deadline: deal.accept_deadline,
     });
 
     if provider_stake_lamports == 0 {

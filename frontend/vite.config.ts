@@ -6,6 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'SLANA_')
   const uptimeServiceTarget = env.SLANA_UPTIME_SERVICE_TARGET || 'http://localhost:8080'
+  const uptimeMonitorTarget = env.SLANA_UPTIME_MONITOR_TARGET || 'http://localhost:8082'
 
   return {
     plugins: [react(), tailwindcss()],
@@ -19,7 +20,9 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       proxy: {
-        '/api': { target: uptimeServiceTarget, changeOrigin: true },
+        // The provider owns /api/application; the monitor serves everything else under /api.
+        '/api/application': { target: uptimeServiceTarget, changeOrigin: true },
+        '/api': { target: uptimeMonitorTarget, changeOrigin: true },
       },
     },
   }

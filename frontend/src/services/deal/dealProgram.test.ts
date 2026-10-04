@@ -154,7 +154,7 @@ describe('decodeDeal', () => {
     const deal = decodeDeal(dealBytes({ payer, recipient, oracle, dealId: 9n, stake: 7n, up: 8, down: 1, recorded: [0xff, 0b10] }))
     expect(deal).toEqual({
       payer: payer.toBase58(), recipient: recipient.toBase58(), oracle: oracle.toBase58(), dealId: 9n, amountLamports: 500_000_000n,
-      providerStakeLamports: 7n, active: true, startsAt: 1_790_000_000, durationSeconds: 10, checkIntervalSeconds: 1,
+      providerStakeLamports: 7n, acceptDeadline: 1_790_086_400, active: true, startsAt: 1_790_000_000, durationSeconds: 10, checkIntervalSeconds: 1,
       minUptimeBps: 9_900, totalRounds: 10, upChecks: 8, downChecks: 1, recorded: new Uint8Array([0xff, 0b10]),
     })
   })
@@ -169,7 +169,7 @@ describe('decodeDeal', () => {
     wrong[0] ^= 1
     expect(() => decodeDeal(wrong)).toThrow('not an uptime_deal Deal')
     expect(() => decodeDeal(data.slice(0, 171))).toThrow('not an uptime_deal Deal')
-    expect(() => decodeDeal(data.slice(0, 173))).toThrow('truncated')
+    expect(() => decodeDeal(data.slice(0, 181))).toThrow('truncated')
   })
 })
 

@@ -29,7 +29,7 @@ const DEAL_SETTLED_DISCRIMINATOR = [41, 213, 235, 64, 55, 168, 51, 76]
 const DEAL_CANCELLED_DISCRIMINATOR = [229, 189, 86, 176, 134, 151, 43, 152]
 
 /** Bytes of a `Deal` before its bitmap: discriminator, fields, and the bitmap's length prefix. */
-const DEAL_FIXED_SIZE = 8 + 32 * 3 + 8 * 3 + 1 + 8 * 3 + 2 + 4 * 3 + 1 + 4
+const DEAL_FIXED_SIZE = 8 + 32 * 3 + 8 * 4 + 1 + 8 * 3 + 2 + 4 * 3 + 1 + 4
 
 const DEAL_SEED = new TextEncoder().encode('deal')
 
@@ -231,6 +231,8 @@ export interface OnChainDeal {
   dealId: bigint
   amountLamports: bigint
   providerStakeLamports: bigint
+  /** Chain time (unix seconds) by which the proposal must be accepted. */
+  acceptDeadline: number
   /** False while the deal waits for the provider's guarantee. */
   active: boolean
   /** Chain time (unix seconds) the window started; null until active. */
@@ -263,7 +265,7 @@ export function decodeDeal(data: Uint8Array): OnChainDeal {
   const i64 = () => { const v = view.getBigInt64(at, true); at += 8; return v }
   const u32 = () => { const v = view.getUint32(at, true); at += 4; return v }
   const payer = key(), recipient = key(), oracle = key()
-  const dealId = u64(), amountLamports = u64(), providerStakeLamports = u64()
+  const dealId = u64(), amountLamports = u64(), providerStakeLamports = u64(), acceptDeadline = Number(i64())
   const active = data[at++] === 1
   const startsAt = i64()
   const durationSeconds = Number(u64()), checkIntervalSeconds = Number(u64())
@@ -273,7 +275,7 @@ export function decodeDeal(data: Uint8Array): OnChainDeal {
   const bitmapLength = u32()
   if (bitmapLength > data.length - at) throw new Error('Deal bitmap is truncated')
   return {
-    payer, recipient, oracle, dealId, amountLamports, providerStakeLamports, active,
+    payer, recipient, oracle, dealId, amountLamports, providerStakeLamports, acceptDeadline, active,
     startsAt: active ? Number(startsAt) : null, durationSeconds, checkIntervalSeconds, minUptimeBps,
     totalRounds: total, upChecks, downChecks, recorded: data.slice(at, at + bitmapLength),
   }
