@@ -31,9 +31,6 @@ build/
 ### VS Code ###
 .vscode/
 
-### Uptime deal oracle key (created on first start) ###
-.oracle-keypair.json
-
 ### Maven wrapper (not used: build with an installed `mvn`, see scripts/setup-toolchain.sh) ###
 mvnw
 mvnw.cmd

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in the 
 
 ## Overview
 
-The local PostgreSQL 17 database for `uptime-monitor`: its event store. It runs with Docker Compose (`postgres:17-alpine`, container `monitor-db`). This module owns the schema and the data files. The monitor only reads and writes rows and never creates tables. It is separate from `uptime-db`, which belongs to `uptime-service`, so that each service owns its own data.
+The local PostgreSQL 17 database for `uptime-monitor`: its event store and its uptime deals. It runs with Docker Compose (`postgres:17-alpine`, container `monitor-db`). This module owns the schema and the data files. The monitor only reads and writes rows and never creates tables. It is the project's only database; `uptime-service` needs none.
 
 ## Commands
 
@@ -24,10 +24,10 @@ To re-initialise the schema, run `down`, delete `monitor-db/data/`, then start a
 
 ## Layout
 
-- `docker-compose.yml`: host port **5433** (so it runs next to `uptime-db` on 5432); user, password and database all `monitor`; `restart: unless-stopped`.
+- `docker-compose.yml`: host port **5433**; user, password and database all `monitor`; `restart: unless-stopped`.
 - `init/` is mounted read-only as `/docker-entrypoint-initdb.d`. Postgres runs these scripts in name order, and **only when `data/` is empty**, so editing them does not change an existing database.
   - `01-databases.sql` creates `monitor_test`.
-  - `02-schema.sh` creates `tracking_event` in both `monitor` and `monitor_test`.
+  - `02-schema.sh` creates `tracking_event` and `uptime_deal` in both `monitor` and `monitor_test`. It uses `CREATE TABLE IF NOT EXISTS`, so you can re-run it on an existing database to add new tables: `docker exec -e POSTGRES_USER=monitor monitor-db sh /docker-entrypoint-initdb.d/02-schema.sh` (`frontend/e2e/start-backend.sh` does this).
 - `data/` holds the Postgres data files. It is gitignored.
 
 ## Schema
@@ -42,14 +42,21 @@ To re-initialise the schema, run `down`, delete `monitor-db/data/`, then start a
   - `http_status` (Downtime, and InternalErrorHappened when the service answered)
   - `reason` (Downtime, InternalErrorHappened)
 
-The schema must stay in step with `JdbcTrackingEventStore` and with `uptime-monitor/src/test/resources/schema.sql`, the H2 copy its tests use. If you change one, change all three, then recreate `data/`.
+`uptime_deal` has one row per deal that the monitor settles as the oracle, updated in place:
+- `address VARCHAR(44)` is the **primary key**. `service_id UUID` is the tracked service the deal is measured against.
+- `payer`, `recipient`, `amount_lamports` (≥ 0), `starts_at` and `duration_seconds` (≥ 1) come from the chain.
+- `status` must be one of `ACTIVE`, `SETTLED`, `FAILED`, `CANCELLED` (enforced by a CHECK).
+- The settlement fields are NULL until they're set: `up_seconds`, `total_seconds`, `paid_to_recipient`, `signature`, `sent_at` and `error`. `attempts` defaults to 0. `registered_at` is required.
+
+The schema must stay in step with `JdbcTrackingEventStore`, `JdbcUptimeDealRepository` and with `uptime-monitor/src/test/resources/schema.sql`, the H2 copy its tests use. If you change one, change all three, then recreate `data/`.
 
 ## Tests
 
 `test/run-tests.sh` first checks the files without a database: the compose config, the syntax of the init scripts, and their run order. It then starts a throwaway `postgres:17-alpine` container with tmpfs storage and no published port, runs `init/` in it as compose would, and checks:
 - both databases exist,
-- the exact columns, types, nullability and composite primary key of `tracking_event`,
+- the exact columns, types, nullability and primary keys of `tracking_event` and `uptime_deal`,
 - that times are stored as absolute instants and `id` follows insertion order,
-- that a duplicate version, an unknown type, a version below 1, NULLs in the required columns, and a hand-set `id` are all rejected.
+- that a duplicate version, an unknown type, a version below 1, NULLs in the required columns, and a hand-set `id` are all rejected,
+- that a deal row is accepted with `attempts` defaulting to 0, and that duplicate addresses, unknown statuses, zero durations, negative amounts and deals without a service or start are rejected.
 
 It never touches the real `monitor-db` container or `data/`. When you change the schema or add an init script, update the expected values in this script in the same change.

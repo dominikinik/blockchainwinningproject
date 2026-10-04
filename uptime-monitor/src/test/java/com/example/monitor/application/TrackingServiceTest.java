@@ -288,6 +288,50 @@ class TrackingServiceTest {
 	}
 
 	@Test
+	void listenersHearEveryTriggeringEventAfterItIsStoredAndPublished() {
+		List<TrackingEvent> heard = new CopyOnWriteArrayList<>();
+		service = new TrackingService(store, probe, published::add, clock, Duration.ofSeconds(2), List.of(event -> {
+			assertThat(store.load(event.serviceId())).contains(event);
+			assertThat(published).isNotEmpty();
+			heard.add(event);
+		}));
+		ServiceId id = service.subscribe(URL, null);
+		probe.next(HealthCheckResult.fromResponse(200, "UP"));
+		service.check(id);
+		probe.next(HealthCheckResult.fromResponse(404, null));
+		service.check(id);
+		probe.next(HealthCheckResult.fromResponse(500, null));
+		service.check(id);
+		service.unsubscribe(id);
+
+		assertThat(heard).extracting(TrackingEvent::type)
+			.containsExactly("Downtime", "InternalErrorHappened", "TrackingFinished");
+	}
+
+	@Test
+	void aFailingListenerNeitherUndoesTheEventNorStopsOtherListeners() {
+		List<TrackingEvent> heard = new CopyOnWriteArrayList<>();
+		service = new TrackingService(store, probe, published::add, clock, Duration.ofSeconds(2), List.of(event -> {
+			throw new IllegalStateException("boom");
+		}, heard::add));
+		ServiceId id = service.subscribe(URL, null);
+
+		service.unsubscribe(id);
+
+		assertThat(service.events(id)).hasSize(2);
+		assertThat(heard).hasSize(1);
+	}
+
+	@Test
+	void isActiveReflectsTheSubscription() {
+		ServiceId id = service.subscribe(URL, null);
+		assertThat(service.isActive(id)).isTrue();
+		service.unsubscribe(id);
+		assertThat(service.isActive(id)).isFalse();
+		assertThat(service.isActive(ServiceId.newId())).isFalse();
+	}
+
+	@Test
 	void readsOfAnUnknownServiceAreNotFound() {
 		ServiceId unknown = ServiceId.newId();
 		assertThatThrownBy(() -> service.get(unknown)).isInstanceOf(TrackingNotFoundException.class)

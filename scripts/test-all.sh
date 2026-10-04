@@ -35,7 +35,6 @@ uptime_deal_tests() {
 	anchor build && cargo test
 }
 
-run uptime-db sh test/run-tests.sh
 run monitor-db sh test/run-tests.sh
 run uptime-service mvn -q test
 run uptime-monitor mvn -q test

@@ -28,7 +28,8 @@ import com.example.monitor.domain.TrackingSummary;
  * Use cases of the monitor: subscribe, unsubscribe, check, and read. Every command loads the aggregate
  * from its events, runs on it, and appends the new events with an optimistic version check (retrying on
  * a conflict). After each stored event that triggers a report, all of the service's events are loaded
- * again, aggregated, and the resulting downtime is sent to the {@link DowntimePublisher}.
+ * again, aggregated, and the resulting downtime is sent to the {@link DowntimePublisher}; then every
+ * {@link TrackingEventListener} (the deal oracle) is told about the event.
  */
 public class TrackingService {
 
@@ -46,13 +47,27 @@ public class TrackingService {
 
 	private final Duration checkInterval;
 
+	private final List<TrackingEventListener> listeners;
+
 	public TrackingService(TrackingEventStore store, HealthProbe probe, DowntimePublisher publisher, Clock clock,
 			Duration checkInterval) {
+		this(store, probe, publisher, clock, checkInterval, List.of());
+	}
+
+	/** @param listeners told about every stored event that triggers a report, after it is published */
+	public TrackingService(TrackingEventStore store, HealthProbe probe, DowntimePublisher publisher, Clock clock,
+			Duration checkInterval, List<TrackingEventListener> listeners) {
 		this.store = store;
 		this.probe = probe;
 		this.publisher = publisher;
 		this.clock = clock;
 		this.checkInterval = checkInterval;
+		this.listeners = List.copyOf(listeners);
+	}
+
+	/** Whether the service is currently tracked. */
+	public boolean isActive(ServiceId id) {
+		return load(id).isActive();
 	}
 
 	/**
@@ -162,6 +177,7 @@ public class TrackingService {
 			for (int i = 0; i < events.size(); i++) {
 				if (events.get(i).triggersDowntimeReport()) {
 					publishDowntime(id, (int) expected + i);
+					notifyListeners(events.get(i));
 				}
 			}
 			return;
@@ -182,6 +198,18 @@ public class TrackingService {
 		catch (RuntimeException e) {
 			log.warn("Could not publish the downtime of {} after {}: {}", report.serviceId(), report.trigger(),
 					e.getMessage());
+		}
+	}
+
+	private void notifyListeners(TrackingEvent event) {
+		for (TrackingEventListener listener : listeners) {
+			try {
+				listener.onTrackingEvent(event);
+			}
+			catch (RuntimeException e) {
+				log.warn("Listener {} failed on {} of {}: {}", listener.getClass().getSimpleName(), event.type(),
+						event.serviceId(), e.getMessage());
+			}
 		}
 	}
 

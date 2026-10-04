@@ -1,5 +1,5 @@
 #!/bin/sh
-# Creates the event store schema in both the main and the test database.
+# Creates the event store and deal schema in both the main and the test database.
 set -e
 for db in monitor monitor_test; do
   psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$db" <<'SQL'
@@ -18,6 +18,27 @@ CREATE TABLE IF NOT EXISTS tracking_event (
     http_status       INTEGER,
     reason            TEXT,
     PRIMARY KEY (service_id, version)
+);
+
+-- Deals of the uptime_deal Solana program that this monitor settles as their oracle. One row per deal,
+-- updated in place as the settlement advances (ACTIVE -> SETTLED / FAILED / CANCELLED).
+CREATE TABLE IF NOT EXISTS uptime_deal (
+    address           VARCHAR(44) PRIMARY KEY,
+    service_id        UUID NOT NULL,
+    payer             VARCHAR(44) NOT NULL,
+    recipient         VARCHAR(44) NOT NULL,
+    amount_lamports   BIGINT NOT NULL CHECK (amount_lamports >= 0),
+    starts_at         TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+    duration_seconds  BIGINT NOT NULL CHECK (duration_seconds >= 1),
+    status            VARCHAR(16) NOT NULL CHECK (status IN ('ACTIVE', 'SETTLED', 'FAILED', 'CANCELLED')),
+    up_seconds        BIGINT,
+    total_seconds     BIGINT,
+    paid_to_recipient BOOLEAN,
+    signature         VARCHAR(88),
+    sent_at           TIMESTAMP(6) WITH TIME ZONE,
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    error             TEXT,
+    registered_at     TIMESTAMP(6) WITH TIME ZONE NOT NULL
 );
 SQL
 done

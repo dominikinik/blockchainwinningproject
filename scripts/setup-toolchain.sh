@@ -74,7 +74,7 @@ check_all() {
 	echo "Checking toolchain:"
 	check_present git "install Xcode Command Line Tools: xcode-select --install" git --version
 	check_present curl "required by the installers" curl --version
-	check_present docker "install Docker Desktop (uptime-db tests run postgres in Docker)" docker --version
+	check_present docker "install Docker Desktop (monitor-db tests run postgres in Docker)" docker --version
 	if have docker && ! docker info >/dev/null 2>&1; then miss docker-daemon "start Docker Desktop"; fi
 	check_min_major java "$JAVA_MIN" "install a JDK >= $JAVA_MIN, e.g. https://adoptium.net" java -version
 	check_exact mvn "Apache Maven $MAVEN_VERSION" "Maven for uptime-service and uptime-monitor" mvn --version

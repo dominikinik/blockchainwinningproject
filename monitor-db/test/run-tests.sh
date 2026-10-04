@@ -82,6 +82,34 @@ $columns"
 	pass "$db.tracking_event has the expected columns and primary key"
 done
 
+expected_deal_columns='address|character varying||NO
+service_id|uuid||NO
+payer|character varying||NO
+recipient|character varying||NO
+amount_lamports|bigint||NO
+starts_at|timestamp with time zone|6|NO
+duration_seconds|bigint||NO
+status|character varying||NO
+up_seconds|bigint||YES
+total_seconds|bigint||YES
+paid_to_recipient|boolean||YES
+signature|character varying||YES
+sent_at|timestamp with time zone|6|YES
+attempts|integer||NO
+error|text||YES
+registered_at|timestamp with time zone|6|NO'
+for db in monitor monitor_test; do
+	columns=$(psql "$db" -c "SELECT column_name, data_type, datetime_precision, is_nullable
+		FROM information_schema.columns WHERE table_name = 'uptime_deal' ORDER BY ordinal_position")
+	[ "$columns" = "$expected_deal_columns" ] || fail "$db.uptime_deal columns differ:
+$columns"
+	[ "$(psql "$db" -c "SELECT a.attname FROM pg_index i JOIN pg_attribute a
+		ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+		WHERE i.indrelid = 'uptime_deal'::regclass AND i.indisprimary")" = address ] \
+		|| fail "$db.uptime_deal primary key must be address"
+	pass "$db.uptime_deal has the expected columns and primary key"
+done
+
 # Edge cases on the test database.
 S=11111111-1111-1111-1111-111111111111
 ins() { echo "INSERT INTO tracking_event (service_id, version, type, occurred_at, health_url, check_interval_ms, http_status, reason) VALUES ($1)"; }
@@ -117,5 +145,21 @@ pass "NULL service_id, version, type and occurred_at are rejected"
 
 rejects "INSERT INTO tracking_event (id, service_id, version, type, occurred_at) VALUES (99, '$S', 3, 'TrackingFinished', now())" 'GENERATED ALWAYS'
 pass "id cannot be set by hand"
+
+D=Dea1AddressDea1AddressDea1AddressDea1Addre
+deal() { echo "INSERT INTO uptime_deal (address, service_id, payer, recipient, amount_lamports, starts_at, duration_seconds, status, registered_at) VALUES ($1)"; }
+psql monitor_test -c "$(deal "'$D', '$S', 'P', 'R', 1000000, now(), 10, 'ACTIVE', now()")"
+[ "$(psql monitor_test -c "SELECT attempts FROM uptime_deal WHERE address = '$D'")" = 0 ] \
+	|| fail "attempts must default to 0"
+pass "a deal row is accepted and attempts defaults to 0"
+rejects "$(deal "'$D', '$S', 'P', 'R', 1000000, now(), 10, 'ACTIVE', now()")" 'duplicate key'
+pass "a second deal with the same address is rejected"
+rejects "$(deal "'x1', '$S', 'P', 'R', 1000000, now(), 10, 'PENDING', now()")" 'check constraint'
+rejects "$(deal "'x2', '$S', 'P', 'R', 1000000, now(), 0, 'ACTIVE', now()")" 'check constraint'
+rejects "$(deal "'x3', '$S', 'P', 'R', -1, now(), 10, 'ACTIVE', now()")" 'check constraint'
+pass "unknown deal statuses, zero durations and negative amounts are rejected"
+rejects "$(deal "'x4', NULL, 'P', 'R', 1000000, now(), 10, 'ACTIVE', now()")" 'not-null constraint'
+rejects "$(deal "'x5', '$S', 'P', 'R', 1000000, NULL, 10, 'ACTIVE', now()")" 'not-null constraint'
+pass "deals without a service or a start are rejected"
 
 echo "monitor-db: $PASSED checks passed"

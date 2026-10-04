@@ -23,4 +23,4 @@ The Monitoring page displays the Java backend's service state and five-minute up
 git config core.hooksPath .githooks
 ```
 
-See [`uptime-db/CLAUDE.md`](uptime-db/CLAUDE.md) and [`uptime-service/CLAUDE.md`](uptime-service/CLAUDE.md) to run the backend modules.
+See [`uptime-service/CLAUDE.md`](uptime-service/CLAUDE.md) and [`uptime-monitor/CLAUDE.md`](uptime-monitor/CLAUDE.md) to run the backend modules.
