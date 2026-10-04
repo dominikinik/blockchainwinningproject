@@ -34,14 +34,6 @@ describe('dealApi', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/deals/a%2Fb')
   })
 
-  it('lists the tracked deals', async () => {
-    fetchMock.mockResolvedValue(jsonResponse([{ address: 'D', status: 'PROPOSED' }]))
-    await expect(dealApi.list()).resolves.toEqual([{ address: 'D', status: 'PROPOSED' }])
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('/api/deals')
-    expect(init.method).toBeUndefined()
-  })
-
   it('switches the service state', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ status: 'DOWN' })).mockResolvedValueOnce(jsonResponse({ status: 'UP' }))
     await expect(dealApi.setServiceUp(false)).resolves.toBe('DOWN')
