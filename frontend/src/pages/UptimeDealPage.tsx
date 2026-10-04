@@ -9,7 +9,7 @@ import { useBalance } from '../hooks/useBalance'
 import { useNow } from '../hooks/useNow'
 import { sameCluster, SOLANA_RPC_URL } from '../config/solana'
 import { shortAddress } from '../lib/format'
-import { dealApi, type TrackedDeal } from '../services/deal/dealApi'
+import { dealApi } from '../services/deal/dealApi'
 import { BPS_DENOMINATOR, OBSERVATION_GRACE_SECONDS, requiredUpRounds, totalRounds, type DealOutcome, type OnChainDeal } from '../services/deal/dealProgram'
 import { acceptDeal, cancelDeal, openDeal, readDeal, readOutcome, requestAirdrop, settleDeal } from '../services/deal/dealService'
 import { uptimeService, type UptimeServiceState } from '../services/uptime/uptimeService'
@@ -118,9 +118,8 @@ export function UptimeDealPage() {
   const [address, setAddress] = useState<string | null>(null)
   const [chain, setChain] = useState<OnChainDeal | null>(null)
   const [closed, setClosed] = useState<ClosedDeal | null>(null)
-  const [monitor, setMonitor] = useState<TrackedDeal | null>(null)
   const wallet = useBalance(connection, publicKey?.toBase58())
-  const recipientBalance = useBalance(connection, chain?.recipient ?? monitor?.recipient)
+  const recipientBalance = useBalance(connection, chain?.recipient)
 
   useEffect(() => {
     if (config) setIntervalSeconds(String(config.checkIntervalSeconds))
@@ -151,15 +150,6 @@ export function UptimeDealPage() {
     const interval = window.setInterval(() => void load(), 1000)
     return () => { cancelled = true; window.clearInterval(interval) }
   }, [address, programId, closed, connection])
-
-  // The service's view is informational: how many observations it sent, and any settlement error.
-  useEffect(() => {
-    if (!address || closed) return
-    const load = () => dealApi.get(address).then(setMonitor, () => undefined)
-    void load()
-    const interval = window.setInterval(load, 1000)
-    return () => window.clearInterval(interval)
-  }, [address, closed])
 
   useEffect(() => {
     if (closed) {
@@ -234,14 +224,13 @@ export function UptimeDealPage() {
     }
     if (!Number.isFinite(percent) || percent < 0.01 || percent > 100) { setError('Enter a minimum uptime between 0.01% and 100%.'); return }
     void run('Creating deal', async () => {
-      setAddress(null); setChain(null); setClosed(null); setMonitor(null)
-      const tracked = await openDeal({
+      setAddress(null); setChain(null); setClosed(null)
+      const created = await openDeal({
         connection, payer: publicKey, sendTransaction, config, recipient: recipient.trim(),
         amountLamports: BigInt(Math.round(sol * LAMPORTS_PER_SOL)), providerStakeLamports: BigInt(Math.round(stake * LAMPORTS_PER_SOL)),
         durationSeconds: seconds, checkIntervalSeconds: interval, minUptimeBps: Math.round(percent * BPS_DENOMINATOR / 100),
       })
-      setMonitor(tracked)
-      setAddress(tracked.address)
+      setAddress(created)
       await wallet.refresh()
     })
   }
@@ -249,7 +238,7 @@ export function UptimeDealPage() {
   const settled = closed && closed !== 'unknown' && !closed.outcome.cancelled ? closed.outcome : null
   const counters = settled ? counterLine(settled.upChecks, settled.downChecks, settled.totalRounds)
     : chain ? counterLine(chain.upChecks, chain.downChecks, chain.totalRounds) : '—'
-  const recipientLabel = chain?.recipient ?? monitor?.recipient
+  const recipientLabel = chain?.recipient
 
   return <div className="page-stack">
     <div className="page-heading create-heading"><div>
@@ -296,8 +285,6 @@ export function UptimeDealPage() {
           <div className="summary-list">
             <div><span>Current state</span><strong data-testid="service-state">{serviceState ?? 'Unavailable'}</strong></div>
             <div><span>Oracle</span><strong title={config?.oracle}>{config ? shortAddress(config.oracle, 6, 6) : '—'}</strong></div>
-            {monitor && <div><span>Observations sent</span><strong data-testid="observations-sent">{monitor.observationsSent}</strong></div>}
-            {monitor?.error && <div><span>Monitor error</span><strong>{monitor.error}</strong></div>}
           </div>
           <button type="button" className="button settle-button" onClick={toggleService} disabled={!serviceState || Boolean(busy)}>{serviceState === 'DOWN' ? 'Restore service' : 'Simulate outage'}</button>
         </section>

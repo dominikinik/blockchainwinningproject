@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working in the 
 
 ## Overview
 
+> **Unused.** `uptime-monitor` became a stateless proxy and no longer connects to this database; `JdbcTrackingEventStore`, `JdbcUptimeDealRepository` and the H2 `schema.sql` mentioned below were removed with it. The module is kept until it is deleted or given a new consumer.
+
 The local PostgreSQL 17 database for `uptime-monitor`: its event store and its uptime deals. It runs with Docker Compose (`postgres:17-alpine`, container `monitor-db`). This module owns the schema and the data files. The monitor only reads and writes rows and never creates tables. It is the project's only database; `uptime-service` needs none.
 
 ## Commands

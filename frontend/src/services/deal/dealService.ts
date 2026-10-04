@@ -1,5 +1,5 @@
 import { PublicKey, Transaction, type Connection, type TransactionSignature } from '@solana/web3.js'
-import { dealApi, type DealConfig, type TrackedDeal } from './dealApi'
+import type { DealConfig } from './dealApi'
 import {
   acceptDealInstruction, BPS_DENOMINATOR, cancelDealInstruction, closedBy, createDealInstruction, dealAddress, decodeDeal,
   MAX_DEAL_DURATION_SECONDS, MAX_ROUNDS, MIN_DEAL_LAMPORTS, settleDealInstruction, totalRounds,
@@ -31,16 +31,15 @@ export interface OpenDealParams {
 }
 
 /**
- * Locks the customer payment on chain with `create_deal`, waits for confirmation, then registers the deal
- * with the uptime service so it starts reporting observations at once.
+ * Locks the customer payment on chain with `create_deal` and waits for confirmation. The uptime monitor
+ * finds the deal on chain by itself (it names the monitor's oracle key), so nothing is sent to it.
  *
  * @param params the wallet, the service configuration and the deal terms
- * @returns the deal as tracked by the service
- * @throws Error for an invalid recipient, amount, window, interval or threshold, a rejected or failed
- *   transaction, or a refused registration (the message then names the deal address; the service also
- *   discovers open deals on its own)
+ * @returns the Base58 deal address
+ * @throws Error for an invalid recipient, amount, window, interval or threshold, or a rejected or failed
+ *   transaction
  */
-export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
+export async function openDeal(params: OpenDealParams): Promise<string> {
   let recipient: PublicKey
   try { recipient = new PublicKey(params.recipient) } catch { throw new Error('Enter a valid recipient address.') }
   if (recipient.equals(params.payer)) throw new Error('The recipient must be another wallet.')
@@ -72,16 +71,7 @@ export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
   }))
   const signature = await params.sendTransaction(transaction, params.connection)
   await waitForConfirmation(params.connection, signature)
-  const address = dealAddress(programId, params.payer, dealId).toBase58()
-  try {
-    return await dealApi.register(address)
-  } catch (cause) {
-    const reason = cause instanceof Error ? cause.message : 'unknown error'
-    throw new Error(
-      `The deal ${address} was created on chain but the uptime service refused it (${reason}). ` +
-      'Unobserved rounds count as down, so the payer wins at settlement, which anyone can trigger after the window.',
-    )
-  }
+  return dealAddress(programId, params.payer, dealId).toBase58()
 }
 
 interface DealActionParams {

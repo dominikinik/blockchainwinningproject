@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in the 
 
 ## Overview
 
-A Spring Boot 4.1 / Java 21 service that is a pure health **provider**. It only answers calls and has no database and no scheduled jobs. `../uptime-monitor` subscribes to its `GET /api/health` and owns the uptime history, the `uptime_deal` oracle and persistence. It builds on the host with an installed Maven 3.9 (`mvn`; `../scripts/setup-toolchain.sh` installs it) and has no Maven wrapper. The repo's devcontainer has no JDK.
+A Spring Boot 4.1 / Java 21 service that is a pure health **provider**. It only answers calls and has no database and no scheduled jobs. `../uptime-monitor` calls its `GET /api/health` every 2 s and relays each result to the `uptime_deal` program as the oracle. It builds on the host with an installed Maven 3.9 (`mvn`; `../scripts/setup-toolchain.sh` installs it) and has no Maven wrapper. The repo's devcontainer has no JDK.
 
 ## Commands
 
@@ -24,7 +24,7 @@ Endpoints: `GET /api/health`, `POST /api/application/{start,stop}`, `GET /api/ap
 
 1. **`state/ApplicationStateService`** is an `AtomicBoolean` up/down switch, toggled by `POST /api/application/{stop,start}` (`web/ApplicationControlController`; `GET /api/application/state` reads it). Stopping does **not** stop the process. It only flips the switch.
 2. **`state/ApplicationStateHealthIndicator`** exposes the switch as the `applicationState` component of `/actuator/health`. When it is DOWN, the endpoint returns 503 with `details.reason` = "stopped via API".
-3. **`web/HealthController`** exposes the same switch as `GET /api/health` for `uptime-monitor`. It always answers 200 with `{"status":"UP"|"DOWN"}`, so the monitor records a stop as downtime, not as an error.
+3. **`web/HealthController`** exposes the same switch as `GET /api/health` for `uptime-monitor`. It always answers 200 with `{"status":"UP"|"DOWN"}`, so the monitor reports a stop as a DOWN round.
 4. **`web/ApiExceptionHandler`** maps `IllegalArgumentException` to a 400 `ProblemDetail`.
 
 Lombok is available (`optional`, version managed by Spring Boot, wired as an explicit annotation processor in `maven-compiler-plugin`, and excluded from the boot jar). `lombok.config` marks generated code `@lombok.Generated`.
