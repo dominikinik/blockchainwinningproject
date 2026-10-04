@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { PublicKey } from '@solana/web3.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -18,7 +18,7 @@ const sendTransaction = vi.fn()
 
 vi.mock('@solana/wallet-adapter-react', () => ({ useWallet: vi.fn(), useConnection: () => ({ connection }) }))
 vi.mock('@solana/wallet-adapter-react-ui', () => ({ WalletMultiButton: () => <button>Wallet</button> }))
-vi.mock('../services/deal/dealApi', () => ({ dealApi: { getConfig: vi.fn(), get: vi.fn(), setServiceUp: vi.fn() } }))
+vi.mock('../services/deal/dealApi', () => ({ dealApi: { getConfig: vi.fn(), get: vi.fn(), list: vi.fn(), setServiceUp: vi.fn() } }))
 vi.mock('../services/deal/dealService', () => ({
   openDeal: vi.fn(), requestAirdrop: vi.fn(), cancelDeal: vi.fn(), acceptDeal: vi.fn(), settleDeal: vi.fn(), readDeal: vi.fn(), readOutcome: vi.fn(),
 }))
@@ -58,6 +58,7 @@ describe('UptimeDealPage', () => {
     getBalance.mockReset().mockImplementation(async (key: PublicKey) => key.toBase58() === WALLET ? 2_000_000_000 : 0)
     vi.mocked(dealApi.getConfig).mockReset().mockResolvedValue(config)
     vi.mocked(dealApi.get).mockReset().mockResolvedValue(trackedDeal())
+    vi.mocked(dealApi.list).mockReset().mockResolvedValue([])
     vi.mocked(dealApi.setServiceUp).mockReset()
     vi.mocked(openDeal).mockReset().mockResolvedValue(trackedDeal())
     vi.mocked(readDeal).mockReset().mockResolvedValue(chainDeal())
@@ -221,6 +222,49 @@ describe('UptimeDealPage', () => {
     expect(acceptDeal).toHaveBeenCalledWith({
       connection, sendTransaction, programId: new PublicKey(config.programId), deal: new PublicKey(DEAL), recipient: new PublicKey(PROVIDER),
     })
+  })
+
+  it('shows the connected address and copies it', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    renderAt(<UptimeDealPage />)
+    expect(await screen.findByText('My address')).toBeInTheDocument()
+    expect(screen.getByTitle(WALLET)).toHaveTextContent(WALLET.slice(0, 6))
+    await userEvent.click(screen.getByRole('button', { name: 'Copy my address' }))
+    expect(writeText).toHaveBeenCalledWith(WALLET)
+  })
+
+  it('lists only proposals addressed to the connected wallet and opens one', async () => {
+    connect(new PublicKey(PROVIDER))
+    vi.mocked(dealApi.list).mockResolvedValue([
+      trackedDeal({ status: 'PROPOSED', startsAt: null, endsAt: null, providerStakeLamports: 100_000_000 }),
+      trackedDeal({ address: ORACLE, status: 'ACTIVE' }),
+      trackedDeal({ address: WALLET, recipient: ORACLE, status: 'PROPOSED', startsAt: null, endsAt: null }),
+    ])
+    vi.mocked(readDeal).mockResolvedValue(chainDeal({ active: false, startsAt: null, providerStakeLamports: 100_000_000n }))
+    renderAt(<UptimeDealPage />)
+
+    const proposals = await screen.findByRole('region', { name: 'Proposals for you' })
+    expect(within(proposals).getAllByRole('button', { name: 'View proposal' })).toHaveLength(1)
+    expect(within(proposals).getByTitle(DEAL)).toBeInTheDocument()
+
+    await userEvent.click(within(proposals).getByRole('button', { name: 'View proposal' }))
+    expect(await screen.findByText('Waiting for the provider to lock its guarantee')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Accept and lock guarantee' })).toBeInTheDocument()
+  })
+
+  it('shows no proposals when none are addressed to the wallet or the monitor is unreachable', async () => {
+    vi.mocked(dealApi.list).mockRejectedValue(new Error('down'))
+    renderAt(<UptimeDealPage />)
+    await waitFor(() => expect(dealApi.list).toHaveBeenCalled())
+    expect(screen.queryByRole('region', { name: 'Proposals for you' })).not.toBeInTheDocument()
+  })
+
+  it('does not load proposals without a wallet', async () => {
+    connect(null)
+    renderAt(<UptimeDealPage />)
+    await screen.findByText('Connect a wallet to create a deal.')
+    expect(dealApi.list).not.toHaveBeenCalled()
   })
 
   it('warns the provider when the deal names an oracle other than this service', async () => {
