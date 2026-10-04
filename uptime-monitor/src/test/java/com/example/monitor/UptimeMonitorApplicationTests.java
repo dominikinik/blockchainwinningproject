@@ -131,11 +131,11 @@ class UptimeMonitorApplicationTests {
 		verify(rpc, times(4)).sendTransaction(any());
 
 		mvc.perform(get("/api/subscriptions/" + id + "/events")).andExpect(status().isOk())
-			.andExpect(jsonPath("$[*].type").value(org.hamcrest.Matchers.contains("TrackingStarted", "Downtime",
-					"Downtime", "InternalErrorHappened", "TrackingFinished")))
-			.andExpect(jsonPath("$[1].httpStatus").value(200))
-			.andExpect(jsonPath("$[2].httpStatus").value(404))
-			.andExpect(jsonPath("$[3].httpStatus").value(500));
+			.andExpect(jsonPath("$[*].type").value(org.hamcrest.Matchers.contains("TrackingStarted",
+					"HealthCheckSucceeded", "Downtime", "Downtime", "InternalErrorHappened", "TrackingFinished")))
+			.andExpect(jsonPath("$[2].httpStatus").value(200))
+			.andExpect(jsonPath("$[3].httpStatus").value(404))
+			.andExpect(jsonPath("$[4].httpStatus").value(500));
 		mvc.perform(get("/api/subscriptions")).andExpect(status().isOk())
 			.andExpect(jsonPath("$[?(@.serviceId == '" + id + "')]").exists());
 	}
@@ -197,7 +197,7 @@ class UptimeMonitorApplicationTests {
 	}
 
 	@Test
-	void aDowntimeClosesARegisteredDealThroughTheWiring() throws Exception {
+	void aDowntimeIsReportedToTheContractThroughTheWiring() throws Exception {
 		String service = subscribe(null);
 		String deal = DealFixtures.newAddress();
 		when(rpc.getAccountInfo(deal)).thenReturn(new AccountInfo(DealFixtures.PROGRAM_ID, 1, DealFixtures.dealData(
@@ -206,7 +206,8 @@ class UptimeMonitorApplicationTests {
 
 		mvc.perform(get("/api/deals/config")).andExpect(status().isOk())
 			.andExpect(jsonPath("$.programId").value(DealFixtures.PROGRAM_ID))
-			.andExpect(jsonPath("$.oracle").value(oracle.address()));
+			.andExpect(jsonPath("$.oracle").value(oracle.address()))
+			.andExpect(jsonPath("$.checkIntervalSeconds").value(2));
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
 			.content("{\"address\":\"" + deal + "\",\"serviceId\":\"" + service + "\"}"))
 			.andExpect(status().isCreated())
@@ -214,18 +215,17 @@ class UptimeMonitorApplicationTests {
 			.andExpect(jsonPath("$.serviceId").value(service))
 			.andExpect(jsonPath("$.durationSeconds").value(10))
 			.andExpect(jsonPath("$.endsAt").exists())
-			.andExpect(jsonPath("$.upSeconds").doesNotExist());
+			.andExpect(jsonPath("$.upChecks").doesNotExist());
 
 		when(probe.check(URL)).thenReturn(HealthCheckResult.fromResponse(404, null));
 		tracking.check(ServiceId.of(service));
-		// The deal starts at the current whole second and tracking a few ms into it, so up to 1 s is untracked.
+		// The monitor reports observations; SLA totals and the payout decision stay on chain.
 		mvc.perform(get("/api/deals/" + deal))
-			.andExpect(jsonPath("$.upSeconds").value(org.hamcrest.Matchers.either(org.hamcrest.Matchers.is(7))
-				.or(org.hamcrest.Matchers.is(8))))
-			.andExpect(jsonPath("$.totalSeconds").value(10));
+			.andExpect(jsonPath("$.upChecks").doesNotExist())
+			.andExpect(jsonPath("$.totalRounds").doesNotExist());
 
 		deals.settleDue();
-		mvc.perform(get("/api/deals/" + deal)).andExpect(jsonPath("$.signature").value("sig"));
+		mvc.perform(get("/api/deals/" + deal)).andExpect(jsonPath("$.signature").doesNotExist());
 		mvc.perform(get("/api/deals")).andExpect(jsonPath("$[?(@.address == '" + deal + "')]").exists());
 
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)

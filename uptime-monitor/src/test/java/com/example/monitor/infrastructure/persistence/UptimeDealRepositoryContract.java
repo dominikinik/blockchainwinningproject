@@ -13,7 +13,6 @@ import com.example.monitor.domain.ServiceId;
 import com.example.monitor.domain.deal.DealAlreadyRegisteredException;
 import com.example.monitor.domain.deal.UptimeDeal;
 import com.example.monitor.domain.deal.UptimeDealRepository;
-import com.example.monitor.domain.deal.Verdict;
 
 /** Behaviour every {@link UptimeDealRepository} must have. */
 abstract class UptimeDealRepositoryContract {
@@ -50,7 +49,7 @@ abstract class UptimeDealRepositoryContract {
 		repo.add(deal);
 		assertThat(repo.find("D1")).contains(deal);
 
-		UptimeDeal full = deal.decide(new Verdict(8, 10)).sent("sig", T0.plusSeconds(3)).failedAttempt("lost", 5)
+		UptimeDeal full = deal.sent("sig", T0.plusSeconds(3)).failedAttempt("lost", 5)
 			.sent("sig2", T0.plusSeconds(4)).settled(false);
 		repo.update(full);
 		assertThat(repo.find("D1")).contains(full);

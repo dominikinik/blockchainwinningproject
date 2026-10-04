@@ -34,6 +34,26 @@ public class HttpSolanaRpc implements SolanaRpc {
 		if (value == null) {
 			return null;
 		}
+		return accountInfo(value);
+	}
+
+	@Override
+	public List<ProgramAccount> getProgramAccounts(String programId, int offset, String bytes) {
+		List<?> entries = result("getProgramAccounts",
+				List.of(programId,
+						Map.of("encoding", "base64", "commitment", "confirmed", "filters",
+								List.of(Map.of("memcmp", Map.of("offset", offset, "bytes", bytes))))),
+				List.class);
+		if (entries == null) {
+			return List.of();
+		}
+		return entries.stream()
+			.map(e -> (Map<?, ?>) e)
+			.map(e -> new ProgramAccount((String) e.get("pubkey"), accountInfo((Map<?, ?>) e.get("account"))))
+			.toList();
+	}
+
+	private static AccountInfo accountInfo(Map<?, ?> value) {
 		List<?> data = (List<?>) value.get("data");
 		return new AccountInfo((String) value.get("owner"), ((Number) value.get("lamports")).longValue(),
 				Base64.getDecoder().decode((String) data.get(0)));

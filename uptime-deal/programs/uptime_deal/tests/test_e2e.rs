@@ -1,199 +1,228 @@
-//! End-to-end flows: the payer proposes a deal, the recipient accepts it, the oracle reports uptime,
-//! and the money moves.
+//! End-to-end flows: both sides lock funds, the oracle records observations, the program judges the
+//! SLA from its own counters, and the whole escrow moves to the winner.
 mod common;
 
 use common::*;
+use solana_keypair::Keypair;
 use solana_signer::Signer;
-use uptime_deal::{state::DealStatus, ACCEPT_TIMEOUT_SECONDS, CANCEL_TIMEOUT_SECONDS};
+use uptime_deal::{logic, state::DealStatus};
 
 const FEE: u64 = 5_000;
+const STAKE: u64 = SOL;
 
-/// Full flow with uptime above 99%: the proposal holds only the payment, acceptance adds the guarantee
-/// and starts the window, and settlement pays both deposits to the recipient. Each party loses only
-/// its fees on top of what it gave or got.
+/// A deal with a provider guarantee: payment plus guarantee are locked, then returned to the winner.
+fn staked() -> Terms {
+    Terms { stake: STAKE, ..Terms::default() }
+}
+
+/// UP observations increment `up_checks`, set the round's bit, and touch nothing else.
 #[test]
-fn uptime_above_99_pays_recipient_both_deposits() {
+fn up_observation_updates_on_chain_state() {
+    let mut env = Env::new();
+    assert_ok(env.create(1));
+    let deal = env.pda(1);
+    env.set_time(T0 + INTERVAL as i64);
+
+    let meta = assert_ok(env.observe(1, 0, true));
+    assert!(meta.logs.iter().any(|l| l.contains("Program data:")), "ObservationRecorded emitted");
+    let stored = env.deal(&deal);
+    assert_eq!((stored.up_checks, stored.down_checks), (1, 0));
+    assert!(logic::is_recorded(&stored.recorded, 0));
+    assert!(!logic::is_recorded(&stored.recorded, 1));
+    assert_eq!(stored.amount_lamports, AMOUNT);
+}
+
+/// DOWN observations increment `down_checks` and set the round's bit.
+#[test]
+fn down_observation_updates_on_chain_state() {
+    let mut env = Env::new();
+    assert_ok(env.create(1));
+    let deal = env.pda(1);
+    env.set_time(T0 + 3 * INTERVAL as i64);
+
+    assert_ok(env.observe(1, 2, false));
+    let stored = env.deal(&deal);
+    assert_eq!((stored.up_checks, stored.down_checks), (0, 1));
+    assert!(logic::is_recorded(&stored.recorded, 2));
+}
+
+/// Rounds may land in any order; each is counted once.
+#[test]
+fn observations_can_arrive_out_of_order() {
+    let mut env = Env::new();
+    assert_ok(env.create(1));
+    env.set_time(T0 + DURATION as i64);
+    for round in [9, 0, 5, 3] {
+        assert_ok(env.observe(1, round, true));
+    }
+    let stored = env.deal(&env.pda(1));
+    assert_eq!(stored.up_checks, 4);
+    assert!([0, 3, 5, 9].iter().all(|r| logic::is_recorded(&stored.recorded, *r)));
+}
+
+/// The SLA is met: the provider receives the payment and its guarantee back, the customer loses
+/// exactly the payment plus its fee (the rent comes back), and the deal is closed.
+#[test]
+fn sla_met_pays_provider_the_whole_escrow() {
     let mut env = Env::new();
     let (payer, recipient) = (env.payer.pubkey(), env.recipient.pubkey());
-    let deal = deal_pda(&payer, 1);
+    env.svm.airdrop(&recipient, 2 * SOL).unwrap();
+    let deal = env.pda(1);
     let (payer_start, recipient_start) = (env.balance(&payer), env.balance(&recipient));
 
-    env.set_time(1_700_000_000);
-    assert_ok(env.propose(1, AMOUNT));
+    assert_ok(env.create_with(1, staked()));
     let stored = env.deal(&deal);
+    assert_eq!(stored.status, DealStatus::AwaitingProvider);
     assert_eq!(
-        (stored.payer, stored.recipient, stored.oracle, stored.deal_id, stored.amount_lamports, stored.guarantee_lamports),
-        (payer, recipient, env.oracle.pubkey(), 1, AMOUNT, GUARANTEE)
+        (stored.payer, stored.recipient, stored.oracle, stored.amount_lamports, stored.provider_stake_lamports),
+        (payer, recipient, env.oracle.pubkey(), AMOUNT, STAKE)
     );
-    assert_eq!(stored.status, DealStatus::Proposed);
-    assert_eq!((stored.starts_at, stored.duration_seconds), (0, DURATION), "no window runs before acceptance");
-    assert_eq!(stored.accept_deadline, 1_700_000_000 + ACCEPT_TIMEOUT_SECONDS);
-    let rent = env.balance(&deal) - AMOUNT;
-    assert!(rent > 0);
-    assert_eq!(env.balance(&payer), payer_start - AMOUNT - rent - FEE);
-    assert_eq!(env.balance(&recipient), recipient_start, "a proposal takes nothing from the recipient");
+    assert_eq!((stored.total_rounds, stored.min_uptime_bps, stored.check_interval_seconds), (ROUNDS, MIN_BPS, INTERVAL));
 
-    // The window starts when the recipient accepts, not when the payer proposed.
-    env.set_time(1_700_000_500);
-    let meta = assert_ok(env.accept(1));
-    assert!(meta.logs.iter().any(|l| l.contains("Program data:")), "DealAccepted event emitted");
+    env.set_time(T0 + 30);
+    assert_ok(env.accept(1));
     let stored = env.deal(&deal);
-    assert_eq!((stored.status, stored.starts_at), (DealStatus::Active, 1_700_000_500));
-    assert_eq!(env.balance(&deal), AMOUNT + GUARANTEE + rent);
-    assert_eq!(env.balance(&recipient), recipient_start - GUARANTEE - FEE);
+    assert_eq!(stored.status, DealStatus::Active);
+    assert_eq!(stored.starts_at, T0 + 30, "the window starts when the provider accepts");
+    let rent = env.balance(&deal) - AMOUNT - STAKE;
 
-    // A day of per-second history with 10 minutes of downtime: 99.31% uptime.
-    let meta = assert_ok(env.settle(1, 86_400 - 600, 86_400));
-    assert!(meta.logs.iter().any(|l| l.contains("Program data:")), "DealSettled event emitted");
+    env.observe_all(1, &pattern(9, 1, 0)); // 90% = threshold
+    env.to_settlement(1);
+    let meta = assert_ok(env.settle(1));
+    assert!(meta.logs.iter().any(|l| l.contains("Program data:")), "DealSettled emitted");
 
+    assert!(rent > 0);
     assert_eq!(env.balance(&recipient), recipient_start + AMOUNT - FEE);
     assert_eq!(env.balance(&payer), payer_start - AMOUNT - FEE);
     assert!(!env.exists(&deal), "deal is closed");
 }
 
-/// Full flow with uptime at or below 99%: the payer gets its payment back plus the recipient's
-/// guarantee, and the recipient loses the guarantee.
+/// The SLA is breached: the customer gets its payment back plus the provider's guarantee.
 #[test]
-fn uptime_at_or_below_99_pays_payer_both_deposits() {
-    for (deal_id, up, total) in [(1, 99, 100), (2, 980, 1000), (3, 0, 3600)] {
-        let mut env = Env::new();
-        let (payer, recipient) = (env.payer.pubkey(), env.recipient.pubkey());
-        let (payer_start, recipient_start) = (env.balance(&payer), env.balance(&recipient));
+fn breach_pays_customer_the_whole_escrow() {
+    let mut env = Env::new();
+    let (payer, recipient) = (env.payer.pubkey(), env.recipient.pubkey());
+    env.svm.airdrop(&recipient, 2 * SOL).unwrap();
+    let (payer_start, recipient_start) = (env.balance(&payer), env.balance(&recipient));
 
-        env.open(deal_id, AMOUNT);
-        assert_ok(env.settle(deal_id, up, total));
+    assert_ok(env.create_with(1, staked()));
+    assert_ok(env.accept(1));
+    env.observe_all(1, &pattern(8, 2, 0)); // 80% < 90%
+    env.to_settlement(1);
+    assert_ok(env.settle(1));
 
-        assert_eq!(env.balance(&payer), payer_start + GUARANTEE - FEE, "{up}/{total}");
-        assert_eq!(env.balance(&recipient), recipient_start - GUARANTEE - FEE, "{up}/{total}");
-        assert!(!env.exists(&deal_pda(&payer, deal_id)));
+    assert_eq!(env.balance(&payer), payer_start + STAKE - FEE);
+    assert_eq!(env.balance(&recipient), recipient_start - STAKE - FEE);
+    assert!(!env.exists(&env.pda(1)));
+}
+
+/// Without a guarantee the deal starts at creation; the threshold is inclusive and exact.
+#[test]
+fn threshold_boundary_is_inclusive() {
+    let mut env = Env::new();
+    let recipient = env.recipient.pubkey();
+    assert_ok(env.create(1));
+    assert_ok(env.create(2));
+    assert_eq!(env.deal(&env.pda(1)).starts_at, T0);
+
+    env.observe_all(1, &pattern(8, 2, 0));
+    env.observe_all(2, &pattern(9, 1, 0));
+    env.to_settlement(1);
+
+    assert_ok(env.settle(1));
+    assert_eq!(env.balance(&recipient), 0, "80% is below 90%");
+    assert_ok(env.settle(2));
+    assert_eq!(env.balance(&recipient), AMOUNT, "90% meets 90%");
+}
+
+/// A round the monitor never reported counts as down, so a silent monitor can't make the provider
+/// win, and a deal with no observations at all goes to the customer.
+#[test]
+fn unobserved_rounds_count_as_down() {
+    let mut env = Env::new();
+    let recipient = env.recipient.pubkey();
+    for (deal_id, rounds, paid) in [(1, pattern(9, 0, 1), true), (2, pattern(8, 0, 2), false), (3, pattern(0, 0, 10), false)] {
+        assert_ok(env.create(deal_id));
+        env.observe_all(deal_id, &rounds);
+        env.to_settlement(deal_id);
+        let before = env.balance(&recipient);
+        assert_ok(env.settle(deal_id));
+        assert_eq!(env.balance(&recipient) > before, paid, "deal {deal_id}");
+        env.set_time(T0);
     }
 }
 
-/// The boundary is strict: 99.01% pays the recipient, 99.00% pays the payer.
+/// Settlement reads nothing but the deal account: a third party with no stake and no access to any
+/// database settles it, with the same result the oracle would get.
 #[test]
-fn threshold_boundary() {
+fn anyone_can_settle_from_on_chain_state_alone() {
     let mut env = Env::new();
-    let recipient = env.recipient.pubkey();
-    env.open(1, AMOUNT);
-    env.open(2, AMOUNT);
-    let before = env.balance(&recipient);
+    assert_ok(env.create(1));
+    env.observe_all(1, &pattern(10, 0, 0));
+    env.to_settlement(1);
 
-    assert_ok(env.settle(1, 9_900, 10_000));
-    assert_eq!(env.balance(&recipient), before);
-
-    assert_ok(env.settle(2, 9_901, 10_000));
-    assert_eq!(env.balance(&recipient), before + AMOUNT + GUARANTEE);
-}
-
-/// Several deals between the same parties settle independently, and no lamports are created or lost
-/// across the whole flow.
-#[test]
-fn independent_deals_conserve_lamports() {
-    let mut env = Env::new();
-    let (payer, recipient, oracle) = (env.payer.pubkey(), env.recipient.pubkey(), env.oracle.pubkey());
-    let recipient_start = env.balance(&recipient);
-    let total_start = env.balance(&payer) + env.balance(&recipient) + env.balance(&oracle);
-
-    env.open(7, AMOUNT);
-    env.open(8, 3 * AMOUNT);
-    assert_ok(env.settle(8, 100, 100)); // pays 3 * AMOUNT + GUARANTEE to the recipient
-    assert_ok(env.settle(7, 50, 100)); // pays AMOUNT + GUARANTEE to the payer
-
-    assert_eq!(env.balance(&recipient), recipient_start + 3 * AMOUNT - GUARANTEE - 2 * FEE);
-    let total_end = env.balance(&payer) + env.balance(&recipient) + env.balance(&oracle);
-    assert_eq!(total_start - total_end, 6 * FEE, "only fees leave the three wallets");
+    let stranger = Keypair::new();
+    env.svm.airdrop(&stranger.pubkey(), SOL).unwrap();
+    assert_ok(env.settle_as(&stranger, 1));
+    assert_eq!(env.balance(&env.recipient.pubkey()), AMOUNT);
+    assert_eq!(env.balance(&stranger.pubkey()), SOL - FEE, "the caller only pays the fee");
 }
 
 /// A settled deal is closed, so it can't be settled again, and its id can be reused.
 #[test]
 fn settled_deal_cannot_be_settled_twice_and_id_is_reusable() {
     let mut env = Env::new();
-    let recipient = env.recipient.pubkey();
-    env.open(1, AMOUNT);
-    assert_ok(env.settle(1, 100, 100));
-    let after_first = env.balance(&recipient);
+    assert_ok(env.create(1));
+    env.observe_all(1, &pattern(10, 0, 0));
+    env.to_settlement(1);
+    assert_ok(env.settle(1));
 
     // AccountNotInitialized (3012): the deal account no longer exists.
-    assert_anchor_code(env.settle(1, 100, 100), 3012);
-    assert_eq!(env.balance(&recipient), after_first);
+    assert_anchor_code(env.settle(1), 3012);
+    assert_eq!(env.balance(&env.recipient.pubkey()), AMOUNT);
 
-    env.open(1, AMOUNT);
-    assert_ok(env.settle(1, 100, 100));
-    assert_eq!(env.balance(&recipient), after_first + AMOUNT - FEE);
+    assert_ok(env.create(1));
+    env.observe_all(1, &pattern(10, 0, 0));
+    env.to_settlement(1);
+    assert_ok(env.settle(1));
+    assert_eq!(env.balance(&env.recipient.pubkey()), 2 * AMOUNT);
 }
 
-/// The payer withdraws a proposal before anyone accepted it: it gets its payment and the rent back,
-/// and the recipient can no longer accept.
+/// Several deals between the same parties settle independently, and no lamports are created or
+/// lost across the whole flow.
 #[test]
-fn payer_withdraws_a_proposal() {
+fn independent_deals_conserve_lamports() {
     let mut env = Env::new();
-    let (payer, recipient) = (env.payer.pubkey(), env.recipient.pubkey());
-    let (payer_start, recipient_start) = (env.balance(&payer), env.balance(&recipient));
+    let (payer, recipient, oracle) = (env.payer.pubkey(), env.recipient.pubkey(), env.oracle.pubkey());
+    let total_start = env.balance(&payer) + env.balance(&recipient) + env.balance(&oracle);
 
-    assert_ok(env.propose(1, AMOUNT));
+    assert_ok(env.create(7));
+    assert_ok(env.create_with(8, Terms { amount: 3 * AMOUNT, ..Terms::default() }));
+    env.observe_all(7, &pattern(5, 5, 0));
+    env.observe_all(8, &pattern(10, 0, 0));
+    env.to_settlement(8);
+    assert_ok(env.settle(8)); // pays 3 * AMOUNT
+    assert_ok(env.settle(7)); // refunds AMOUNT
+
+    assert_eq!(env.balance(&recipient), 3 * AMOUNT);
+    let total_end = env.balance(&payer) + env.balance(&recipient) + env.balance(&oracle);
+    let txs = 2 + 20 + 2;
+    assert_eq!(total_start - total_end, txs * FEE, "only fees leave the three wallets");
+}
+
+/// A deal the provider never accepts can be withdrawn by the payer, and then can't be accepted.
+#[test]
+fn payer_cancels_a_deal_the_provider_never_accepted() {
+    let mut env = Env::new();
+    let payer = env.payer.pubkey();
+    env.svm.airdrop(&env.recipient.pubkey(), 2 * SOL).unwrap();
+    let payer_start = env.balance(&payer);
+
+    assert_ok(env.create_with(1, staked()));
     let meta = assert_ok(env.cancel(1));
-    assert!(meta.logs.iter().any(|l| l.contains("Program data:")), "DealCancelled event emitted");
+    assert!(meta.logs.iter().any(|l| l.contains("Program data:")), "DealCancelled emitted");
 
     assert_eq!(env.balance(&payer), payer_start - 2 * FEE);
-    assert_eq!(env.balance(&recipient), recipient_start);
-    assert!(!env.exists(&deal_pda(&payer, 1)));
-    let terms = env.terms(AMOUNT);
-    let recipient_key = env.recipient.insecure_clone();
-    assert_anchor_code(env.accept_as(&recipient_key, 1, terms), 3012);
-}
-
-/// The recipient rejects a proposal: the payer gets its payment and the rent back.
-#[test]
-fn recipient_rejects_a_proposal() {
-    let mut env = Env::new();
-    let (payer, recipient) = (env.payer.pubkey(), env.recipient.pubkey());
-    let (payer_start, recipient_start) = (env.balance(&payer), env.balance(&recipient));
-
-    assert_ok(env.propose(1, AMOUNT));
-    let recipient_key = env.recipient.insecure_clone();
-    assert_ok(env.cancel_as(&recipient_key, 1));
-
-    assert_eq!(env.balance(&payer), payer_start - FEE);
-    assert_eq!(env.balance(&recipient), recipient_start - FEE);
-    assert!(!env.exists(&deal_pda(&payer, 1)));
-}
-
-/// The oracle never settles an accepted deal: once the window and the timeout have passed, either
-/// party cancels it, each deposit goes back to the party that paid it, and the deal can no longer be
-/// settled.
-#[test]
-fn either_party_cancels_an_unsettled_deal_after_timeout() {
-    for by_payer in [true, false] {
-        let mut env = Env::new();
-        let (payer, recipient) = (env.payer.pubkey(), env.recipient.pubkey());
-        let (payer_start, recipient_start) = (env.balance(&payer), env.balance(&recipient));
-
-        env.set_time(1_000_000);
-        env.open(1, AMOUNT);
-        env.set_time(1_000_000 + DURATION as i64 + CANCEL_TIMEOUT_SECONDS);
-        let signer = if by_payer { env.payer.insecure_clone() } else { env.recipient.insecure_clone() };
-        assert_ok(env.cancel_as(&signer, 1));
-
-        let (payer_fees, recipient_fees) = if by_payer { (2 * FEE, FEE) } else { (FEE, 2 * FEE) };
-        assert_eq!(env.balance(&payer), payer_start - payer_fees, "by payer: {by_payer}");
-        assert_eq!(env.balance(&recipient), recipient_start - recipient_fees, "by payer: {by_payer}");
-        assert!(!env.exists(&deal_pda(&payer, 1)), "deal is closed");
-        // AccountNotInitialized (3012): a late settlement finds nothing to pay out.
-        assert_anchor_code(env.settle(1, 100, 100), 3012);
-    }
-}
-
-/// After the timeout the oracle may still settle; whichever lands first closes the deal.
-#[test]
-fn late_settlement_wins_over_cancel() {
-    let mut env = Env::new();
-    let recipient = env.recipient.pubkey();
-    env.set_time(1_000_000);
-    env.open(1, AMOUNT);
-    let before = env.balance(&recipient);
-    env.set_time(1_000_000 + DURATION as i64 + CANCEL_TIMEOUT_SECONDS + 5);
-
-    assert_ok(env.settle(1, 100, 100));
-    assert_eq!(env.balance(&recipient), before + AMOUNT + GUARANTEE);
-    assert_anchor_code(env.cancel(1), 3012);
+    assert!(!env.exists(&env.pda(1)));
+    assert_anchor_code(env.accept(1), 3012);
 }

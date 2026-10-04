@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS tracking_event (
     service_id        UUID NOT NULL,
     version           BIGINT NOT NULL CHECK (version >= 1),
     type              VARCHAR(32) NOT NULL
-        CHECK (type IN ('TrackingStarted', 'Downtime', 'InternalErrorHappened', 'TrackingFinished')),
+        CHECK (type IN ('TrackingStarted', 'HealthCheckSucceeded', 'Downtime', 'InternalErrorHappened', 'TrackingFinished')),
     occurred_at       TIMESTAMP(6) WITH TIME ZONE NOT NULL,
     health_url        TEXT,
     check_interval_ms BIGINT,
@@ -28,8 +28,8 @@ CREATE TABLE IF NOT EXISTS uptime_deal (
     starts_at         TIMESTAMP(6) WITH TIME ZONE,
     status            VARCHAR(16) NOT NULL
         CHECK (status IN ('PROPOSED', 'ACTIVE', 'SETTLED', 'FAILED', 'CANCELLED')),
-    up_seconds        BIGINT,
-    total_seconds     BIGINT,
+    up_checks         BIGINT,
+    total_rounds      BIGINT,
     paid_to_recipient BOOLEAN,
     signature         VARCHAR(88),
     sent_at           TIMESTAMP(6) WITH TIME ZONE,

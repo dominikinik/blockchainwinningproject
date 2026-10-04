@@ -20,7 +20,11 @@ public sealed interface TrackingEvent {
 
 	/** Whether this event makes the service's downtime be recalculated and sent to the blockchain. */
 	default boolean triggersDowntimeReport() {
-		return !(this instanceof TrackingStarted);
+		return !(this instanceof TrackingStarted) && !(this instanceof HealthCheckSucceeded);
+	}
+
+	/** A completed healthy probe. Persisted as an observation and sent to the chain without a DB-history lookup. */
+	record HealthCheckSucceeded(ServiceId serviceId, Instant occurredAt) implements TrackingEvent {
 	}
 
 	/**

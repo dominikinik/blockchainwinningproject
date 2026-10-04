@@ -22,7 +22,7 @@ import com.example.monitor.domain.deal.UptimeDealRepository;
 public class JdbcUptimeDealRepository implements UptimeDealRepository {
 
 	private static final String COLUMNS = "address, service_id, payer, recipient, amount_lamports, "
-			+ "guarantee_lamports, duration_seconds, accept_deadline, starts_at, status, up_seconds, total_seconds, "
+			+ "guarantee_lamports, duration_seconds, accept_deadline, starts_at, status, up_checks, total_rounds, "
 			+ "paid_to_recipient, signature, sent_at, attempts, error, registered_at";
 
 	private final JdbcClient jdbc;
@@ -38,7 +38,7 @@ public class JdbcUptimeDealRepository implements UptimeDealRepository {
 					+ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 				.params(deal.address(), deal.serviceId().value(), deal.payer(), deal.recipient(), deal.amountLamports(),
 						deal.guaranteeLamports(), deal.durationSeconds(), ts(deal.acceptDeadline()), ts(deal.startsAt()),
-						deal.status().name(), deal.upSeconds(), deal.totalSeconds(), deal.paidToRecipient(),
+						deal.status().name(), deal.upChecks(), deal.totalRounds(), deal.paidToRecipient(),
 						deal.signature(), ts(deal.sentAt()), deal.attempts(), deal.error(), ts(deal.registeredAt()))
 				.update();
 		}
@@ -49,9 +49,9 @@ public class JdbcUptimeDealRepository implements UptimeDealRepository {
 
 	@Override
 	public void update(UptimeDeal deal) {
-		int rows = jdbc.sql("UPDATE uptime_deal SET starts_at = ?, status = ?, up_seconds = ?, total_seconds = ?, "
+		int rows = jdbc.sql("UPDATE uptime_deal SET starts_at = ?, status = ?, up_checks = ?, total_rounds = ?, "
 				+ "paid_to_recipient = ?, signature = ?, sent_at = ?, attempts = ?, error = ? WHERE address = ?")
-			.params(ts(deal.startsAt()), deal.status().name(), deal.upSeconds(), deal.totalSeconds(),
+			.params(ts(deal.startsAt()), deal.status().name(), deal.upChecks(), deal.totalRounds(),
 					deal.paidToRecipient(), deal.signature(), ts(deal.sentAt()), deal.attempts(), deal.error(),
 					deal.address())
 			.update();
@@ -106,7 +106,7 @@ public class JdbcUptimeDealRepository implements UptimeDealRepository {
 				rs.getString("payer"), rs.getString("recipient"), rs.getLong("amount_lamports"),
 				rs.getLong("guarantee_lamports"), rs.getLong("duration_seconds"), instant(rs, "accept_deadline"),
 				instant(rs, "starts_at"), Status.valueOf(rs.getString("status")),
-				rs.getObject("up_seconds", Long.class), rs.getObject("total_seconds", Long.class),
+				rs.getObject("up_checks", Long.class), rs.getObject("total_rounds", Long.class),
 				rs.getObject("paid_to_recipient", Boolean.class), rs.getString("signature"), instant(rs, "sent_at"),
 				rs.getInt("attempts"), rs.getString("error"), instant(rs, "registered_at"));
 	}

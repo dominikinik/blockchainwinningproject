@@ -119,7 +119,7 @@ public class MonitorConfig {
 			return new DealService(deals, chain, events, clock,
 					new DealService.Settings(service.enabled() ? new ServiceId(service.id()) : null,
 							deal.maxDurationSeconds(), deal.settleGraceSeconds(), deal.maxSettleAttempts(),
-							deal.confirmTimeoutSeconds()));
+							deal.confirmTimeoutSeconds(), Math.max(1, properties.checkIntervalMs() / 1_000)));
 		}
 
 		@Bean

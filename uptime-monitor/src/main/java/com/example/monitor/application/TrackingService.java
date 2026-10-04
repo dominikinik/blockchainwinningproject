@@ -102,7 +102,7 @@ public class TrackingService {
 	}
 
 	/**
-	 * Checks one service's health and records the outcome. Does nothing if it isn't tracked, including
+	 * Checks one service's health and records every outcome. Does nothing if it isn't tracked, including
 	 * when it is unsubscribed while the call is in flight.
 	 */
 	public void check(ServiceId id) {
@@ -110,8 +110,8 @@ public class TrackingService {
 		if (!current.isActive()) {
 			return;
 		}
-		Instant at = clock.instant();
 		HealthCheckResult result = probe.check(current.healthUrl());
+		Instant at = clock.instant();
 		try {
 			execute(id, tracking -> tracking.recordCheck(result, at));
 		}
@@ -174,11 +174,14 @@ public class TrackingService {
 				}
 				continue;
 			}
-			for (int i = 0; i < events.size(); i++) {
-				if (events.get(i).triggersDowntimeReport()) {
-					publishDowntime(id, (int) expected + i);
-					notifyListeners(events.get(i));
-				}
+		for (int i = 0; i < events.size(); i++) {
+			TrackingEvent event = events.get(i);
+			if (event.triggersDowntimeReport()) {
+				publishDowntime(id, (int) expected + i);
+			}
+			if (event.triggersDowntimeReport() || event instanceof TrackingEvent.HealthCheckSucceeded) {
+				notifyListeners(event);
+			}
 			}
 			return;
 		}

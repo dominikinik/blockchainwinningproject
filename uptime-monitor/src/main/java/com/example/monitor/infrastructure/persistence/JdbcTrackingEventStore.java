@@ -15,6 +15,7 @@ import com.example.monitor.domain.ServiceId;
 import com.example.monitor.domain.TrackingEvent;
 import com.example.monitor.domain.TrackingEvent.Downtime;
 import com.example.monitor.domain.TrackingEvent.InternalErrorHappened;
+import com.example.monitor.domain.TrackingEvent.HealthCheckSucceeded;
 import com.example.monitor.domain.TrackingEvent.TrackingFinished;
 import com.example.monitor.domain.TrackingEvent.TrackingStarted;
 import com.example.monitor.domain.TrackingEventStore;
@@ -89,7 +90,9 @@ public class JdbcTrackingEventStore implements TrackingEventStore {
 		Long checkIntervalMs = null;
 		Integer httpStatus = null;
 		String reason = null;
-		switch (event) {
+			switch (event) {
+			case HealthCheckSucceeded e -> {
+			}
 			case TrackingStarted e -> {
 				healthUrl = e.healthUrl();
 				checkIntervalMs = e.checkInterval().toMillis();
@@ -117,6 +120,7 @@ public class JdbcTrackingEventStore implements TrackingEventStore {
 		Integer httpStatus = rs.getObject("http_status", Integer.class);
 		String type = rs.getString("type");
 		return switch (type) {
+			case "HealthCheckSucceeded" -> new HealthCheckSucceeded(id, at);
 			case "TrackingStarted" -> new TrackingStarted(id, rs.getString("health_url"),
 					Duration.ofMillis(rs.getLong("check_interval_ms")), at);
 			case "Downtime" -> new Downtime(id, httpStatus, rs.getString("reason"), at);

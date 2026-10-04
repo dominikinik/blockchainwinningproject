@@ -89,13 +89,14 @@ class TrackingServiceTest {
 	}
 
 	@Test
-	void healthyCheckRecordsAndPublishesNothing() {
+	void healthyCheckIsPersistedAndNotPublishedAsDowntime() {
 		ServiceId id = service.subscribe(URL, null);
 		probe.next(HealthCheckResult.fromResponse(200, "UP"));
 
 		service.check(id);
 
-		assertThat(service.events(id)).hasSize(1);
+		assertThat(service.events(id)).extracting(TrackingEvent::type)
+			.containsExactly("TrackingStarted", "HealthCheckSucceeded");
 		assertThat(published).isEmpty();
 		assertThat(probe.calls).containsExactly(URL);
 	}
@@ -204,7 +205,7 @@ class TrackingServiceTest {
 
 		assertThat(probe.calls).containsExactlyInAnyOrder("http://a/health", "http://b/health");
 		assertThat(service.events(a).getLast()).isInstanceOf(Downtime.class);
-		assertThat(service.events(b)).hasSize(1);
+		assertThat(service.events(b)).hasSize(2);
 	}
 
 	@Test
@@ -292,7 +293,7 @@ class TrackingServiceTest {
 		List<TrackingEvent> heard = new CopyOnWriteArrayList<>();
 		service = new TrackingService(store, probe, published::add, clock, Duration.ofSeconds(2), List.of(event -> {
 			assertThat(store.load(event.serviceId())).contains(event);
-			assertThat(published).isNotEmpty();
+			if (!(event instanceof TrackingEvent.HealthCheckSucceeded)) assertThat(published).isNotEmpty();
 			heard.add(event);
 		}));
 		ServiceId id = service.subscribe(URL, null);
@@ -305,7 +306,7 @@ class TrackingServiceTest {
 		service.unsubscribe(id);
 
 		assertThat(heard).extracting(TrackingEvent::type)
-			.containsExactly("Downtime", "InternalErrorHappened", "TrackingFinished");
+			.containsExactly("HealthCheckSucceeded", "Downtime", "InternalErrorHappened", "TrackingFinished");
 	}
 
 	@Test

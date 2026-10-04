@@ -34,6 +34,26 @@ public interface SolanaRpc {
 	AccountInfo getAccountInfo(String address);
 
 	/**
+	 * An account of a program, as listed by {@link #getProgramAccounts}.
+	 *
+	 * @param address the Base58 account address
+	 * @param account the account
+	 */
+	record ProgramAccount(String address, AccountInfo account) {
+	}
+
+	/**
+	 * Lists a program's accounts that hold given bytes at an offset (a {@code memcmp} filter).
+	 *
+	 * @param programId the Base58 owning program
+	 * @param offset    byte offset into the account data
+	 * @param bytes     the Base58 bytes that must appear there
+	 * @return the matching accounts; empty if there are none
+	 * @throws SolanaRpcException if the node can't be reached or returns an error
+	 */
+	List<ProgramAccount> getProgramAccounts(String programId, int offset, String bytes);
+
+	/**
 	 * Fetches a recent blockhash for a new transaction.
 	 *
 	 * @return the 32-byte blockhash

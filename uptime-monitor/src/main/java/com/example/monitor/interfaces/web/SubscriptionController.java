@@ -19,6 +19,7 @@ import com.example.monitor.domain.ServiceId;
 import com.example.monitor.domain.TrackingEvent;
 import com.example.monitor.domain.TrackingEvent.Downtime;
 import com.example.monitor.domain.TrackingEvent.InternalErrorHappened;
+import com.example.monitor.domain.TrackingEvent.HealthCheckSucceeded;
 import com.example.monitor.domain.TrackingEvent.TrackingFinished;
 import com.example.monitor.domain.TrackingEvent.TrackingStarted;
 import com.example.monitor.domain.TrackingSummary;
@@ -102,6 +103,7 @@ public class SubscriptionController {
 		static EventResponse of(TrackingEvent event) {
 			UUID id = event.serviceId().value();
 			return switch (event) {
+				case HealthCheckSucceeded e -> new EventResponse(e.type(), id, e.occurredAt(), null, null);
 				case TrackingStarted e -> new EventResponse(e.type(), id, e.occurredAt(), null, e.healthUrl());
 				case Downtime e -> new EventResponse(e.type(), id, e.occurredAt(), e.httpStatus(), e.reason());
 				case InternalErrorHappened e ->

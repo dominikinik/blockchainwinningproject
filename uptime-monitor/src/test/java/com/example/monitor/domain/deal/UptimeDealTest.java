@@ -21,12 +21,11 @@ class UptimeDealTest {
 			T0.plusSeconds(86_400), null, T0);
 
 	@Test
-	void aProposalHasNoWindowAndCannotBeDecidedUntilAccepted() {
+	void aProposalHasNoWindowUntilAccepted() {
 		assertThat(proposal.status()).isEqualTo(Status.PROPOSED);
 		assertThat(proposal.startsAt()).isNull();
 		assertThat(proposal.endsAt()).isNull();
 		assertThat(proposal.isOpen()).isFalse();
-		assertThatIllegalStateException().isThrownBy(() -> proposal.decide(new Verdict(10, 10)));
 
 		UptimeDeal accepted = proposal.accepted(T0.plusSeconds(5));
 		assertThat(accepted.status()).isEqualTo(Status.ACTIVE);
@@ -54,18 +53,8 @@ class UptimeDealTest {
 	}
 
 	@Test
-	void decidingFixesTheVerdictOnce() {
-		UptimeDeal decided = deal.decide(new Verdict(8, 10));
-		assertThat(decided.isSettling()).isTrue();
-		assertThat(decided.upSeconds()).isEqualTo(8);
-		assertThat(decided.totalSeconds()).isEqualTo(10);
-		assertThatIllegalStateException().isThrownBy(() -> decided.decide(new Verdict(10, 10)));
-		assertThatIllegalStateException().isThrownBy(() -> deal.failed("x").decide(new Verdict(10, 10)));
-	}
-
-	@Test
 	void sendAndSettle() {
-		UptimeDeal sent = deal.decide(new Verdict(10, 10)).sent("sig", T0.plusSeconds(12));
+		UptimeDeal sent = deal.sent("sig", T0.plusSeconds(12));
 		assertThat(sent.signature()).isEqualTo("sig");
 		assertThat(sent.sentAt()).isEqualTo(T0.plusSeconds(12));
 		UptimeDeal settled = sent.settled(true);
@@ -75,11 +64,11 @@ class UptimeDealTest {
 	}
 
 	@Test
-	void failedAttemptsKeepTheVerdictAndFailAfterTheMaximum() {
-		UptimeDeal once = deal.decide(new Verdict(8, 10)).sent("sig", T0).failedAttempt("lost", 2);
+	void failedAttemptsClearTheSignatureAndFailAfterTheMaximum() {
+		UptimeDeal once = deal.sent("sig", T0).failedAttempt("lost", 2);
 		assertThat(once.status()).isEqualTo(Status.ACTIVE);
 		assertThat(once.signature()).isNull();
-		assertThat(once.upSeconds()).isEqualTo(8);
+		assertThat(once.isOpen()).isTrue();
 		assertThat(once.error()).isEqualTo("lost");
 		UptimeDeal twice = once.failedAttempt("lost again", 2);
 		assertThat(twice.status()).isEqualTo(Status.FAILED);
@@ -91,7 +80,7 @@ class UptimeDealTest {
 		assertThat(deal.cancelled("c").status()).isEqualTo(Status.CANCELLED);
 		UptimeDeal settledBy = deal.settledBy("s", false, 3L, 10L);
 		assertThat(settledBy.status()).isEqualTo(Status.SETTLED);
-		assertThat(settledBy.upSeconds()).isEqualTo(3);
+		assertThat(settledBy.upChecks()).isEqualTo(3);
 		assertThat(deal.failed("gone").error()).isEqualTo("gone");
 	}
 

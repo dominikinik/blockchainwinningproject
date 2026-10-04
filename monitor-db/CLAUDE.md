@@ -35,7 +35,7 @@ To re-initialise the schema, run `down`, delete `monitor-db/data/`, then start a
 `tracking_event` is append-only and has one row per event:
 - `id` is a `BIGINT GENERATED ALWAYS AS IDENTITY`. It gives the global insertion order, which is used to list services in the order they were first tracked.
 - `service_id UUID` and `version BIGINT` (≥ 1) together form the **primary key**. That key is the optimistic-concurrency guard: two writers appending the same next version can't both succeed.
-- `type` must be one of `TrackingStarted`, `Downtime`, `InternalErrorHappened`, `TrackingFinished` (enforced by a CHECK).
+- `type` must be one of `TrackingStarted`, `HealthCheckSucceeded`, `Downtime`, `InternalErrorHappened`, `TrackingFinished` (enforced by a CHECK).
 - `occurred_at` is `TIMESTAMP(6) WITH TIME ZONE`.
 - The payload columns are NULL when an event type doesn't use them:
   - `health_url` and `check_interval_ms` (TrackingStarted)
@@ -46,7 +46,7 @@ To re-initialise the schema, run `down`, delete `monitor-db/data/`, then start a
 - `address VARCHAR(44)` is the **primary key**. `service_id UUID` is the tracked service the deal is measured against.
 - `payer`, `recipient`, `amount_lamports` (≥ 0), `guarantee_lamports` (≥ 0), `duration_seconds` (≥ 1) and `accept_deadline` come from the chain. `starts_at` is the chain time of the recipient's acceptance; it is NULL while the deal is a proposal.
 - `status` must be one of `PROPOSED`, `ACTIVE`, `SETTLED`, `FAILED`, `CANCELLED` (enforced by a CHECK).
-- The settlement fields are NULL until they're set: `up_seconds`, `total_seconds`, `paid_to_recipient`, `signature`, `sent_at` and `error`. `attempts` defaults to 0. `registered_at` is required.
+- The final on-chain counters are NULL until settlement: `up_checks`, `total_rounds`, `paid_to_recipient`, `signature`, `sent_at` and `error`. `attempts` defaults to 0. `registered_at` is required.
 
 The schema must stay in step with `JdbcTrackingEventStore`, `JdbcUptimeDealRepository` and with `uptime-monitor/src/test/resources/schema.sql`, the H2 copy its tests use. If you change one, change all three, then recreate `data/`.
 

@@ -113,7 +113,7 @@ Paste the printed public key into the page's **Recipient address** field. The ke
 4. Click **Create deal** and approve the transaction if prompted.
 5. Keep the uptime service in the **UP** state for the whole window. Wait for the deal to settle.
 
-Expected result: **Paid to recipient**, with a measurement of `10/10 s up (100.0%)`. The recipient balance should increase by `0.5 SOL`.
+Expected result: **Paid to recipient**, with all five two-second rounds reported UP. The recipient balance should increase by `0.5 SOL`.
 
 The program's rule is strictly **greater than 99%**. For a 10-second deal, all 10 seconds must be up to pay the recipient.
 
@@ -121,7 +121,7 @@ The program's rule is strictly **greater than 99%**. For a 10-second deal, all 1
 
 1. Create a second 10-second deal using the same funded payer and a different recipient address.
 2. As soon as the deal starts, click **Simulate outage**. Leave the service down for at least three seconds so the monitor's 2-second health check sees it.
-3. Click **Restore service**. You don't need to wait for the window to end: the monitor closes the deal on the first failed check, because more than 99% uptime is then out of reach.
+3. Click **Restore service**. The monitor reports each failed/healthy probe directly as DOWN/UP for its completed round. Once the on-chain counters prove the 99% threshold is unreachable, the monitor can submit settlement early; otherwise anyone can settle after expiry.
 
 Expected result: **Refunded to payer**; the recipient receives no SOL. At or below 99% uptime, the on-chain program closes the deal and returns the escrow to the payer. Transaction fees are still paid in local test SOL.
 

@@ -8,6 +8,7 @@ import java.util.Objects;
 
 import com.example.monitor.domain.TrackingEvent.Downtime;
 import com.example.monitor.domain.TrackingEvent.InternalErrorHappened;
+import com.example.monitor.domain.TrackingEvent.HealthCheckSucceeded;
 import com.example.monitor.domain.TrackingEvent.TrackingFinished;
 import com.example.monitor.domain.TrackingEvent.TrackingStarted;
 
@@ -89,7 +90,7 @@ public final class ServiceTracking {
 	}
 
 	/**
-	 * Records the result of one health check. A healthy check records nothing.
+	 * Records every health-check result; healthy probes are persisted so the oracle can report UP rounds directly.
 	 *
 	 * @return the recorded event, or {@code null} for a healthy check
 	 * @throws TrackingException.NotActive if the service isn't tracked
@@ -97,7 +98,7 @@ public final class ServiceTracking {
 	public TrackingEvent recordCheck(HealthCheckResult result, Instant at) {
 		requireActive();
 		TrackingEvent event = switch (result.outcome()) {
-			case HEALTHY -> null;
+			case HEALTHY -> new HealthCheckSucceeded(id, at);
 			case DOWN -> new Downtime(id, result.httpStatus(), result.detail(), at);
 			case INTERNAL_ERROR -> new InternalErrorHappened(id, result.httpStatus(), result.detail(), at);
 		};
@@ -173,7 +174,9 @@ public final class ServiceTracking {
 	}
 
 	private void apply(TrackingEvent event) {
-		switch (event) {
+			switch (event) {
+			case HealthCheckSucceeded e -> {
+			}
 			case TrackingStarted e -> {
 				active = true;
 				healthUrl = e.healthUrl();

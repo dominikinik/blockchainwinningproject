@@ -10,8 +10,8 @@ import com.example.monitor.domain.ServiceId;
  * against one tracked service. Immutable; every transition returns a new copy that the caller stores.
  * <p>
  * Life cycle: {@code PROPOSED} while the recipient hasn't accepted (no window runs), {@code ACTIVE} from the
- * acceptance ({@link #accepted}) until a settlement is <em>decided</em> ({@link #decide}, which fixes
- * {@code upSeconds}/{@code totalSeconds}), then sent ({@link #sent}) and confirmed ({@link #settled}), or
+ * acceptance ({@link #accepted}) until the monitor submits a settlement request ({@link #sent}) and it is confirmed
+ * ({@link #settled}), or
  * found closed on chain ({@link #settledBy}, {@link #cancelled}), or given up ({@link #failed}).
  *
  * @param address           Base58 address of the on-chain {@code Deal} account
@@ -19,12 +19,12 @@ import com.example.monitor.domain.ServiceId;
  * @param payer             proposed the deal and paid {@code amountLamports}
  * @param recipient         the provider: accepts, pays {@code guaranteeLamports}, and gets both deposits above 99%
  * @param guaranteeLamports the recipient's guarantee, locked at acceptance
- * @param durationSeconds   length of the window, from the deal account; also the {@code total_seconds} sent
+ * @param durationSeconds   length of the window, from the deal account
  * @param acceptDeadline    when the proposal stops being acceptable on chain
  * @param startsAt          first second of the window (inclusive): the chain time of the acceptance;
  *                          {@code null} while {@code PROPOSED}
- * @param upSeconds       the decided up seconds, once a settlement is decided
- * @param totalSeconds    the decided total seconds, once a settlement is decided
+ * @param upChecks        final UP counter from the {@code DealSettled} event, once closed
+ * @param totalRounds     final round count from the {@code DealSettled} event, once closed
  * @param paidToRecipient the program's verdict from its {@code DealSettled} event, once settled
  * @param signature       Base58 signature of the pending or final settlement transaction
  * @param sentAt          when the settlement was last sent
@@ -32,7 +32,7 @@ import com.example.monitor.domain.ServiceId;
  * @param error           the last settlement error, if any
  */
 public record UptimeDeal(String address, ServiceId serviceId, String payer, String recipient, long amountLamports,
-		long guaranteeLamports, long durationSeconds, Instant acceptDeadline, Instant startsAt, Status status, Long upSeconds, Long totalSeconds,
+		long guaranteeLamports, long durationSeconds, Instant acceptDeadline, Instant startsAt, Status status, Long upChecks, Long totalRounds,
 		Boolean paidToRecipient, String signature, Instant sentAt, int attempts, String error, Instant registeredAt) {
 
 	public enum Status {
@@ -90,38 +90,26 @@ public record UptimeDeal(String address, ServiceId serviceId, String payer, Stri
 			throw new IllegalStateException("Deal " + address + " is not a proposal");
 		}
 		return new UptimeDeal(address, serviceId, payer, recipient, amountLamports, guaranteeLamports, durationSeconds,
-				acceptDeadline, Objects.requireNonNull(windowStart, "windowStart"), Status.ACTIVE, upSeconds,
-				totalSeconds, paidToRecipient, signature, sentAt, attempts, error, registeredAt);
+				acceptDeadline, Objects.requireNonNull(windowStart, "windowStart"), Status.ACTIVE, upChecks,
+				totalRounds, paidToRecipient, signature, sentAt, attempts, error, registeredAt);
 	}
 
 	/** Active and no settlement decided yet: events and the window end may still decide one. */
 	public boolean isOpen() {
-		return status == Status.ACTIVE && upSeconds == null;
+		return status == Status.ACTIVE && signature == null;
 	}
 
 	/** Active with a decided settlement that still has to be sent or confirmed. */
 	public boolean isSettling() {
-		return status == Status.ACTIVE && upSeconds != null;
-	}
-
-	/**
-	 * Fixes the settlement to send. Only an open deal can be decided; the verdict never changes afterwards.
-	 *
-	 * @throws IllegalStateException if a settlement was already decided or the deal is closed
-	 */
-	public UptimeDeal decide(Verdict verdict) {
-		if (!isOpen()) {
-			throw new IllegalStateException("Deal " + address + " is not open");
-		}
-		return with(Status.ACTIVE, verdict.upSeconds(), verdict.totalSeconds(), null, null, null, attempts, null);
+		return status == Status.ACTIVE && signature != null;
 	}
 
 	public UptimeDeal sent(String sig, Instant at) {
-		return with(status, upSeconds, totalSeconds, paidToRecipient, sig, at, attempts, null);
+		return with(status, upChecks, totalRounds, paidToRecipient, sig, at, attempts, null);
 	}
 
 	public UptimeDeal settled(Boolean paid) {
-		return with(Status.SETTLED, upSeconds, totalSeconds, paid, signature, sentAt, attempts, null);
+		return with(Status.SETTLED, upChecks, totalRounds, paid, signature, sentAt, attempts, null);
 	}
 
 	public UptimeDeal settledBy(String sig, Boolean paid, Long up, Long total) {
@@ -129,18 +117,18 @@ public record UptimeDeal(String address, ServiceId serviceId, String payer, Stri
 	}
 
 	public UptimeDeal cancelled(String sig) {
-		return with(Status.CANCELLED, upSeconds, totalSeconds, paidToRecipient, sig, sentAt, attempts, null);
+		return with(Status.CANCELLED, upChecks, totalRounds, paidToRecipient, sig, sentAt, attempts, null);
 	}
 
 	/** One more failed attempt; the deal fails for good after {@code maxAttempts}. Clears the signature. */
 	public UptimeDeal failedAttempt(String message, int maxAttempts) {
 		int failed = attempts + 1;
-		return with(failed >= maxAttempts ? Status.FAILED : status, upSeconds, totalSeconds, paidToRecipient, null,
+		return with(failed >= maxAttempts ? Status.FAILED : status, upChecks, totalRounds, paidToRecipient, null,
 				null, failed, message);
 	}
 
 	public UptimeDeal failed(String message) {
-		return with(Status.FAILED, upSeconds, totalSeconds, paidToRecipient, signature, sentAt, attempts, message);
+		return with(Status.FAILED, upChecks, totalRounds, paidToRecipient, signature, sentAt, attempts, message);
 	}
 
 	private UptimeDeal with(Status newStatus, Long up, Long total, Boolean paid, String sig, Instant at, int tries,

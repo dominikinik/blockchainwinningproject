@@ -49,10 +49,10 @@ class ServiceTrackingTest {
 	}
 
 	@Test
-	void checksRecordDowntimeAndInternalErrorsButNothingWhenHealthy() {
+	void recordsHealthyAndFailedCheckObservations() {
 		ServiceTracking tracking = started();
 
-		assertThat(tracking.recordCheck(UP, T0.plusSeconds(2))).isNull();
+		TrackingEvent healthy = tracking.recordCheck(UP, T0.plusSeconds(2));
 		TrackingEvent down = tracking.recordCheck(DOWN, T0.plusSeconds(4));
 		TrackingEvent notFound = tracking.recordCheck(NOT_FOUND, T0.plusSeconds(6));
 		TrackingEvent error = tracking.recordCheck(ERROR, T0.plusSeconds(8));
@@ -63,7 +63,8 @@ class ServiceTrackingTest {
 		assertThat(notFound).isEqualTo(new Downtime(ID, 404, "HTTP 404", T0.plusSeconds(6)));
 		assertThat(error).isEqualTo(new InternalErrorHappened(ID, 500, "HTTP 500", T0.plusSeconds(8)));
 		assertThat(unreachable).isEqualTo(new InternalErrorHappened(ID, null, "refused", T0.plusSeconds(10)));
-		assertThat(tracking.pullPendingEvents()).containsExactly(down, notFound, error, unreachable);
+		assertThat(healthy).isEqualTo(new TrackingEvent.HealthCheckSucceeded(ID, T0.plusSeconds(2)));
+		assertThat(tracking.pullPendingEvents()).containsExactly(healthy, down, notFound, error, unreachable);
 	}
 
 	@Test
@@ -78,7 +79,7 @@ class ServiceTrackingTest {
 		assertThat(summary.totalDowntime()).isEqualTo(Duration.ofSeconds(4));
 		assertThat(summary.downtimeChecks()).isEqualTo(2);
 		assertThat(summary.internalErrors()).isEqualTo(1);
-		assertThat(summary.eventCount()).isEqualTo(4);
+		assertThat(summary.eventCount()).isEqualTo(5);
 	}
 
 	@Test

@@ -14,23 +14,46 @@ use solana_message::Message;
 use solana_signer::Signer;
 use solana_transaction::Transaction;
 
-use uptime_deal::{error::DealError, state::Deal, DEAL_SEED};
+use uptime_deal::{error::DealError, state::Deal, DEAL_SEED, OBSERVATION_GRACE_SECONDS};
 
 pub const SOL: u64 = 1_000_000_000;
-/// Payer's payment used by most tests.
+/// Customer payment used by most tests.
 pub const AMOUNT: u64 = 2 * SOL;
-/// Recipient's guarantee used by most tests; differs from `AMOUNT` so balances tell them apart.
-pub const GUARANTEE: u64 = 3 * SOL;
 /// Uptime window used by most tests, in seconds.
 pub const DURATION: u64 = 60;
+/// Round length used by most tests: `DURATION / INTERVAL` = 10 rounds.
+pub const INTERVAL: u64 = 6;
+/// Rounds in a deal with the default terms.
+pub const ROUNDS: u32 = (DURATION / INTERVAL) as u32;
+/// Threshold used by most tests: 90%, so 9 of 10 rounds pass and 8 fail.
+pub const MIN_BPS: u16 = 9_000;
+/// Chain time at which every `Env` starts.
+pub const T0: i64 = 1_700_000_000;
 
 pub type TxResult = Result<TransactionMetadata, FailedTransactionMetadata>;
+
+/// The terms of a deal, as passed to `create_deal`.
+#[derive(Clone, Copy, Debug)]
+pub struct Terms {
+    pub amount: u64,
+    pub stake: u64,
+    pub duration: u64,
+    pub interval: u64,
+    pub min_bps: u16,
+}
+
+impl Default for Terms {
+    /// The terms most tests use: `AMOUNT`, no guarantee, `DURATION`, `INTERVAL` and `MIN_BPS`.
+    fn default() -> Self {
+        Terms { amount: AMOUNT, stake: 0, duration: DURATION, interval: INTERVAL, min_bps: MIN_BPS }
+    }
+}
 
 /// Derives the address of a deal.
 ///
 /// # Arguments
 ///
-/// * `payer` - the wallet that proposed the deal.
+/// * `payer` - the wallet that funded the deal.
 /// * `deal_id` - the payer-chosen deal id.
 ///
 /// # Returns
@@ -38,6 +61,24 @@ pub type TxResult = Result<TransactionMetadata, FailedTransactionMetadata>;
 /// The `Deal` PDA for `["deal", payer, deal_id (LE)]`.
 pub fn deal_pda(payer: &Pubkey, deal_id: u64) -> Pubkey {
     Pubkey::find_program_address(&[DEAL_SEED, payer.as_ref(), &deal_id.to_le_bytes()], &uptime_deal::ID).0
+}
+
+/// Builds an observation pattern: `up` UP rounds, then `down` DOWN rounds, then `missed` unobserved.
+///
+/// # Arguments
+///
+/// * `up` - rounds observed UP.
+/// * `down` - rounds observed DOWN.
+/// * `missed` - rounds never observed.
+///
+/// # Returns
+///
+/// The pattern for `Env::observe_all`.
+pub fn pattern(up: usize, down: usize, missed: usize) -> Vec<Option<bool>> {
+    let mut rounds = vec![Some(true); up];
+    rounds.extend(vec![Some(false); down]);
+    rounds.extend(vec![None; missed]);
+    rounds
 }
 
 /// Extracts the custom program error code of a failed transaction.
@@ -94,19 +135,6 @@ pub fn assert_ok(res: TxResult) -> TransactionMetadata {
     }
 }
 
-/// The terms passed to `accept_deal`.
-#[derive(Clone, Copy, Debug)]
-pub struct Terms {
-    /// The payer's payment.
-    pub amount: u64,
-    /// The recipient's guarantee.
-    pub guarantee: u64,
-    /// Window length in seconds.
-    pub duration: u64,
-    /// The oracle.
-    pub oracle: Pubkey,
-}
-
 /// An in-process chain with the program loaded and the three parties of a deal.
 pub struct Env {
     pub svm: LiteSVM,
@@ -120,17 +148,18 @@ impl Env {
     ///
     /// # Returns
     ///
-    /// An `Env` whose payer, recipient and oracle hold 10 SOL each. The recipient needs funds because
-    /// it signs `accept_deal` and locks the guarantee.
+    /// An `Env` at chain time `T0` whose payer and oracle hold 10 SOL each. The recipient has no
+    /// account yet, so tests also cover paying a wallet that doesn't exist.
     pub fn new() -> Self {
         let mut svm = LiteSVM::new();
         svm.add_program(uptime_deal::ID, include_bytes!("../../../../target/deploy/uptime_deal.so"))
             .unwrap();
         let (payer, recipient, oracle) = (Keypair::new(), Keypair::new(), Keypair::new());
         svm.airdrop(&payer.pubkey(), 10 * SOL).unwrap();
-        svm.airdrop(&recipient.pubkey(), 10 * SOL).unwrap();
         svm.airdrop(&oracle.pubkey(), 10 * SOL).unwrap();
-        Env { svm, payer, recipient, oracle }
+        let mut env = Env { svm, payer, recipient, oracle };
+        env.set_time(T0);
+        env
     }
 
     /// Reads an account's lamports.
@@ -173,6 +202,19 @@ impl Env {
         Deal::try_deserialize(&mut &acc.data[..]).unwrap()
     }
 
+    /// Address of one of this env's deals.
+    ///
+    /// # Arguments
+    ///
+    /// * `deal_id` - the id the payer used.
+    ///
+    /// # Returns
+    ///
+    /// The `Deal` PDA.
+    pub fn pda(&self, deal_id: u64) -> Pubkey {
+        deal_pda(&self.payer.pubkey(), deal_id)
+    }
+
     /// Signs and sends instructions in one transaction.
     ///
     /// # Arguments
@@ -197,26 +239,16 @@ impl Env {
     ///
     /// # Arguments
     ///
-    /// * `payer` - the proposing wallet (must sign the transaction).
-    /// * `recipient` - the wallet that must accept and is paid on high uptime.
-    /// * `oracle` - the key allowed to settle.
+    /// * `payer` - the funding wallet (must sign the transaction).
+    /// * `recipient` - the provider, paid when the SLA is met.
+    /// * `oracle` - the key allowed to record observations.
     /// * `deal_id` - the payer-chosen id.
-    /// * `amount` - lamports the payer locks now.
-    /// * `guarantee` - lamports the recipient must lock on acceptance.
-    /// * `duration` - uptime window in seconds.
+    /// * `terms` - payment, guarantee, window, interval and threshold.
     ///
     /// # Returns
     ///
     /// The instruction, with the `deal` PDA derived from `payer` and `deal_id`.
-    pub fn create_ix(
-        payer: &Pubkey,
-        recipient: &Pubkey,
-        oracle: &Pubkey,
-        deal_id: u64,
-        amount: u64,
-        guarantee: u64,
-        duration: u64,
-    ) -> Instruction {
+    pub fn create_ix(payer: &Pubkey, recipient: &Pubkey, oracle: &Pubkey, deal_id: u64, terms: Terms) -> Instruction {
         Instruction {
             program_id: uptime_deal::ID,
             accounts: uptime_deal::accounts::CreateDeal {
@@ -229,9 +261,11 @@ impl Env {
             .to_account_metas(None),
             data: uptime_deal::instruction::CreateDeal {
                 deal_id,
-                amount_lamports: amount,
-                guarantee_lamports: guarantee,
-                duration_seconds: duration,
+                amount_lamports: terms.amount,
+                provider_stake_lamports: terms.stake,
+                duration_seconds: terms.duration,
+                check_interval_seconds: terms.interval,
+                min_uptime_bps: terms.min_bps,
             }
             .data(),
         }
@@ -241,14 +275,13 @@ impl Env {
     ///
     /// # Arguments
     ///
-    /// * `recipient` - the signer accepting the deal and paying the guarantee.
+    /// * `recipient` - the signer claiming to be the deal's recipient.
     /// * `deal` - the deal address.
-    /// * `terms` - the terms the recipient agrees to.
     ///
     /// # Returns
     ///
     /// The instruction.
-    pub fn accept_ix(recipient: &Pubkey, deal: &Pubkey, terms: Terms) -> Instruction {
+    pub fn accept_ix(recipient: &Pubkey, deal: &Pubkey) -> Instruction {
         Instruction {
             program_id: uptime_deal::ID,
             accounts: uptime_deal::accounts::AcceptDeal {
@@ -257,13 +290,27 @@ impl Env {
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
-            data: uptime_deal::instruction::AcceptDeal {
-                amount_lamports: terms.amount,
-                guarantee_lamports: terms.guarantee,
-                duration_seconds: terms.duration,
-                oracle: terms.oracle,
-            }
-            .data(),
+            data: uptime_deal::instruction::AcceptDeal {}.data(),
+        }
+    }
+
+    /// Builds a `record_observation` instruction.
+    ///
+    /// # Arguments
+    ///
+    /// * `oracle` - the signer claiming to be the deal's oracle.
+    /// * `deal` - the deal address.
+    /// * `round` - the zero-based round.
+    /// * `up` - the observation.
+    ///
+    /// # Returns
+    ///
+    /// The instruction.
+    pub fn observe_ix(oracle: &Pubkey, deal: &Pubkey, round: u32, up: bool) -> Instruction {
+        Instruction {
+            program_id: uptime_deal::ID,
+            accounts: uptime_deal::accounts::RecordObservation { oracle: *oracle, deal: *deal }.to_account_metas(None),
+            data: uptime_deal::instruction::RecordObservation { round, up }.data(),
         }
     }
 
@@ -271,27 +318,25 @@ impl Env {
     ///
     /// # Arguments
     ///
-    /// * `oracle` - the signer reporting the uptime.
+    /// * `caller` - any signer; pays the fee.
     /// * `deal` - the deal address.
     /// * `payer` - the account passed as the deal's payer.
     /// * `recipient` - the account passed as the deal's recipient.
-    /// * `up` - seconds up.
-    /// * `total` - seconds measured.
     ///
     /// # Returns
     ///
     /// The instruction.
-    pub fn settle_ix(oracle: &Pubkey, deal: &Pubkey, payer: &Pubkey, recipient: &Pubkey, up: u64, total: u64) -> Instruction {
+    pub fn settle_ix(caller: &Pubkey, deal: &Pubkey, payer: &Pubkey, recipient: &Pubkey) -> Instruction {
         Instruction {
             program_id: uptime_deal::ID,
             accounts: uptime_deal::accounts::SettleDeal {
-                oracle: *oracle,
+                caller: *caller,
                 deal: *deal,
                 payer: *payer,
                 recipient: *recipient,
             }
             .to_account_metas(None),
-            data: uptime_deal::instruction::SettleDeal { up_seconds: up, total_seconds: total }.data(),
+            data: uptime_deal::instruction::SettleDeal {}.data(),
         }
     }
 
@@ -299,24 +344,16 @@ impl Env {
     ///
     /// # Arguments
     ///
-    /// * `signer` - the key claiming to be the deal's payer or recipient.
+    /// * `payer` - the signer claiming to be the deal's payer.
     /// * `deal` - the deal address.
-    /// * `payer` - the account passed as the deal's payer.
-    /// * `recipient` - the account passed as the deal's recipient.
     ///
     /// # Returns
     ///
     /// The instruction.
-    pub fn cancel_ix(signer: &Pubkey, deal: &Pubkey, payer: &Pubkey, recipient: &Pubkey) -> Instruction {
+    pub fn cancel_ix(payer: &Pubkey, deal: &Pubkey) -> Instruction {
         Instruction {
             program_id: uptime_deal::ID,
-            accounts: uptime_deal::accounts::CancelDeal {
-                signer: *signer,
-                deal: *deal,
-                payer: *payer,
-                recipient: *recipient,
-            }
-            .to_account_metas(None),
+            accounts: uptime_deal::accounts::CancelDeal { payer: *payer, deal: *deal }.to_account_metas(None),
             data: uptime_deal::instruction::CancelDeal {}.data(),
         }
     }
@@ -341,107 +378,150 @@ impl Env {
         self.svm.set_sysvar::<Clock>(&clock);
     }
 
-    /// The terms of a deal between this env's parties with `GUARANTEE` and a `DURATION` window.
-    ///
-    /// # Arguments
-    ///
-    /// * `amount` - the payer's payment.
-    ///
-    /// # Returns
-    ///
-    /// The terms a matching `accept_deal` must carry.
-    pub fn terms(&self, amount: u64) -> Terms {
-        Terms { amount, guarantee: GUARANTEE, duration: DURATION, oracle: self.oracle.pubkey() }
-    }
-
-    /// Proposes a deal between this env's payer, recipient and oracle with `GUARANTEE` and a
-    /// `DURATION` window.
+    /// Creates a deal with the default `Terms` between this env's payer, recipient and oracle.
     ///
     /// # Arguments
     ///
     /// * `deal_id` - the payer-chosen id.
-    /// * `amount` - the payer's payment.
     ///
     /// # Returns
     ///
     /// The transaction result, signed and paid by the payer.
-    pub fn propose(&mut self, deal_id: u64, amount: u64) -> TxResult {
-        self.create_for(deal_id, amount, GUARANTEE, DURATION)
+    pub fn create(&mut self, deal_id: u64) -> TxResult {
+        self.create_with(deal_id, Terms::default())
     }
 
-    /// Proposes a deal between this env's payer, recipient and oracle.
+    /// Creates a deal between this env's payer, recipient and oracle.
     ///
     /// # Arguments
     ///
     /// * `deal_id` - the payer-chosen id.
-    /// * `amount` - the payer's payment.
-    /// * `guarantee` - the guarantee the recipient must lock.
-    /// * `duration` - uptime window in seconds.
+    /// * `terms` - the deal terms.
     ///
     /// # Returns
     ///
     /// The transaction result, signed and paid by the payer.
-    pub fn create_for(&mut self, deal_id: u64, amount: u64, guarantee: u64, duration: u64) -> TxResult {
-        let ix = Self::create_ix(
-            &self.payer.pubkey(),
-            &self.recipient.pubkey(),
-            &self.oracle.pubkey(),
-            deal_id,
-            amount,
-            guarantee,
-            duration,
-        );
+    pub fn create_with(&mut self, deal_id: u64, terms: Terms) -> TxResult {
+        let ix = Self::create_ix(&self.payer.pubkey(), &self.recipient.pubkey(), &self.oracle.pubkey(), deal_id, terms);
         let payer = self.payer.insecure_clone();
         self.send(&[ix], &payer, &[])
     }
 
-    /// Accepts one of this env's deals as the recipient, with the terms stored in the deal.
+    /// Accepts one of this env's deals with an arbitrary signer.
     ///
     /// # Arguments
     ///
+    /// * `signer` - the key claiming to be the recipient; also pays the fee and the guarantee.
     /// * `deal_id` - the id the payer used.
-    ///
-    /// # Returns
-    ///
-    /// The transaction result, signed and paid by the recipient.
-    pub fn accept(&mut self, deal_id: u64) -> TxResult {
-        let deal = self.deal(&deal_pda(&self.payer.pubkey(), deal_id));
-        let terms = Terms {
-            amount: deal.amount_lamports,
-            guarantee: deal.guarantee_lamports,
-            duration: deal.duration_seconds,
-            oracle: deal.oracle,
-        };
-        let recipient = self.recipient.insecure_clone();
-        self.accept_as(&recipient, deal_id, terms)
-    }
-
-    /// Accepts one of this env's deals with an arbitrary signer and terms.
-    ///
-    /// # Arguments
-    ///
-    /// * `signer` - the key claiming to be the recipient; also pays the fee.
-    /// * `deal_id` - the id the payer used.
-    /// * `terms` - the terms the signer agrees to.
     ///
     /// # Returns
     ///
     /// The transaction result.
-    pub fn accept_as(&mut self, signer: &Keypair, deal_id: u64, terms: Terms) -> TxResult {
-        let deal = deal_pda(&self.payer.pubkey(), deal_id);
-        let ix = Self::accept_ix(&signer.pubkey(), &deal, terms);
+    pub fn accept_as(&mut self, signer: &Keypair, deal_id: u64) -> TxResult {
+        let ix = Self::accept_ix(&signer.pubkey(), &self.pda(deal_id));
         self.send(&[ix], signer, &[])
     }
 
-    /// Proposes and accepts a deal with `GUARANTEE` and a `DURATION` window; panics if either fails.
+    /// Accepts one of this env's deals as the recipient.
     ///
     /// # Arguments
     ///
-    /// * `deal_id` - the payer-chosen id.
-    /// * `amount` - the payer's payment.
-    pub fn open(&mut self, deal_id: u64, amount: u64) {
-        assert_ok(self.propose(deal_id, amount));
-        assert_ok(self.accept(deal_id));
+    /// * `deal_id` - the id the payer used.
+    ///
+    /// # Returns
+    ///
+    /// The transaction result, signed and paid by the recipient (which needs lamports first).
+    pub fn accept(&mut self, deal_id: u64) -> TxResult {
+        let recipient = self.recipient.insecure_clone();
+        self.accept_as(&recipient, deal_id)
+    }
+
+    /// Records an observation with an arbitrary signer, at the current chain time.
+    ///
+    /// # Arguments
+    ///
+    /// * `signer` - the key claiming to be the oracle; also pays the fee.
+    /// * `deal_id` - the id the payer used.
+    /// * `round` - the zero-based round.
+    /// * `up` - the observation.
+    ///
+    /// # Returns
+    ///
+    /// The transaction result.
+    pub fn observe_as(&mut self, signer: &Keypair, deal_id: u64, round: u32, up: bool) -> TxResult {
+        let ix = Self::observe_ix(&signer.pubkey(), &self.pda(deal_id), round, up);
+        self.send(&[ix], signer, &[])
+    }
+
+    /// Records an observation as the oracle, at the current chain time.
+    ///
+    /// # Arguments
+    ///
+    /// * `deal_id` - the id the payer used.
+    /// * `round` - the zero-based round.
+    /// * `up` - the observation.
+    ///
+    /// # Returns
+    ///
+    /// The transaction result.
+    pub fn observe(&mut self, deal_id: u64, round: u32, up: bool) -> TxResult {
+        let oracle = self.oracle.insecure_clone();
+        self.observe_as(&oracle, deal_id, round, up)
+    }
+
+    /// Records one observation per round as the oracle, moving the clock to the window's end first.
+    ///
+    /// # Arguments
+    ///
+    /// * `deal_id` - the id the payer used; the deal must be active.
+    /// * `rounds` - `Some(up)` records round `i`, `None` leaves it unobserved.
+    pub fn observe_all(&mut self, deal_id: u64, rounds: &[Option<bool>]) {
+        let deal = self.deal(&self.pda(deal_id));
+        self.set_time(deal.starts_at + deal.duration_seconds as i64);
+        for (round, up) in rounds.iter().enumerate() {
+            if let Some(up) = up {
+                assert_ok(self.observe(deal_id, round as u32, *up));
+            }
+        }
+    }
+
+    /// Moves the clock to the first second at which a deal can be settled.
+    ///
+    /// # Arguments
+    ///
+    /// * `deal_id` - the id the payer used; the deal must be active.
+    pub fn to_settlement(&mut self, deal_id: u64) {
+        let deal = self.deal(&self.pda(deal_id));
+        self.set_time(deal.starts_at + deal.duration_seconds as i64 + OBSERVATION_GRACE_SECONDS);
+    }
+
+    /// Settles one of this env's deals with an arbitrary signer.
+    ///
+    /// # Arguments
+    ///
+    /// * `signer` - any key; pays the fee.
+    /// * `deal_id` - the id the payer used.
+    ///
+    /// # Returns
+    ///
+    /// The transaction result.
+    pub fn settle_as(&mut self, signer: &Keypair, deal_id: u64) -> TxResult {
+        let ix = Self::settle_ix(&signer.pubkey(), &self.pda(deal_id), &self.payer.pubkey(), &self.recipient.pubkey());
+        self.send(&[ix], signer, &[])
+    }
+
+    /// Settles one of this env's deals, signed and paid by the oracle (as the service does).
+    ///
+    /// # Arguments
+    ///
+    /// * `deal_id` - the id the payer used.
+    ///
+    /// # Returns
+    ///
+    /// The transaction result.
+    pub fn settle(&mut self, deal_id: u64) -> TxResult {
+        let oracle = self.oracle.insecure_clone();
+        self.settle_as(&oracle, deal_id)
     }
 
     /// Cancels one of this env's deals, signed and paid by the payer.
@@ -462,49 +542,14 @@ impl Env {
     ///
     /// # Arguments
     ///
-    /// * `signer` - the key claiming to be the payer or the recipient; also pays the fee.
+    /// * `signer` - the key claiming to be the payer; also pays the fee.
     /// * `deal_id` - the id the payer used.
     ///
     /// # Returns
     ///
     /// The transaction result.
     pub fn cancel_as(&mut self, signer: &Keypair, deal_id: u64) -> TxResult {
-        let deal = deal_pda(&self.payer.pubkey(), deal_id);
-        let ix = Self::cancel_ix(&signer.pubkey(), &deal, &self.payer.pubkey(), &self.recipient.pubkey());
-        self.send(&[ix], signer, &[])
-    }
-
-    /// Settles one of this env's deals, signed and paid by the oracle.
-    ///
-    /// # Arguments
-    ///
-    /// * `deal_id` - the id the payer used.
-    /// * `up` - seconds up.
-    /// * `total` - seconds measured.
-    ///
-    /// # Returns
-    ///
-    /// The transaction result.
-    pub fn settle(&mut self, deal_id: u64, up: u64, total: u64) -> TxResult {
-        let oracle = self.oracle.insecure_clone();
-        self.settle_as(&oracle, deal_id, up, total)
-    }
-
-    /// Settles one of this env's deals with an arbitrary signer.
-    ///
-    /// # Arguments
-    ///
-    /// * `signer` - the key claiming to be the oracle; also pays the fee.
-    /// * `deal_id` - the id the payer used.
-    /// * `up` - seconds up.
-    /// * `total` - seconds measured.
-    ///
-    /// # Returns
-    ///
-    /// The transaction result.
-    pub fn settle_as(&mut self, signer: &Keypair, deal_id: u64, up: u64, total: u64) -> TxResult {
-        let deal = deal_pda(&self.payer.pubkey(), deal_id);
-        let ix = Self::settle_ix(&signer.pubkey(), &deal, &self.payer.pubkey(), &self.recipient.pubkey(), up, total);
+        let ix = Self::cancel_ix(&signer.pubkey(), &self.pda(deal_id));
         self.send(&[ix], signer, &[])
     }
 }

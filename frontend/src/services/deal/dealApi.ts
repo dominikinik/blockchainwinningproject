@@ -6,32 +6,35 @@ export interface DealConfig {
   oracle: string
   /** RPC URL of the cluster the service settles on. */
   rpcUrl: string
+  /** Health-probe interval; deal rounds must match this sampling interval. */
+  checkIntervalSeconds: number
 }
 
-export type DealStatus = 'PROPOSED' | 'ACTIVE' | 'SETTLED' | 'FAILED' | 'CANCELLED'
+export type DealStatus = 'AWAITING_PROVIDER' | 'ACTIVE' | 'SETTLED' | 'FAILED' | 'CANCELLED'
 
-/** A deal as tracked by the uptime service (`GET /api/deals/{address}`). */
+/**
+ * A deal as the uptime service monitors it (`GET /api/deals/{address}`). The terms and counters mirror the
+ * chain for display; the deal account and the program's events are the authority.
+ */
 export interface TrackedDeal {
   address: string
-  /** Proposed the deal and paid `amountLamports`. */
   payer: string
-  /** The provider: must accept, pays `guaranteeLamports`, and receives both deposits when uptime is above 99%. */
   recipient: string
-  /** The payer's payment. */
   amountLamports: number
-  /** The recipient's guarantee, locked when it accepts. */
-  guaranteeLamports: number
+  providerStakeLamports: number
   durationSeconds: number
-  /** When the proposal stops being acceptable on chain (ISO-8601). */
-  acceptDeadline: string
-  /** First second of the uptime window (ISO-8601); null until the recipient accepts. */
+  checkIntervalSeconds: number
+  minUptimeBps: number
+  totalRounds: number
+  /** First second of the window (ISO-8601); null until the provider accepts. */
   startsAt: string | null
-  /** End of the window, exclusive (ISO-8601); null until the recipient accepts. */
+  /** End of the window, exclusive (ISO-8601); null until the provider accepts. */
   endsAt: string | null
-  /** PROPOSED waits for the recipient; CANCELLED means a party cancelled with `cancel_deal` and each deposit went back. */
   status: DealStatus
-  upSeconds: number | null
-  totalSeconds: number | null
+  upChecks: number
+  downChecks: number
+  /** `record_observation` transactions the service has sent. */
+  observationsSent: number
   /** The program's verdict from its `DealSettled` event; null until settled or when unknown. */
   paidToRecipient: boolean | null
   signature: string | null
@@ -51,10 +54,10 @@ export const dealApi = {
   },
 
   /**
-   * Asks the service to watch a deal already created on chain and to settle it after the window.
+   * Asks the service to monitor a deal already created on chain: report each round, then trigger settlement.
    *
    * @param address Base58 deal address
-   * @returns the tracked deal; its window comes from the chain (`starts_at` plus the duration)
+   * @returns the tracked deal; its terms come from the chain
    * @throws Error with the service's problem detail (invalid deal, wrong oracle, duplicate, RPC failure)
    */
   register(address: string): Promise<TrackedDeal> {
@@ -70,16 +73,6 @@ export const dealApi = {
    */
   get(address: string): Promise<TrackedDeal> {
     return request<TrackedDeal>(`/api/deals/${encodeURIComponent(address)}`)
-  },
-
-  /**
-   * Lists every deal the service tracks, so a provider can find the proposals addressed to it.
-   *
-   * @returns the tracked deals, most recently proposed first
-   * @throws Error when the service is unreachable or answers with an error
-   */
-  list(): Promise<TrackedDeal[]> {
-    return request<TrackedDeal[]>('/api/deals')
   },
 
   /**

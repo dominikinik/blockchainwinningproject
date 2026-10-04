@@ -10,8 +10,8 @@ describe('dealApi', () => {
   afterEach(() => { vi.unstubAllGlobals() })
 
   it('reads the config', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ programId: 'P', oracle: 'O', rpcUrl: 'R' }))
-    await expect(dealApi.getConfig()).resolves.toEqual({ programId: 'P', oracle: 'O', rpcUrl: 'R' })
+    fetchMock.mockResolvedValue(jsonResponse({ programId: 'P', oracle: 'O', rpcUrl: 'R', checkIntervalSeconds: 2 }))
+    await expect(dealApi.getConfig()).resolves.toEqual({ programId: 'P', oracle: 'O', rpcUrl: 'R', checkIntervalSeconds: 2 })
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/deals/config')
     expect(init.headers).toEqual({ Accept: 'application/json' })
@@ -32,14 +32,6 @@ describe('dealApi', () => {
     fetchMock.mockResolvedValue(jsonResponse({ address: 'a/b' }))
     await dealApi.get('a/b')
     expect(fetchMock.mock.calls[0][0]).toBe('/api/deals/a%2Fb')
-  })
-
-  it('lists the tracked deals', async () => {
-    fetchMock.mockResolvedValue(jsonResponse([{ address: 'D', status: 'PROPOSED' }]))
-    await expect(dealApi.list()).resolves.toEqual([{ address: 'D', status: 'PROPOSED' }])
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('/api/deals')
-    expect(init.method).toBeUndefined()
   })
 
   it('switches the service state', async () => {

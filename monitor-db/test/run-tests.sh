@@ -92,8 +92,8 @@ duration_seconds|bigint||NO
 accept_deadline|timestamp with time zone|6|NO
 starts_at|timestamp with time zone|6|YES
 status|character varying||NO
-up_seconds|bigint||YES
-total_seconds|bigint||YES
+up_checks|bigint||YES
+total_rounds|bigint||YES
 paid_to_recipient|boolean||YES
 signature|character varying||YES
 sent_at|timestamp with time zone|6|YES
