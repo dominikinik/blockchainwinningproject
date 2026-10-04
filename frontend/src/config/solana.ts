@@ -12,10 +12,11 @@ export const USE_BURNER_WALLET = import.meta.env.VITE_SOLANA_BURNER_WALLET === '
  * Labels the cluster for the header pill.
  *
  * @param rpcUrl the configured RPC URL override, if any
- * @returns "Solana Devnet" without an override, "Solana Localnet" for a local node, otherwise "Custom RPC"
+ * @returns "Solana Devnet" without an override or for a devnet RPC (public or hosted), "Solana Localnet" for a
+ *   local node, otherwise "Custom RPC"
  */
 export function networkLabel(rpcUrl: string | undefined = rpcOverride): string {
-  if (!rpcUrl) return 'Solana Devnet'
+  if (!rpcUrl || /devnet/i.test(rpcUrl)) return 'Solana Devnet'
   return /\/\/(localhost|127\.0\.0\.1)[:/]/.test(rpcUrl) ? 'Solana Localnet' : 'Custom RPC'
 }
 

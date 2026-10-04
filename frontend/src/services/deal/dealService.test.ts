@@ -67,11 +67,11 @@ describe('waitForConfirmation', () => {
 describe('openDeal', () => {
   beforeEach(() => { vi.mocked(dealApi.register).mockReset() })
 
-  it('sends create_deal with every term, waits for it, then registers the deal address', async () => {
+  it('sends create_deal with every term, waits for it, then registers the deal address and returns the signature', async () => {
     const params = terms({ providerStakeLamports: 100_000_000n, durationSeconds: 30, checkIntervalSeconds: 3, minUptimeBps: 9_950, dealId: 5n })
     vi.mocked(dealApi.register).mockResolvedValue({ address: 'D' } as never)
 
-    await expect(openDeal(params)).resolves.toEqual({ address: 'D' })
+    await expect(openDeal(params)).resolves.toEqual({ deal: { address: 'D' }, signature: 'sig' })
 
     const sendTransaction = vi.mocked(params.sendTransaction)
     const tx: Transaction = sendTransaction.mock.calls[0][0]
@@ -127,10 +127,10 @@ describe('deal actions', () => {
   const deal = Keypair.generate().publicKey
   const other = Keypair.generate().publicKey
 
-  async function sent(action: (connection: Connection, sendTransaction: ReturnType<typeof vi.fn>) => Promise<void>) {
+  async function sent(action: (connection: Connection, sendTransaction: ReturnType<typeof vi.fn>) => Promise<string>) {
     const connection = connectionWith(confirmed)
     const sendTransaction = vi.fn().mockResolvedValue('sig')
-    await expect(action(connection, sendTransaction)).resolves.toBeUndefined()
+    await expect(action(connection, sendTransaction)).resolves.toBe('sig')
     expect(sendTransaction.mock.calls[0][1]).toBe(connection)
     expect(connection.getSignatureStatuses).toHaveBeenCalledWith(['sig'])
     const tx: Transaction = sendTransaction.mock.calls[0][0]

@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { ArrowRight, Coins, Droplets, Gavel, LockKeyhole, Server, ShieldCheck, Timer } from 'lucide-react'
+import { ArrowRight, Coins, Droplets, ExternalLink, Gavel, LockKeyhole, Server, ShieldCheck, Timer } from 'lucide-react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
 import { LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js'
@@ -8,13 +8,18 @@ import { useAsyncData } from '../hooks/useAsyncData'
 import { useBalance } from '../hooks/useBalance'
 import { useNow } from '../hooks/useNow'
 import { sameCluster, SOLANA_RPC_URL } from '../config/solana'
-import { shortAddress } from '../lib/format'
+import { explorerUrl, shortAddress } from '../lib/format'
 import { dealApi, type TrackedDeal } from '../services/deal/dealApi'
 import { BPS_DENOMINATOR, OBSERVATION_GRACE_SECONDS, requiredUpRounds, totalRounds, type DealOutcome, type OnChainDeal } from '../services/deal/dealProgram'
 import { acceptDeal, cancelDeal, openDeal, readDeal, readOutcome, requestAirdrop, settleDeal } from '../services/deal/dealService'
 import { uptimeService, type UptimeServiceState } from '../services/uptime/uptimeService'
 
 const AIRDROP_LAMPORTS = 2 * LAMPORTS_PER_SOL
+/**
+ * Balances also refresh right after every action and when the deal closes, so a slow background poll is enough.
+ * A 2 s poll per balance, per open tab, exhausted the public Devnet RPC's per-IP limit and blocked transactions.
+ */
+const BALANCE_POLL_MS = 10_000
 
 /** How a followed deal was closed: its event and transaction, or 'unknown' when no event was found. */
 export type ClosedDeal = { outcome: DealOutcome; signature: string } | 'unknown'
@@ -100,6 +105,25 @@ export function projection(deal: OnChainDeal): string {
   return `${required - deal.upChecks} more UP rounds needed`
 }
 
+/** A transaction this window's wallet signed for the current deal. */
+interface DealTx {
+  label: string
+  signature: string
+}
+
+/**
+ * Links a transaction or account to Solana Explorer on the cluster the app uses, so anyone can check it on chain.
+ *
+ * @param props.kind a transaction signature or an account address
+ * @param props.value the signature or address, shown shortened
+ * @param props.testId the test id of the link
+ */
+function ExplorerLink({ kind, value, testId }: { kind: 'tx' | 'address'; value: string; testId?: string }) {
+  return <a href={explorerUrl(kind, value, SOLANA_RPC_URL)} target="_blank" rel="noreferrer" title={value} data-testid={testId}>
+    {shortAddress(value, 6, 6)} <ExternalLink size={13} />
+  </a>
+}
+
 /** Creates a real on-chain uptime SLA and follows it, from chain state, until the program settles it. */
 export function UptimeDealPage() {
   const { connection } = useConnection()
@@ -119,8 +143,9 @@ export function UptimeDealPage() {
   const [chain, setChain] = useState<OnChainDeal | null>(null)
   const [closed, setClosed] = useState<ClosedDeal | null>(null)
   const [monitor, setMonitor] = useState<TrackedDeal | null>(null)
-  const wallet = useBalance(connection, publicKey?.toBase58())
-  const recipientBalance = useBalance(connection, chain?.recipient ?? monitor?.recipient)
+  const [txs, setTxs] = useState<DealTx[]>([])
+  const wallet = useBalance(connection, publicKey?.toBase58(), BALANCE_POLL_MS)
+  const recipientBalance = useBalance(connection, chain?.recipient ?? monitor?.recipient, BALANCE_POLL_MS)
 
   useEffect(() => {
     if (config) setIntervalSeconds(String(config.checkIntervalSeconds))
@@ -200,21 +225,24 @@ export function UptimeDealPage() {
     })
   }
 
-  function dealAction(label: string, action: (deal: PublicKey, program: PublicKey, wallet: PublicKey) => Promise<void>) {
+  function dealAction(label: string, txLabel: string, action: (deal: PublicKey, program: PublicKey, wallet: PublicKey) => Promise<string>) {
     if (!publicKey || !config || !address) return
     void run(label, async () => {
-      await action(new PublicKey(address), new PublicKey(config.programId), publicKey)
+      const signature = await action(new PublicKey(address), new PublicKey(config.programId), publicKey)
+      setTxs((done) => [...done, { label: txLabel, signature }])
       await wallet.refresh()
     })
   }
 
-  const accept = () => dealAction('Locking guarantee', (deal, program, me) =>
+  const accept = () => dealAction('Locking guarantee', 'Acceptance tx', (deal, program, me) =>
     acceptDeal({ connection, sendTransaction, programId: program, deal, recipient: me }))
-  const cancel = () => dealAction('Cancelling deal', (deal, program, me) =>
+  const cancel = () => dealAction('Cancelling deal', 'Cancel tx', (deal, program, me) =>
     cancelDeal({ connection, sendTransaction, programId: program, deal, payer: me }))
-  const settle = () => dealAction('Settling', (deal, program, me) => chain
-    ? settleDeal({ connection, sendTransaction, programId: program, deal, caller: me, payer: new PublicKey(chain.payer), recipient: new PublicKey(chain.recipient) })
-    : Promise.resolve())
+  const settle = () => {
+    if (!chain) return
+    dealAction('Settling', 'Settle tx', (deal, program, me) =>
+      settleDeal({ connection, sendTransaction, programId: program, deal, caller: me, payer: new PublicKey(chain.payer), recipient: new PublicKey(chain.recipient) }))
+  }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -230,12 +258,13 @@ export function UptimeDealPage() {
     if (totalRounds(seconds, interval) === null) { setError('The check interval must divide the window evenly.'); return }
     if (!Number.isFinite(percent) || percent < 0.01 || percent > 100) { setError('Enter a minimum uptime between 0.01% and 100%.'); return }
     void run('Creating deal', async () => {
-      setAddress(null); setChain(null); setClosed(null); setMonitor(null)
-      const tracked = await openDeal({
+      setAddress(null); setChain(null); setClosed(null); setMonitor(null); setTxs([])
+      const { deal: tracked, signature } = await openDeal({
         connection, payer: publicKey, sendTransaction, config, recipient: recipient.trim(),
         amountLamports: BigInt(Math.round(sol * LAMPORTS_PER_SOL)), providerStakeLamports: BigInt(Math.round(stake * LAMPORTS_PER_SOL)),
         durationSeconds: seconds, checkIntervalSeconds: interval, minUptimeBps: Math.round(percent * BPS_DENOMINATOR / 100),
       })
+      setTxs([{ label: 'Create tx', signature }])
       setMonitor(tracked)
       setAddress(tracked.address)
       await wallet.refresh()
@@ -291,7 +320,8 @@ export function UptimeDealPage() {
           <p className="summary-intro">Reports each round as UP or DOWN on chain. It never decides the outcome.</p>
           <div className="summary-list">
             <div><span>Current state</span><strong data-testid="service-state">{serviceState ?? 'Unavailable'}</strong></div>
-            <div><span>Oracle</span><strong title={config?.oracle}>{config ? shortAddress(config.oracle, 6, 6) : '—'}</strong></div>
+            <div><span>Oracle</span><strong>{config ? <ExplorerLink kind="address" value={config.oracle} /> : '—'}</strong></div>
+            <div><span>Program</span><strong>{config ? <ExplorerLink kind="address" value={config.programId} testId="program-link" /> : '—'}</strong></div>
             {monitor && <div><span>Observations sent</span><strong data-testid="observations-sent">{monitor.observationsSent}</strong></div>}
             {monitor?.error && <div><span>Monitor error</span><strong>{monitor.error}</strong></div>}
           </div>
@@ -303,14 +333,15 @@ export function UptimeDealPage() {
           <h2>Deal (read from chain)</h2>
           <p className="summary-intro" role="status" data-testid="deal-verdict">{dealVerdict(chain, closed, now)}</p>
           <div className="summary-list">
-            <div><span>Address</span><strong title={address}>{shortAddress(address, 6, 6)}</strong></div>
+            <div><span>Address</span><strong><ExplorerLink kind="address" value={address} testId="deal-address-link" /></strong></div>
             {chain && <div><span>Terms</span><strong>{chain.durationSeconds}s · {chain.checkIntervalSeconds}s rounds · ≥ {formatBps(chain.minUptimeBps)}</strong></div>}
             {chain && <div><span>Oracle</span><strong title={chain.oracle} data-testid="deal-oracle">{shortAddress(chain.oracle, 6, 6)}</strong></div>}
             <div><span>On-chain counters</span><strong data-testid="deal-counters">{counters}</strong></div>
             {chain && !closed && chain.active && <div><span>Projection (informational)</span><strong data-testid="deal-projection">{projection(chain)}</strong></div>}
             {recipientLabel && <div><span>Recipient</span><strong title={recipientLabel}>{shortAddress(recipientLabel, 6, 6)}</strong></div>}
             <div><span><Coins size={16} /> Recipient balance</span><strong data-testid="recipient-balance">{formatLamports(recipientBalance.lamports)}</strong></div>
-            {closed && closed !== 'unknown' && <div><span>Closing tx</span><strong title={closed.signature}>{shortAddress(closed.signature, 6, 6)}</strong></div>}
+            {txs.map((tx) => <div key={tx.signature}><span>{tx.label}</span><strong><ExplorerLink kind="tx" value={tx.signature} testId="wallet-tx-link" /></strong></div>)}
+            {closed && closed !== 'unknown' && <div><span>Closing tx</span><strong><ExplorerLink kind="tx" value={closed.signature} testId="settlement-tx-link" /></strong></div>}
           </div>
           {awaitingProvider && me === chain?.recipient && <div className="agreement-escrow">
             <span>Lock {formatLamports(chain.providerStakeLamports)} to start the window</span>

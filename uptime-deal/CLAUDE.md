@@ -43,4 +43,6 @@ Every public function, including the test harness helpers, has a rustdoc comment
 
 ## Program ID and keys
 
-The program ID is `EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r`, used in `declare_id!` and `Anchor.toml`. Its deploy keypair, `target/deploy/uptime_deal-keypair.json`, is gitignored. The tests don't need it because LiteSVM loads the `.so` under `declare_id!`. To deploy from a fresh clone, copy the keypair in, or run `anchor keys sync` to adopt a new ID.
+The program ID is `FVYpjzHktSRkPeUMytDPwVnAXTEf1QqVymKTnqNqfDmr`, used in `declare_id!` and `Anchor.toml`. Its deploy keypair, `target/deploy/uptime_deal-keypair.json`, is gitignored. The tests don't need it because LiteSVM loads the `.so` under `declare_id!`. To deploy from a fresh clone, copy the keypair in, or run `anchor keys sync` to adopt a new ID.
+
+The program is deployed on **Devnet** at that ID (`[programs.devnet]` in `Anchor.toml`). Upgrading it there needs both the program keypair and the upgrade-authority wallet (`Dc5HHvcJ4bdRzMBMuNkPPFqFFJ34F6votEFfpfckxz2H`); neither is in Git. Rebuild, then run `solana program deploy target/deploy/uptime_deal.so --program-id target/deploy/uptime_deal-keypair.json --url devnet` with that wallet as the CLI keypair.

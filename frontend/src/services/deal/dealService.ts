@@ -35,12 +35,12 @@ export interface OpenDealParams {
  * with the uptime service so it starts reporting observations at once.
  *
  * @param params the wallet, the service configuration and the deal terms
- * @returns the deal as tracked by the service
+ * @returns the deal as tracked by the service and the signature of the create_deal transaction
  * @throws Error for an invalid recipient, amount, window, interval or threshold, a rejected or failed
  *   transaction, or a refused registration (the message then names the deal address; the service also
  *   discovers open deals on its own)
  */
-export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
+export async function openDeal(params: OpenDealParams): Promise<CreatedDeal> {
   let recipient: PublicKey
   try { recipient = new PublicKey(params.recipient) } catch { throw new Error('Enter a valid recipient address.') }
   if (recipient.equals(params.payer)) throw new Error('The recipient must be another wallet.')
@@ -74,7 +74,7 @@ export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
   await waitForConfirmation(params.connection, signature)
   const address = dealAddress(programId, params.payer, dealId).toBase58()
   try {
-    return await dealApi.register(address)
+    return { deal: await dealApi.register(address), signature }
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : 'unknown error'
     throw new Error(
@@ -82,6 +82,13 @@ export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
       'Unobserved rounds count as down, so the payer wins at settlement, which anyone can trigger after the window.',
     )
   }
+}
+
+/** A deal registered with the uptime service, with the transaction that created it. */
+export interface CreatedDeal {
+  deal: TrackedDeal
+  /** Signature of the confirmed create_deal transaction. */
+  signature: TransactionSignature
 }
 
 interface DealActionParams {
@@ -97,11 +104,12 @@ interface DealActionParams {
  * and the window starts.
  *
  * @param params the wallet (as `recipient`), the program and the deal address
+ * @returns the signature of the confirmed accept_deal transaction
  * @throws Error when the wallet rejects, the program refuses (not the recipient, already active) or the
  *   transaction isn't confirmed
  */
-export async function acceptDeal(params: DealActionParams & { recipient: PublicKey }): Promise<void> {
-  await sendAndConfirm(params, new Transaction().add(acceptDealInstruction({ programId: params.programId, recipient: params.recipient, deal: params.deal })))
+export async function acceptDeal(params: DealActionParams & { recipient: PublicKey }): Promise<TransactionSignature> {
+  return sendAndConfirm(params, new Transaction().add(acceptDealInstruction({ programId: params.programId, recipient: params.recipient, deal: params.deal })))
 }
 
 /**
@@ -109,22 +117,24 @@ export async function acceptDeal(params: DealActionParams & { recipient: PublicK
  * program reads its own counters and pays the winner, so the caller only pays the fee.
  *
  * @param params the wallet (as `caller`), the program, the deal and its payer and recipient
+ * @returns the signature of the confirmed settle_deal transaction
  * @throws Error when the wallet rejects, the program refuses (too early, not active) or the transaction
  *   isn't confirmed
  */
-export async function settleDeal(params: DealActionParams & { caller: PublicKey; payer: PublicKey; recipient: PublicKey }): Promise<void> {
-  await sendAndConfirm(params, new Transaction().add(settleDealInstruction(params)))
+export async function settleDeal(params: DealActionParams & { caller: PublicKey; payer: PublicKey; recipient: PublicKey }): Promise<TransactionSignature> {
+  return sendAndConfirm(params, new Transaction().add(settleDealInstruction(params)))
 }
 
 /**
  * Sends `cancel_deal`, which withdraws a deal the provider hasn't accepted and refunds the payment.
  *
  * @param params the wallet (as `payer`), the program and the deal address
+ * @returns the signature of the confirmed cancel_deal transaction
  * @throws Error when the wallet rejects, the program refuses (already active, not the payer) or the
  *   transaction isn't confirmed
  */
-export async function cancelDeal(params: DealActionParams & { payer: PublicKey }): Promise<void> {
-  await sendAndConfirm(params, new Transaction().add(cancelDealInstruction({ programId: params.programId, payer: params.payer, deal: params.deal })))
+export async function cancelDeal(params: DealActionParams & { payer: PublicKey }): Promise<TransactionSignature> {
+  return sendAndConfirm(params, new Transaction().add(cancelDealInstruction({ programId: params.programId, payer: params.payer, deal: params.deal })))
 }
 
 /**
@@ -192,7 +202,8 @@ export async function waitForConfirmation(connection: Connection, signature: str
   throw new Error('The transaction was not confirmed in time.')
 }
 
-async function sendAndConfirm(params: { connection: Connection; sendTransaction: SendTransaction }, transaction: Transaction): Promise<void> {
+async function sendAndConfirm(params: { connection: Connection; sendTransaction: SendTransaction }, transaction: Transaction): Promise<TransactionSignature> {
   const signature = await params.sendTransaction(transaction, params.connection)
   await waitForConfirmation(params.connection, signature)
+  return signature
 }

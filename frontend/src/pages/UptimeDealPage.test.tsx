@@ -12,6 +12,11 @@ import { counterLine, dealVerdict, formatBps, formatLamports, projection, settle
 
 const ORACLE = 'DGT7vw5vTR1aaUvNkK7rAMJH8oQjUoETzbW7bp56GjDd'
 const DEAL = 'F3syGDiKt7sX9srgBWjZtB3ZLyJ3kSAfyaNsm2hnTuq3'
+const CREATE_SIG = '3CreateSig1111111111111111111111111111111111aa'
+const ACCEPT_SIG = '4AcceptSig1111111111111111111111111111111111bb'
+const CANCEL_SIG = '5CancelSig1111111111111111111111111111111111cc'
+const SETTLE_SIG = '6SettleSig1111111111111111111111111111111111dd'
+const LOCAL_EXPLORER = 'cluster=custom&customUrl=http%3A%2F%2Flocalhost%3A8899'
 const getBalance = vi.fn()
 const connection = { getBalance }
 const sendTransaction = vi.fn()
@@ -59,12 +64,12 @@ describe('UptimeDealPage', () => {
     vi.mocked(dealApi.getConfig).mockReset().mockResolvedValue(config)
     vi.mocked(dealApi.get).mockReset().mockResolvedValue(trackedDeal())
     vi.mocked(dealApi.setServiceUp).mockReset()
-    vi.mocked(openDeal).mockReset().mockResolvedValue(trackedDeal())
+    vi.mocked(openDeal).mockReset().mockResolvedValue({ deal: trackedDeal(), signature: CREATE_SIG })
     vi.mocked(readDeal).mockReset().mockResolvedValue(chainDeal())
     vi.mocked(readOutcome).mockReset().mockResolvedValue(null)
-    vi.mocked(cancelDeal).mockReset().mockResolvedValue()
-    vi.mocked(acceptDeal).mockReset().mockResolvedValue()
-    vi.mocked(settleDeal).mockReset().mockResolvedValue()
+    vi.mocked(cancelDeal).mockReset().mockResolvedValue(CANCEL_SIG)
+    vi.mocked(acceptDeal).mockReset().mockResolvedValue(ACCEPT_SIG)
+    vi.mocked(settleDeal).mockReset().mockResolvedValue(SETTLE_SIG)
     cluster.url = 'http://localhost:8899'
     vi.mocked(requestAirdrop).mockReset().mockResolvedValue()
     vi.mocked(uptimeService.getState).mockReset().mockResolvedValue('UP')
@@ -97,6 +102,21 @@ describe('UptimeDealPage', () => {
     expect(await screen.findByTestId('service-state')).toHaveTextContent('UP')
     expect(screen.getByText('DGT7vw...56GjDd')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: /Create deal/ })).toBeEnabled())
+  })
+
+  it('polls the wallet balance every 10 s, so open tabs stay within public RPC rate limits', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      renderAt(<UptimeDealPage />)
+      expect(await screen.findByTestId('wallet-balance')).toHaveTextContent('2 SOL')
+      const reads = getBalance.mock.calls.length
+      await vi.advanceTimersByTimeAsync(8000)
+      expect(getBalance.mock.calls.length).toBe(reads)
+      await vi.advanceTimersByTimeAsync(2500)
+      expect(getBalance.mock.calls.length).toBe(reads + 1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('requests an airdrop for the connected wallet', async () => {
@@ -138,6 +158,9 @@ describe('UptimeDealPage', () => {
       providerStakeLamports: 100_000_000n, durationSeconds: 10, checkIntervalSeconds: 2, minUptimeBps: 9_900,
     }))
     expect(await screen.findByTestId('deal-verdict')).toHaveTextContent(/Monitoring · \d+s left/)
+    expect(screen.getByText('Create tx')).toBeInTheDocument()
+    expect(screen.getByTestId('wallet-tx-link')).toHaveAttribute('href', `https://explorer.solana.com/tx/${CREATE_SIG}?${LOCAL_EXPLORER}`)
+    expect(screen.getByTestId('deal-address-link')).toHaveAttribute('href', `https://explorer.solana.com/address/${DEAL}?${LOCAL_EXPLORER}`)
     expect(await screen.findByTestId('deal-counters')).toHaveTextContent('3 up · 0 down · 7 unobserved / 10 rounds')
     expect(screen.getByTestId('deal-projection')).toHaveTextContent('7 more UP rounds needed')
     expect(await screen.findByTestId('observations-sent')).toHaveTextContent('3')
@@ -147,6 +170,18 @@ describe('UptimeDealPage', () => {
     expect(readOutcome).toHaveBeenCalledWith(connection, new PublicKey(DEAL))
     await waitFor(() => expect(screen.getByTestId('recipient-balance')).toHaveTextContent('0.5 SOL'))
     expect(screen.getByText('5vXy12...defSIG')).toBeInTheDocument()
+    expect(screen.getByTestId('settlement-tx-link')).toHaveAttribute('href', `https://explorer.solana.com/tx/5vXy1234567890abcdefSIG?${LOCAL_EXPLORER}`)
+  })
+
+  it('links the program and the deal transactions to the devnet explorer when the app runs on devnet', async () => {
+    cluster.url = 'https://api.devnet.solana.com'
+    vi.mocked(dealApi.getConfig).mockResolvedValue({ ...config, rpcUrl: 'https://api.devnet.solana.com' })
+    renderAt(<UptimeDealPage />)
+    expect(await screen.findByTestId('program-link')).toHaveAttribute('href', `https://explorer.solana.com/address/${config.programId}?cluster=devnet`)
+    await waitFor(() => expect(screen.getByRole('button', { name: /Create deal/ })).toBeEnabled())
+    await userEvent.type(screen.getByLabelText('Recipient address'), PROVIDER)
+    await userEvent.click(screen.getByRole('button', { name: /Create deal/ }))
+    expect(await screen.findByTestId('wallet-tx-link')).toHaveAttribute('href', `https://explorer.solana.com/tx/${CREATE_SIG}?cluster=devnet`)
   })
 
   it('shows a breach decided by the program', async () => {
@@ -221,6 +256,8 @@ describe('UptimeDealPage', () => {
     expect(acceptDeal).toHaveBeenCalledWith({
       connection, sendTransaction, programId: new PublicKey(config.programId), deal: new PublicKey(DEAL), recipient: new PublicKey(PROVIDER),
     })
+    expect(await screen.findByText('Acceptance tx')).toBeInTheDocument()
+    expect(screen.getAllByTestId('wallet-tx-link')[1]).toHaveAttribute('href', `https://explorer.solana.com/tx/${ACCEPT_SIG}?${LOCAL_EXPLORER}`)
   })
 
   it('warns the provider when the deal names an oracle other than this service', async () => {
@@ -240,6 +277,8 @@ describe('UptimeDealPage', () => {
     expect(cancelDeal).toHaveBeenCalledWith({
       connection, sendTransaction, programId: new PublicKey(config.programId), deal: new PublicKey(DEAL), payer: new PublicKey(WALLET),
     })
+    expect(await screen.findByText('Cancel tx')).toBeInTheDocument()
+    expect(screen.getAllByTestId('wallet-tx-link')[1]).toHaveAttribute('href', `https://explorer.solana.com/tx/${CANCEL_SIG}?${LOCAL_EXPLORER}`)
   })
 
   it('lets any wallet settle once the program opens settlement', async () => {
@@ -253,6 +292,8 @@ describe('UptimeDealPage', () => {
       connection, sendTransaction, programId: new PublicKey(config.programId), deal: new PublicKey(DEAL),
       caller: new PublicKey(ORACLE), payer: new PublicKey(WALLET), recipient: new PublicKey(PROVIDER),
     })
+    expect(await screen.findByText('Settle tx')).toBeInTheDocument()
+    expect(screen.getAllByTestId('wallet-tx-link')[1]).toHaveAttribute('href', `https://explorer.solana.com/tx/${SETTLE_SIG}?${LOCAL_EXPLORER}`)
   })
 
   it('does not offer settlement while the window or the observation grace is running', async () => {

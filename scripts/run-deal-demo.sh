@@ -11,7 +11,7 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PROGRAM_ID=EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r
+PROGRAM_ID=FVYpjzHktSRkPeUMytDPwVnAXTEf1QqVymKTnqNqfDmr
 for dir in "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin"; do
 	[ -d "$dir" ] && PATH="$dir:$PATH"
 done

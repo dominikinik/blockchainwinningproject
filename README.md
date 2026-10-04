@@ -150,7 +150,7 @@ SLA met  ⇔  up_checks × 10 000  ≥  min_uptime_bps × total_rounds
 | `ACCEPT_TIMEOUT_SECONDS` | 86 400 | How long the provider has to accept |
 | `BPS_DENOMINATOR` | 10 000 | 10 000 bps = 100% |
 
-Program ID: `EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r`
+Program ID: `FVYpjzHktSRkPeUMytDPwVnAXTEf1QqVymKTnqNqfDmr`
 
 </details>
 
@@ -257,7 +257,7 @@ docker compose -f monitor-db/docker-compose.yml up -d --wait
 # 2. Local validator with the program
 cd uptime-deal && anchor build --ignore-keys
 solana-test-validator --reset --quiet \
-  --bpf-program EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r target/deploy/uptime_deal.so
+  --bpf-program FVYpjzHktSRkPeUMytDPwVnAXTEf1QqVymKTnqNqfDmr target/deploy/uptime_deal.so
 
 # 3. Health provider (no DB, no RPC)
 cd uptime-service && mvn spring-boot:run

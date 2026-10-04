@@ -10,7 +10,7 @@ import com.example.monitor.infrastructure.solana.OracleKey;
 /** Builds {@code uptime_deal} account data and event logs the way the program writes them. */
 public final class DealFixtures {
 
-	public static final String PROGRAM_ID = "EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r";
+	public static final String PROGRAM_ID = "FVYpjzHktSRkPeUMytDPwVnAXTEf1QqVymKTnqNqfDmr";
 
 	public static final long GUARANTEE = 100_000_000L;
 

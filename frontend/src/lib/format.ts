@@ -47,6 +47,23 @@ export function timeAgo(value: string) {
   return `${Math.floor(seconds / 3600)} hr ago`
 }
 
-export function explorerTxUrl(signature: string) {
-  return `https://explorer.solana.com/tx/${signature}?cluster=devnet`
+/**
+ * Builds a Solana Explorer link on the cluster an RPC URL belongs to.
+ *
+ * @param kind a transaction signature or an account address
+ * @param value the signature or address
+ * @param rpcUrl the RPC URL the app uses; devnet when omitted
+ * @returns a devnet, testnet or mainnet link for those clusters (any URL naming them, e.g. a hosted devnet
+ *   RPC), otherwise a custom-cluster link that points the explorer at `rpcUrl` (localnet)
+ */
+export function explorerUrl(kind: 'tx' | 'address', value: string, rpcUrl?: string) {
+  const base = `https://explorer.solana.com/${kind}/${value}`
+  if (!rpcUrl || /devnet/i.test(rpcUrl)) return `${base}?cluster=devnet`
+  if (/testnet/i.test(rpcUrl)) return `${base}?cluster=testnet`
+  if (/mainnet/i.test(rpcUrl)) return base
+  return `${base}?cluster=custom&customUrl=${encodeURIComponent(rpcUrl)}`
+}
+
+export function explorerTxUrl(signature: string, rpcUrl?: string) {
+  return explorerUrl('tx', signature, rpcUrl)
 }
