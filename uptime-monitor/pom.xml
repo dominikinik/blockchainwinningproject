@@ -12,7 +12,7 @@
 	<artifactId>uptime-monitor</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name>uptime-monitor</name>
-	<description>Tracks the health of subscribed services and publishes their downtime on chain</description>
+	<description>Relays a provider's health to the uptime_deal program and settles its deals as their oracle</description>
 	<url/>
 	<licenses>
 		<license/>

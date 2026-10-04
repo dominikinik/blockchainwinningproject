@@ -9,28 +9,26 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.context.ApplicationContext;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
 
+import com.example.monitor.application.HealthRelay;
 import com.example.monitor.application.DealService;
-import com.example.monitor.application.TrackingService;
-import com.example.monitor.domain.DowntimePublisher;
-import com.example.monitor.domain.ServiceId;
+import com.example.monitor.domain.deal.DealChain;
 import com.example.monitor.domain.HealthProbe;
 import com.example.monitor.infrastructure.probe.HttpHealthProbe;
 import com.example.monitor.infrastructure.scheduling.HealthCheckScheduler;
-import com.example.monitor.infrastructure.solana.LoggingDowntimePublisher;
 import com.example.monitor.infrastructure.solana.OracleKey;
 import com.example.monitor.infrastructure.solana.SolanaRpc;
 
 /**
- * With the blockchain off, reports are only logged, no Solana beans or deal oracle exist and /api/deals answers
- * 503; the schedulers are on, and the configured default service is tracked from startup.
+ * With the blockchain off, no Solana beans or deal oracle exist, every /api/deals endpoint answers 503 and the relay
+ * only probes and records;
+ * the real probe and the scheduler are wired. The provider URL points at a closed port, so a relay is a fast failure.
  */
 @SpringBootTest(properties = { "monitor.blockchain.enabled=false", "monitor.scheduler.enabled=true",
-		"monitor.check-interval-ms=600000", "monitor.default-service.id=00000000-0000-0000-0000-000000000042",
-		"monitor.default-service.health-url=http://127.0.0.1:9/api/health" })
+		"monitor.check-interval-ms=600000", "monitor.health-url=http://127.0.0.1:9/api/health" })
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class BlockchainDisabledTests {
@@ -42,24 +40,27 @@ class BlockchainDisabledTests {
 	MockMvc mvc;
 
 	@Autowired
-	TrackingService tracking;
+	HealthRelay relay;
 
 	@Test
-	void theDealOracleIsOffAndTheDefaultServiceIsTracked() throws Exception {
+	void noChainOrOracleIsWiredAndTheDealEndpointsAreUnavailable() throws Exception {
+		assertThat(context.getBeansOfType(DealChain.class)).isEmpty();
+		assertThat(context.getBeansOfType(SolanaRpc.class)).isEmpty();
+		assertThat(context.getBeansOfType(OracleKey.class)).isEmpty();
 		assertThat(context.getBeansOfType(DealService.class)).isEmpty();
 		mvc.perform(get("/api/deals/config")).andExpect(status().isServiceUnavailable());
 		mvc.perform(get("/api/deals")).andExpect(status().isServiceUnavailable());
-		assertThat(tracking.isActive(ServiceId.of("00000000-0000-0000-0000-000000000042"))).isTrue();
-		mvc.perform(get("/api/uptime")).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(300));
 	}
 
 	@Test
-	void usesTheLoggingPublisherAndTheRealProbeAndScheduler() {
-		assertThat(context.getBean(DowntimePublisher.class)).isInstanceOf(LoggingDowntimePublisher.class);
-		assertThat(context.getBeansOfType(SolanaRpc.class)).isEmpty();
-		assertThat(context.getBeansOfType(OracleKey.class)).isEmpty();
+	void theRelayStillProbesAndRecordsWithTheRealProbeAndScheduler() throws Exception {
 		assertThat(context.getBean(HealthProbe.class)).isInstanceOf(HttpHealthProbe.class);
 		assertThat(context.getBean(HealthCheckScheduler.class)).isNotNull();
+
+		HealthRelay.Relay result = relay.relay();
+
+		assertThat(result.up()).isFalse();
+		mvc.perform(get("/api/uptime")).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(300));
 	}
 
 }

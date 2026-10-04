@@ -10,72 +10,64 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import com.example.monitor.application.UptimeHistory.Point;
-import com.example.monitor.domain.ServiceId;
-import com.example.monitor.domain.TrackingEvent;
-import com.example.monitor.domain.TrackingEvent.Downtime;
-import com.example.monitor.domain.TrackingEvent.InternalErrorHappened;
-import com.example.monitor.domain.TrackingEvent.TrackingFinished;
-import com.example.monitor.domain.TrackingEvent.TrackingStarted;
-import com.example.monitor.support.InMemoryTrackingEventStore;
 import com.example.monitor.support.MutableClock;
 
 class UptimeHistoryTest {
 
-	static final Instant T0 = Instant.parse("2026-10-04T12:00:00Z");
+	private static final Instant T0 = Instant.parse("2026-10-04T12:00:00Z");
 
-	final ServiceId s = ServiceId.newId();
+	private final MutableClock clock = new MutableClock(T0);
 
-	final InMemoryTrackingEventStore events = new InMemoryTrackingEventStore();
-
-	final MutableClock clock = new MutableClock(T0.plusSeconds(9).plusMillis(500));
-
-	final UptimeHistory history = new UptimeHistory(events, clock, 5, 60);
+	private final UptimeHistory history = new UptimeHistory(clock, Duration.ofSeconds(2), 5, 60);
 
 	@Test
-	void trackedSecondsAreUpAndDowntimeMarksOneIntervalFromItsTime() {
-		append(new TrackingStarted(s, "http://p", Duration.ofSeconds(2), T0.minusSeconds(10)),
-				new Downtime(s, 404, "", T0.plusSeconds(3)),
-				new InternalErrorHappened(s, 500, "", T0.plusSeconds(6)));
-
-		assertThat(downs(history.range(s, T0, T0.plusSeconds(7)))).containsExactly(false, false, false, true, true,
-				false, false, false);
+	void everySecondIsDownBeforeTheFirstResult() {
+		assertThat(history.range(T0, T0.plusSeconds(3))).hasSize(4).allMatch(Point::down);
 	}
 
 	@Test
-	void untrackedSecondsAreDown() {
-		append(new TrackingStarted(s, "http://p", Duration.ofSeconds(2), T0.plusMillis(2500)),
-				new TrackingFinished(s, T0.plusSeconds(5)));
+	void upFromTheFirstResultAndDownForTheIntervalOfEachDownResult() {
+		history.record(T0.plusSeconds(2), true);
+		history.record(T0.plusSeconds(4), false);
+		history.record(T0.plusSeconds(6), true);
 
-		assertThat(downs(history.range(s, T0, T0.plusSeconds(6)))).containsExactly(true, true, true, false, false,
-				true, true);
+		assertThat(downs(history.range(T0, T0.plusSeconds(9))))
+			.containsExactly(true, true, false, false, true, true, false, false, false, false);
 	}
 
 	@Test
-	void aServiceWithoutEventsIsAllDown() {
-		assertThat(downs(history.range(ServiceId.newId(), T0, T0.plusSeconds(2)))).containsExactly(true, true, true);
+	void aDownResultOffTheSecondMarksEverySecondItTouches() {
+		history.record(T0, true);
+		history.record(T0.plusMillis(1_500), false);
+
+		assertThat(downs(history.range(T0, T0.plusSeconds(4)))).containsExactly(false, true, true, true, false);
 	}
 
 	@Test
-	void defaultsToTheLastSecondsUntilNowTruncated() {
-		append(new TrackingStarted(s, "http://p", Duration.ofSeconds(2), T0.minusSeconds(10)));
-		List<Point> points = history.range(s, null, null);
-		assertThat(points).hasSize(5);
-		assertThat(points.getFirst().time()).isEqualTo(T0.plusSeconds(5));
-		assertThat(points.getLast().time()).isEqualTo(T0.plusSeconds(9));
-		assertThat(downs(points)).containsOnly(false);
+	void defaultsToTheLastSecondsEndingNow() {
+		clock.set(T0.plusMillis(10_700));
+		List<Point> points = history.range(null, null);
+
+		assertThat(points).extracting(Point::time)
+			.containsExactly(T0.plusSeconds(6), T0.plusSeconds(7), T0.plusSeconds(8), T0.plusSeconds(9),
+					T0.plusSeconds(10));
 	}
 
 	@Test
-	void invalidRangesAreRejected() {
-		assertThatIllegalArgumentException().isThrownBy(() -> history.range(s, T0.plusSeconds(1), T0))
-			.withMessageContaining("must not be after");
-		assertThatIllegalArgumentException().isThrownBy(() -> history.range(s, T0, T0.plusSeconds(60)))
-			.withMessageContaining("exceeds maximum of 60s");
-		assertThat(history.range(s, T0, T0.plusSeconds(59))).hasSize(60);
+	void rejectsReversedOrTooLongRanges() {
+		assertThatIllegalArgumentException().isThrownBy(() -> history.range(T0.plusSeconds(1), T0));
+		assertThatIllegalArgumentException().isThrownBy(() -> history.range(T0, T0.plusSeconds(60)))
+			.withMessageContaining("exceeds maximum");
+		assertThat(history.range(T0, T0.plusSeconds(59))).hasSize(60);
 	}
 
-	private void append(TrackingEvent... list) {
-		events.append(s, 0, List.of(list));
+	@Test
+	void forgetsDownResultsOlderThanTheLongestRange() {
+		history.record(T0, false);
+		history.record(T0.plusSeconds(200), true);
+
+		// The DOWN at T0 was dropped, so the first-result rule alone decides: up from T0.
+		assertThat(history.range(T0, T0.plusSeconds(1))).noneMatch(Point::down);
 	}
 
 	private static List<Boolean> downs(List<Point> points) {

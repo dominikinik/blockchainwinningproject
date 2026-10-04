@@ -4,22 +4,22 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import com.example.monitor.application.TrackingService;
+import com.example.monitor.application.HealthRelay;
 
-/** Calls every tracked service's health endpoint every {@code monitor.check-interval-ms}. */
+/** Relays the provider's health to the chain every {@code monitor.check-interval-ms}. */
 @Component
 @ConditionalOnProperty(name = "monitor.scheduler.enabled", havingValue = "true", matchIfMissing = true)
 public class HealthCheckScheduler {
 
-	private final TrackingService tracking;
+	private final HealthRelay relay;
 
-	public HealthCheckScheduler(TrackingService tracking) {
-		this.tracking = tracking;
+	public HealthCheckScheduler(HealthRelay relay) {
+		this.relay = relay;
 	}
 
 	@Scheduled(fixedRateString = "${monitor.check-interval-ms}", initialDelayString = "${monitor.check-interval-ms}")
-	public void checkAll() {
-		tracking.checkActive();
+	public void relay() {
+		relay.relay();
 	}
 
 }

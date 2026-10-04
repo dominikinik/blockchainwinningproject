@@ -44,6 +44,6 @@ until curl -s -o /dev/null "http://localhost:$PROVIDER_PORT/api/application/stat
 done
 
 # Run the monitor in the background and wait, so the trap can stop both services on SIGTERM.
-(cd uptime-monitor && exec mvn -q spring-boot:run -Dspring-boot.run.arguments="--server.port=$MONITOR_PORT --monitor.blockchain.rpc-url=$RPC_URL --monitor.blockchain.oracle-keypair= --spring.datasource.url=jdbc:postgresql://localhost:5433/monitor_test --monitor.default-service.health-url=http://localhost:$PROVIDER_PORT/api/health --monitor.check-interval-ms=2000") &
+(cd uptime-monitor && exec mvn -q spring-boot:run -Dspring-boot.run.arguments="--server.port=$MONITOR_PORT --monitor.blockchain.rpc-url=$RPC_URL --monitor.blockchain.oracle-keypair= --spring.datasource.url=jdbc:postgresql://localhost:5433/monitor_test --monitor.health-url=http://localhost:$PROVIDER_PORT/api/health --monitor.check-interval-ms=2000") &
 MONITOR_PID=$!
 wait "$MONITOR_PID"

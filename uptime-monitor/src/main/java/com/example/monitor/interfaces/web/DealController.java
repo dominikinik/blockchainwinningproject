@@ -42,13 +42,13 @@ public class DealController {
 
 	@PostMapping
 	@ResponseStatus(HttpStatus.CREATED)
-	@Operation(summary = "Settle a deal from a tracked service's events",
+	@Operation(summary = "Settle a deal from the relayed service's health results",
 			description = "The deal must exist on chain and name this monitor's oracle. A proposal is tracked as "
 					+ "PROPOSED until its recipient accepts it on chain; the window then runs from the acceptance, read "
-					+ "from the deal account. Each health check is persisted and its UP/DOWN observation is sent directly to the chain. "
+					+ "from the deal account. Each health check's UP/DOWN observation is sent directly to the chain. "
 					+ "The contract decides the payout from its counters; anyone may trigger settlement after expiry. "
 					+ "Deal rounds must match this monitor's sampling interval. Without "
-					+ "serviceId the deal is measured against the default service. 400 for an invalid request or deal, "
+					+ "serviceId the deal is measured against the relayed service (the only one accepted). 400 for an invalid request or deal, "
 					+ "409 if already registered, 502 if the RPC node fails, 503 if the blockchain is disabled.")
 	public DealResponse register(@RequestBody RegisterRequest request) {
 		ServiceId service = request.serviceId() == null ? null : new ServiceId(request.serviceId());
@@ -78,7 +78,7 @@ public class DealController {
 
 	/**
 	 * @param address   Base58 address of the on-chain deal
-	 * @param serviceId the tracked service the deal pays for; omit for the default service
+	 * @param serviceId the service the deal pays for; omit it, or send the relayed service's id
 	 */
 	public record RegisterRequest(@Schema(example = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin") String address,
 			UUID serviceId) {

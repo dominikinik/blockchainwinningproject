@@ -1,21 +1,19 @@
 package com.example.monitor.application;
 
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.example.monitor.domain.HealthCheckResult;
+import com.example.monitor.domain.HealthProbe;
 import com.example.monitor.domain.ServiceId;
-import com.example.monitor.domain.TrackingEvent;
-import com.example.monitor.domain.TrackingEvent.Downtime;
-import com.example.monitor.domain.TrackingEvent.HealthCheckSucceeded;
-import com.example.monitor.domain.TrackingEvent.InternalErrorHappened;
-import com.example.monitor.domain.TrackingEventStore;
 import com.example.monitor.domain.deal.DealAlreadyRegisteredException;
 import com.example.monitor.domain.deal.DealChain;
 import com.example.monitor.domain.deal.DealChain.ChainDeal;
@@ -27,35 +25,36 @@ import com.example.monitor.domain.deal.UptimeDealRepository;
 
 /**
  * The monitor as the oracle of the {@code uptime_deal} program. A payer proposes a deal on chain naming this
- * monitor's key as its oracle and registers it here, usually while it is still a proposal, linked to a tracked
- * service. {@link #settleDue} re-reads a proposal until the recipient accepts it (or a party cancels it); the
- * window comes from the accepted deal account ({@code starts_at}, set by the chain at acceptance), never from the
- * caller. Health-check results are persisted and reported to the program as they are produced:
+ * monitor's key as its oracle and registers it here, usually while it is still a proposal, linked to the provider
+ * whose health endpoint it checks. The window comes from the accepted deal account ({@code starts_at}, set by the
+ * chain at acceptance), never from the caller. {@link #settleDue} runs every few hundred milliseconds and:
  * <ul>
- * <li>{@link #onTrackingEvent}: sends the UP/DOWN result for the completed round; no historical database query is
- * used to reconstruct observations.</li>
- * <li>{@link #settleDue}: follows proposal acceptance, asks the program to settle after expiry or proven breach, and
- * confirms sent transactions.</li>
+ * <li>re-reads a proposal until the recipient accepts it (or a party cancels it);</li>
+ * <li>runs each accepted deal's heartbeat at the deal's own on-chain round interval: once a round ends, it calls the
+ * provider's health endpoint and sends the UP/DOWN result as that round's observation (one probe per tick serves every
+ * deal whose round ended in it); a failed send is retried from memory;</li>
+ * <li>asks the program to settle after expiry or proven breach, and confirms sent transactions.</li>
  * </ul>
- * Methods are synchronized: deals change from the check threads, the scheduler and HTTP requests.
+ * Methods are synchronized: deals change from the scheduler and HTTP requests.
  */
-public class DealService implements TrackingEventListener {
+public class DealService {
 
 	private static final Logger log = LoggerFactory.getLogger(DealService.class);
 
 	/**
-	 * @param defaultServiceId      the service a deal is linked to when registered without one; may be {@code null}
+	 * @param serviceId             the provider this monitor checks; every deal is linked to it
+	 * @param healthUrl             the provider's health endpoint, called once per round of each deal
 	 * @param maxDurationSeconds    longest on-chain window accepted
 	 * @param settleGraceSeconds    how long after a window ends before it is settled, for the last check to land
 	 * @param maxSettleAttempts     failed sends after which a deal is {@code FAILED}
 	 * @param confirmTimeoutSeconds how long to wait for a sent settlement before sending it again
-	 * @param monitorCheckIntervalSeconds the sampling interval; deal rounds must use this same interval
+	 * @param defaultCheckIntervalSeconds the round length suggested to wallets; any interval the program accepts works
 	 */
-	public record Settings(ServiceId defaultServiceId, long maxDurationSeconds, long settleGraceSeconds,
-			int maxSettleAttempts, long confirmTimeoutSeconds, long monitorCheckIntervalSeconds) {
+	public record Settings(ServiceId serviceId, String healthUrl, long maxDurationSeconds, long settleGraceSeconds,
+			int maxSettleAttempts, long confirmTimeoutSeconds, long defaultCheckIntervalSeconds) {
 	}
 
-	/** Where a wallet must create a deal for this oracle to settle it. */
+	/** Where a wallet must create a deal for this oracle to settle it, and a suggested round length. */
 	public record Config(String programId, String oracle, String rpcUrl, long checkIntervalSeconds) {
 	}
 
@@ -63,7 +62,7 @@ public class DealService implements TrackingEventListener {
 
 	private final DealChain chain;
 
-	private final TrackingEventStore events;
+	private final HealthProbe probe;
 
 	private final Clock clock;
 
@@ -71,26 +70,28 @@ public class DealService implements TrackingEventListener {
 
 	private final List<PendingObservation> pendingObservations = new ArrayList<>();
 
-	private record PendingObservation(ServiceId serviceId, Instant observedAt, boolean up) {
+	/** The last round whose heartbeat ran, per deal; a restart starts with the next round that ends. */
+	private final Map<String, Integer> lastHeartbeat = new HashMap<>();
+
+	private record PendingObservation(String address, int round, boolean up) {
 	}
 
-	public DealService(UptimeDealRepository deals, DealChain chain, TrackingEventStore events, Clock clock,
-			Settings settings) {
+	public DealService(UptimeDealRepository deals, DealChain chain, HealthProbe probe, Clock clock, Settings settings) {
 		this.deals = deals;
 		this.chain = chain;
-		this.events = events;
+		this.probe = probe;
 		this.clock = clock;
 		this.settings = settings;
 	}
 
 	public Config config() {
-		return new Config(chain.programId(), chain.oracleAddress(), chain.rpcUrl(), settings.monitorCheckIntervalSeconds());
+		return new Config(chain.programId(), chain.oracleAddress(), chain.rpcUrl(), settings.defaultCheckIntervalSeconds());
 	}
 
 	/**
-	 * Starts settling an on-chain deal from a tracked service's events.
+	 * Starts checking and settling an on-chain deal, at the deal's own round interval.
 	 *
-	 * @param serviceId the service whose uptime the deal pays for, or {@code null} for the default service
+	 * @param serviceId the service whose uptime the deal pays for, or {@code null} for the checked provider
 	 * @return the deal: {@code PROPOSED} with no window while the recipient hasn't accepted, or {@code ACTIVE}
 	 * @throws IllegalArgumentException       if the address or service is missing or invalid, the account isn't a
 	 *                                        deal of the program, names another oracle, or has a duration of 0 or
@@ -101,12 +102,10 @@ public class DealService implements TrackingEventListener {
 		if (address == null || address.isBlank()) {
 			throw new IllegalArgumentException("address is required");
 		}
-		ServiceId service = serviceId != null ? serviceId : settings.defaultServiceId();
-		if (service == null) {
-			throw new IllegalArgumentException("serviceId is required: no default service is configured");
-		}
-		if (events.load(service).isEmpty()) {
-			throw new IllegalArgumentException("Service " + service + " is not tracked by this monitor");
+		ServiceId service = serviceId != null ? serviceId : settings.serviceId();
+		if (!service.equals(settings.serviceId())) {
+			throw new IllegalArgumentException(
+					"Service " + service + " is not relayed by this monitor, which relays " + settings.serviceId());
 		}
 		if (deals.find(address).isPresent()) {
 			throw new DealAlreadyRegisteredException(address);
@@ -122,10 +121,6 @@ public class DealService implements TrackingEventListener {
 		if (deal.durationSeconds() < 1 || deal.durationSeconds() > settings.maxDurationSeconds()) {
 			throw new IllegalArgumentException("Deal's on-chain duration of " + deal.durationSeconds()
 					+ " seconds must be between 1 and " + settings.maxDurationSeconds());
-		}
-		if (deal.checkIntervalSeconds() != settings.monitorCheckIntervalSeconds()) {
-			throw new IllegalArgumentException("Deal round interval of " + deal.checkIntervalSeconds()
-					+ " seconds must match this monitor's " + settings.monitorCheckIntervalSeconds() + " second check interval");
 		}
 		chain.ensureOracleFunded();
 		UptimeDeal tracked = UptimeDeal.register(address, service, deal.payer(), deal.recipient(),
@@ -152,30 +147,15 @@ public class DealService implements TrackingEventListener {
 		return deals.findAll();
 	}
 
-	/** Tracking events are persisted before notification; each check is reported directly to the chain. */
-	@Override
-	public synchronized void onTrackingEvent(TrackingEvent event) {
-		Boolean up = switch (event) {
-			case HealthCheckSucceeded ignored -> true;
-			case Downtime ignored -> false;
-			case InternalErrorHappened ignored -> false;
-			default -> null;
-		};
-		if (up == null) {
-			return;
-		}
-		pendingObservations.add(new PendingObservation(event.serviceId(), event.occurredAt(), up));
-		flushObservations();
-	}
-
 	/**
 	 * Advances every unfinished deal: picks up the acceptance (or cancellation) of a proposal, and for an active
-	 * deal decides it when its window is over, sends a decided settlement, or checks on a sent one. One deal's
-	 * failure never stops the others.
+	 * deal runs its heartbeat when a round has ended, decides it when its window is over, sends a decided settlement,
+	 * or checks on a sent one. One deal's failure never stops the others.
 	 */
 	public synchronized void settleDue() {
 		Instant now = clock.instant();
-		flushObservations();
+		retryObservations(now);
+		Heartbeat heartbeat = new Heartbeat();
 		for (UptimeDeal deal : deals.findUnfinished()) {
 			if (deal.status() == UptimeDeal.Status.PROPOSED) {
 				UptimeDeal next = checkAccepted(deal);
@@ -195,7 +175,10 @@ public class DealService implements TrackingEventListener {
 						next = closedOnChain(deal);
 					}
 					else {
-							if (account.accepted() && (account.canSettleEarly()
+							if (account.accepted()) {
+							beat(deal, account, now, heartbeat);
+						}
+						if (account.accepted() && (account.canSettleEarly()
 									|| !now.isBefore(deal.endsAt().plusSeconds(Math.max(settings.settleGraceSeconds(), 10))))) {
 								next = send(deal, account, now);
 							}
@@ -212,34 +195,69 @@ public class DealService implements TrackingEventListener {
 		}
 	}
 
-	/** Retries live observations from memory; history rows are never consulted to reconstruct a round. */
-	private void flushObservations() {
-		for (PendingObservation observation : List.copyOf(pendingObservations)) {
-			boolean retry = false;
-			for (UptimeDeal tracked : deals.findActive(observation.serviceId())) {
-				try {
-					ChainDeal account = chain.readDeal(tracked.address());
-					if (account == null || !account.accepted()) {
-						continue;
-					}
-					long elapsedMillis = Duration.between(account.startsAt(), observation.observedAt()).toMillis();
-					long intervalMillis = account.checkIntervalSeconds() * 1_000;
-					long round = Math.floorDiv(elapsedMillis, intervalMillis) - 1;
-					if (round < 0 || round >= account.totalRounds() || account.isRecorded((int) round)) {
-						continue;
-					}
-					chain.recordObservation(tracked.address(), account, (int) round, observation.up());
-					log.info("Recorded deal {} round {} as {}", tracked.address(), round,
-							observation.up() ? "UP" : "DOWN");
-				}
-				catch (RuntimeException e) {
-					retry = true;
-					log.warn("Could not report {} observation for deal {}: {}", observation.up() ? "UP" : "DOWN",
-							tracked.address(), e.getMessage());
+	/** One provider probe per tick, made only when some deal's round has ended, and shared by all of them. */
+	private final class Heartbeat {
+
+		private Boolean up;
+
+		boolean up() {
+			if (up == null) {
+				HealthCheckResult result = probe.check(settings.healthUrl());
+				up = result.outcome() == HealthCheckResult.Outcome.HEALTHY;
+				if (!up) {
+					log.info("{} is DOWN: {}", settings.healthUrl(), result.detail());
 				}
 			}
-			if (!retry) {
+			return up;
+		}
+
+	}
+
+	/**
+	 * Runs a deal's heartbeat when a new round has ended since the last one: probes the provider and records the result
+	 * as that round's observation. Rounds missed while the monitor was down aren't backfilled; the program counts them
+	 * as down.
+	 */
+	private void beat(UptimeDeal deal, ChainDeal account, Instant now, Heartbeat heartbeat) {
+		int round = account.roundEndedBy(now);
+		Integer last = lastHeartbeat.get(deal.address());
+		if (round < 0 || account.isRecorded(round) || (last != null && round <= last)) {
+			return;
+		}
+		lastHeartbeat.put(deal.address(), round);
+		boolean up = heartbeat.up();
+		try {
+			chain.recordObservation(deal.address(), account, round, up);
+			log.info("Recorded deal {} round {} as {}", deal.address(), round, up ? "UP" : "DOWN");
+		}
+		catch (RuntimeException e) {
+			log.warn("Could not report {} observation for deal {} round {}: {}", up ? "UP" : "DOWN", deal.address(),
+					round, e.getMessage());
+			pendingObservations.add(new PendingObservation(deal.address(), round, up));
+		}
+	}
+
+	/**
+	 * Resends observations whose first send failed, until one lands, the round is recorded anyway, or the deal stops
+	 * accepting observations (closed, or past its window and the program's grace).
+	 */
+	private void retryObservations(Instant now) {
+		for (PendingObservation observation : List.copyOf(pendingObservations)) {
+			try {
+				ChainDeal account = chain.readDeal(observation.address());
+				if (account == null || !account.accepted() || account.isRecorded(observation.round())
+						|| !now.isBefore(account.startsAt().plusSeconds(account.durationSeconds() + 10))) {
+					pendingObservations.remove(observation);
+					continue;
+				}
+				chain.recordObservation(observation.address(), account, observation.round(), observation.up());
 				pendingObservations.remove(observation);
+				log.info("Recorded deal {} round {} as {} on retry", observation.address(), observation.round(),
+						observation.up() ? "UP" : "DOWN");
+			}
+			catch (RuntimeException e) {
+				log.warn("Retrying the observation of deal {} round {} failed: {}", observation.address(),
+						observation.round(), e.getMessage());
 			}
 		}
 	}

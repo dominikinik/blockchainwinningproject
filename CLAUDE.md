@@ -24,8 +24,8 @@ This repository is a monorepo that will hold multiple independent modules, each 
 ## Modules
 
 - `uptime-service/` (Java 21, Spring Boot): a health **provider** only. It exposes health endpoints (including `/api/health`), start/stop, and Swagger; no database. See [uptime-service/CLAUDE.md](uptime-service/CLAUDE.md).
-- `uptime-monitor/` (Java 21, Spring Boot, DDD): the uptime **tracker** and `uptime-deal` oracle. It subscribes to a provider's health endpoint, checks it every 2 s, records `TrackingStarted` / `Downtime` / `InternalErrorHappened` / `TrackingFinished` events, aggregates uptime history, publishes it to Solana, and serves `/api/uptime` and `/api/deals` endpoints. It stores events and deals in `monitor-db`. See [uptime-monitor/CLAUDE.md](uptime-monitor/CLAUDE.md).
-- `monitor-db/` (PostgreSQL 17, Docker Compose, port 5433): the event store database for `uptime-monitor`, which owns its schema and data. See [monitor-db/CLAUDE.md](monitor-db/CLAUDE.md).
+- `uptime-monitor/` (Java 21, Spring Boot): the health **proxy** and `uptime-deal` oracle. For each registered deal it calls the provider's `/api/health` once per round of the deal's own on-chain interval and reports the result as that round's UP/DOWN `record_observation`. It registers deals (`/api/deals`), follows their acceptance, settles them, and serves `/api/deals` and an in-memory `/api/uptime`. It stores deals in `monitor-db`. See [uptime-monitor/CLAUDE.md](uptime-monitor/CLAUDE.md).
+- `monitor-db/` (PostgreSQL 17, Docker Compose, port 5433): the database of `uptime-monitor`'s registered deals; the monitor-db module owns its schema and data. See [monitor-db/CLAUDE.md](monitor-db/CLAUDE.md).
 - `frontend/` (React, TypeScript, Vite): the SLAna dashboard and Solana wallet UI. See [frontend/CLAUDE.md](frontend/CLAUDE.md).
 - `uptime-deal/` (Rust, Anchor 1.1.2): a Solana program for an uptime agreement. The payer proposes it with a payment, and the provider accepts it with a guarantee, which starts the window. When reported uptime is above 99% the provider gets both deposits; otherwise the payer does. See [uptime-deal/CLAUDE.md](uptime-deal/CLAUDE.md).
 

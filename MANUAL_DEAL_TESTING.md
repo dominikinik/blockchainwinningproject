@@ -59,7 +59,7 @@ cd uptime-service
 mvn spring-boot:run
 ```
 
-Terminal 4, start the monitor (the deal oracle) against that validator. It subscribes the provider on startup:
+Terminal 4, start the monitor (the deal oracle) against that validator. It calls the provider's `/api/health` once per round of each deal's check interval:
 
 ```sh
 cd uptime-monitor
@@ -120,7 +120,7 @@ The program's rule is strictly **greater than 99%**. For a 10-second deal, all 1
 ## Test a refund after an outage
 
 1. Create a second 10-second deal using the same funded payer and a different recipient address.
-2. As soon as the deal starts, click **Simulate outage**. Leave the service down for at least three seconds so the monitor's 2-second health check sees it.
+2. As soon as the deal starts, click **Simulate outage**. Leave the service down for at least three seconds so the monitor's once-per-round health check (every 2 s with the default interval) sees it.
 3. Click **Restore service**. The monitor reports each failed/healthy probe directly as DOWN/UP for its completed round. Once the on-chain counters prove the 99% threshold is unreachable, the monitor can submit settlement early; otherwise anyone can settle after expiry.
 
 Expected result: **Refunded to payer**; the recipient receives no SOL. At or below 99% uptime, the on-chain program closes the deal and returns the escrow to the payer. Transaction fees are still paid in local test SOL.
