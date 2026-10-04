@@ -28,6 +28,16 @@ public class HttpSolanaRpc implements SolanaRpc {
 	}
 
 	@Override
+	public AccountInfo getAccountInfo(String address) {
+		Map<?, ?> value = (Map<?, ?>) result("getAccountInfo",
+				List.of(address, Map.of("encoding", "base64", "commitment", "confirmed")), Map.class).get("value");
+		if (value == null) {
+			return null;
+		}
+		return accountInfo(value);
+	}
+
+	@Override
 	public List<ProgramAccount> getProgramAccounts(String programId, int offset, String bytes) {
 		List<?> entries = result("getProgramAccounts",
 				List.of(programId,
@@ -59,6 +69,41 @@ public class HttpSolanaRpc implements SolanaRpc {
 	public String sendTransaction(byte[] transaction) {
 		return result("sendTransaction", List.of(Base64.getEncoder().encodeToString(transaction),
 				Map.of("encoding", "base64", "preflightCommitment", "confirmed")), String.class);
+	}
+
+	@Override
+	public SignatureStatus getSignatureStatus(String signature) {
+		Map<?, ?> response = result("getSignatureStatuses", List.of(List.of(signature)), Map.class);
+		Object status = ((List<?>) response.get("value")).get(0);
+		if (!(status instanceof Map<?, ?> s)) {
+			return null;
+		}
+		Object level = s.get("confirmationStatus");
+		Object err = s.get("err");
+		return new SignatureStatus("confirmed".equals(level) || "finalized".equals(level),
+				err == null ? null : err.toString());
+	}
+
+	@Override
+	public List<String> getTransactionLogs(String signature) {
+		Map<?, ?> tx = result("getTransaction",
+				List.of(signature, Map.of("encoding", "json", "commitment", "confirmed",
+						"maxSupportedTransactionVersion", 0)),
+				Map.class);
+		if (tx == null || !(tx.get("meta") instanceof Map<?, ?> meta)) {
+			return null;
+		}
+		return ((List<?>) meta.get("logMessages")).stream().map(Object::toString).toList();
+	}
+
+	@Override
+	public List<String> getSignaturesForAddress(String address, int limit) {
+		List<?> entries = result("getSignaturesForAddress",
+				List.of(address, Map.of("limit", limit, "commitment", "confirmed")), List.class);
+		if (entries == null) {
+			return List.of();
+		}
+		return entries.stream().map(e -> (String) ((Map<?, ?>) e).get("signature")).toList();
 	}
 
 	@Override

@@ -4,7 +4,7 @@ import { PROVIDER_URL, RPC_URL } from './env'
 
 const connection = new Connection(RPC_URL, 'confirmed')
 const ESCROW_SOL = 0.5
-/** Window plus the program's 10 s observation grace, plus confirmations; the test then settles by hand. */
+/** Window plus the program's 10 s observation grace plus the service's settle grace and confirmations. */
 const SETTLE_TIMEOUT_MS = 60_000
 
 /** Opens the deal page, connects a fresh burner wallet and funds it from the validator faucet. */
@@ -20,7 +20,7 @@ async function connectFundedWallet(page: Page): Promise<string> {
 
 /**
  * Creates a 10-second deal of five 2-second rounds to a new wallet. The threshold is 80%, so a round lost
- * to startup latency at the start can't flip the outcome, while a multi-second outage does.
+ * to registration latency at the start can't flip the outcome, while a multi-second outage does.
  */
 async function createTenSecondDeal(page: Page): Promise<string> {
   const recipient = Keypair.generate().publicKey.toBase58()
@@ -33,12 +33,6 @@ async function createTenSecondDeal(page: Page): Promise<string> {
   await page.getByRole('button', { name: 'Create deal' }).click()
   await expect(page.getByTestId('deal-verdict')).toContainText('Monitoring', { timeout: 20_000 })
   return recipient
-}
-
-/** Waits until the page offers settlement, then settles with the connected wallet (the monitor never settles). */
-async function settleWhenReady(page: Page): Promise<void> {
-  await expect(page.getByTestId('deal-verdict')).toHaveText('Ready to settle on chain', { timeout: SETTLE_TIMEOUT_MS })
-  await page.getByRole('button', { name: 'Settle now' }).click()
 }
 
 /** Reads the UP count from the on-chain counters line ("9 up · 1 down · …"). */
@@ -58,8 +52,7 @@ test('the program pays the recipient when on-chain observations meet the thresho
   // Observations land on chain while the window runs: the counters come from the deal account.
   await expect.poll(() => upRounds(page), { timeout: 20_000 }).toBeGreaterThan(0)
 
-  await settleWhenReady(page)
-  await expect(page.getByTestId('deal-verdict')).toHaveText('SLA met · escrow paid to recipient', { timeout: 20_000 })
+  await expect(page.getByTestId('deal-verdict')).toHaveText('SLA met · escrow paid to recipient', { timeout: SETTLE_TIMEOUT_MS })
   expect(await upRounds(page)).toBeGreaterThanOrEqual(4)
   await expect(page.getByTestId('recipient-balance')).toHaveText(`${ESCROW_SOL} SOL`)
 
@@ -81,8 +74,7 @@ test('the program pays the payer when an outage drops uptime below the threshold
   await page.getByRole('button', { name: 'Restore service' }).click()
   await expect(page.getByTestId('service-state')).toHaveText('UP')
 
-  await settleWhenReady(page)
-  await expect(page.getByTestId('deal-verdict')).toHaveText('SLA breached · escrow paid to payer', { timeout: 20_000 })
+  await expect(page.getByTestId('deal-verdict')).toHaveText('SLA breached · escrow paid to payer', { timeout: SETTLE_TIMEOUT_MS })
   await expect(page.getByTestId('deal-counters')).not.toContainText(' 0 down')
   expect(await connection.getBalance(new PublicKey(recipient))).toBe(0)
   // Only fees left the payer: the escrow and the deal rent came back.

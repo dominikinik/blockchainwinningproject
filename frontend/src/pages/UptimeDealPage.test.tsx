@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { PublicKey } from '@solana/web3.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWallet } from '@solana/wallet-adapter-react'
-import { dealApi } from '../services/deal/dealApi'
+import { dealApi, type TrackedDeal } from '../services/deal/dealApi'
 import type { OnChainDeal } from '../services/deal/dealProgram'
 import { acceptDeal, cancelDeal, openDeal, readDeal, readOutcome, requestAirdrop, settleDeal } from '../services/deal/dealService'
 import { uptimeService } from '../services/uptime/uptimeService'
@@ -18,7 +18,7 @@ const sendTransaction = vi.fn()
 
 vi.mock('@solana/wallet-adapter-react', () => ({ useWallet: vi.fn(), useConnection: () => ({ connection }) }))
 vi.mock('@solana/wallet-adapter-react-ui', () => ({ WalletMultiButton: () => <button>Wallet</button> }))
-vi.mock('../services/deal/dealApi', () => ({ dealApi: { getConfig: vi.fn(), setServiceUp: vi.fn() } }))
+vi.mock('../services/deal/dealApi', () => ({ dealApi: { getConfig: vi.fn(), get: vi.fn(), setServiceUp: vi.fn() } }))
 vi.mock('../services/deal/dealService', () => ({
   openDeal: vi.fn(), requestAirdrop: vi.fn(), cancelDeal: vi.fn(), acceptDeal: vi.fn(), settleDeal: vi.fn(), readDeal: vi.fn(), readOutcome: vi.fn(),
 }))
@@ -31,6 +31,14 @@ vi.mock('../services/uptime/uptimeService', () => ({ uptimeService: { getState: 
 
 const config = { programId: 'EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r', oracle: ORACLE, rpcUrl: 'http://127.0.0.1:8899', checkIntervalSeconds: 2 }
 const nowSeconds = () => Math.floor(Date.now() / 1000)
+
+function trackedDeal(overrides: Partial<TrackedDeal> = {}): TrackedDeal {
+  return {
+    address: DEAL, payer: WALLET, recipient: PROVIDER, amountLamports: 500_000_000, providerStakeLamports: 0, durationSeconds: 10,
+    checkIntervalSeconds: 1, minUptimeBps: 9_900, totalRounds: 10, startsAt: new Date().toISOString(), endsAt: new Date(Date.now() + 10_000).toISOString(),
+    status: 'ACTIVE', upChecks: 0, downChecks: 0, observationsSent: 0, paidToRecipient: null, signature: null, attempts: 0, error: null, ...overrides,
+  }
+}
 
 function chainDeal(overrides: Partial<OnChainDeal> = {}): OnChainDeal {
   return {
@@ -49,8 +57,9 @@ describe('UptimeDealPage', () => {
     connect()
     getBalance.mockReset().mockImplementation(async (key: PublicKey) => key.toBase58() === WALLET ? 2_000_000_000 : 0)
     vi.mocked(dealApi.getConfig).mockReset().mockResolvedValue(config)
+    vi.mocked(dealApi.get).mockReset().mockResolvedValue(trackedDeal())
     vi.mocked(dealApi.setServiceUp).mockReset()
-    vi.mocked(openDeal).mockReset().mockResolvedValue(DEAL)
+    vi.mocked(openDeal).mockReset().mockResolvedValue(trackedDeal())
     vi.mocked(readDeal).mockReset().mockResolvedValue(chainDeal())
     vi.mocked(readOutcome).mockReset().mockResolvedValue(null)
     vi.mocked(cancelDeal).mockReset().mockResolvedValue()
@@ -102,6 +111,7 @@ describe('UptimeDealPage', () => {
       signature: '5vXy1234567890abcdefSIG',
       outcome: { cancelled: false, paidToRecipient: true, upChecks: 10, downChecks: 0, totalRounds: 10, minUptimeBps: 9_900, payoutLamports: 500_000_000n },
     })
+    vi.mocked(dealApi.get).mockResolvedValue(trackedDeal({ observationsSent: 3 }))
     getBalance.mockImplementation(async (key: PublicKey) => key.toBase58() === WALLET ? 1_499_995_000 : 500_000_000)
     await ready()
 
@@ -117,6 +127,7 @@ describe('UptimeDealPage', () => {
     expect(await screen.findByTestId('deal-verdict')).toHaveTextContent(/Monitoring · \d+s left/)
     expect(await screen.findByTestId('deal-counters')).toHaveTextContent('3 up · 0 down · 7 unobserved / 10 rounds')
     expect(screen.getByTestId('deal-projection')).toHaveTextContent('7 more UP rounds needed')
+    expect(await screen.findByTestId('observations-sent')).toHaveTextContent('3')
 
     expect(await screen.findByText('SLA met · escrow paid to recipient', {}, { timeout: 3000 })).toBeInTheDocument()
     expect(screen.getByTestId('deal-counters')).toHaveTextContent('10 up · 0 down · 0 unobserved / 10 rounds')

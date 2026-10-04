@@ -2,7 +2,7 @@ package com.example.monitor.infrastructure.solana;
 
 import java.util.List;
 
-/** The Solana JSON-RPC calls the proxy needs. All reads use {@code confirmed} commitment. */
+/** The Solana JSON-RPC calls the downtime publisher needs. All reads use {@code confirmed} commitment. */
 public interface SolanaRpc {
 
 	/**
@@ -14,6 +14,24 @@ public interface SolanaRpc {
 	 */
 	record AccountInfo(String owner, long lamports, byte[] data) {
 	}
+
+	/**
+	 * Where a sent transaction stands.
+	 *
+	 * @param confirmed whether it reached {@code confirmed} or {@code finalized}
+	 * @param error     the transaction error as text, or {@code null} if it succeeded
+	 */
+	record SignatureStatus(boolean confirmed, String error) {
+	}
+
+	/**
+	 * Reads an account.
+	 *
+	 * @param address the Base58 account address
+	 * @return the account, or {@code null} when it doesn't exist
+	 * @throws SolanaRpcException if the node can't be reached or returns an error
+	 */
+	AccountInfo getAccountInfo(String address);
 
 	/**
 	 * An account of a program, as listed by {@link #getProgramAccounts}.
@@ -51,6 +69,34 @@ public interface SolanaRpc {
 	 * @throws SolanaRpcException if the node rejects it, including a failed simulation
 	 */
 	String sendTransaction(byte[] transaction);
+
+	/**
+	 * Looks up a sent transaction.
+	 *
+	 * @param signature the Base58 transaction signature
+	 * @return its status, or {@code null} when the node hasn't seen it (yet)
+	 * @throws SolanaRpcException if the node can't be reached or returns an error
+	 */
+	SignatureStatus getSignatureStatus(String signature);
+
+	/**
+	 * Reads the program logs of a confirmed transaction.
+	 *
+	 * @param signature the Base58 transaction signature
+	 * @return the log lines, or {@code null} when the transaction isn't available yet
+	 * @throws SolanaRpcException if the node can't be reached or returns an error
+	 */
+	List<String> getTransactionLogs(String signature);
+
+	/**
+	 * Lists the recent transactions that touched an address.
+	 *
+	 * @param address the Base58 account address
+	 * @param limit   the most signatures to return
+	 * @return Base58 signatures, newest first; empty if there are none
+	 * @throws SolanaRpcException if the node can't be reached or returns an error
+	 */
+	List<String> getSignaturesForAddress(String address, int limit);
 
 	/**
 	 * Reads a balance.

@@ -2,8 +2,11 @@ package com.example.monitor.infrastructure.solana;
 
 import static com.example.monitor.support.DealFixtures.PROGRAM_ID;
 import static com.example.monitor.support.DealFixtures.deal;
+import static com.example.monitor.support.DealFixtures.dealCancelledLog;
+import static com.example.monitor.support.DealFixtures.dealSettledLog;
 import static com.example.monitor.support.DealFixtures.newAddress;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -19,9 +22,12 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import com.example.monitor.domain.DealChain.ActiveDeal;
+import com.example.monitor.domain.deal.DealChain.ChainDeal;
+import com.example.monitor.domain.deal.DealChain.Closure;
+import com.example.monitor.domain.deal.DealChain.FoundClosure;
+import com.example.monitor.domain.deal.DealChain.TxStatus;
 import com.example.monitor.infrastructure.solana.SolanaRpc.AccountInfo;
-import com.example.monitor.infrastructure.solana.SolanaRpc.ProgramAccount;
+import com.example.monitor.infrastructure.solana.SolanaRpc.SignatureStatus;
 import com.example.monitor.infrastructure.solana.SolanaRpc.SolanaRpcException;
 
 class SolanaDealChainTest {
@@ -36,6 +42,8 @@ class SolanaDealChainTest {
 
 	private final String recipient = newAddress();
 
+	private final String dealAddress = newAddress();
+
 	@Test
 	void describesWhereDealsMustBeCreated() {
 		assertThat(chain.programId()).isEqualTo(PROGRAM_ID);
@@ -44,43 +52,74 @@ class SolanaDealChainTest {
 	}
 
 	@Test
-	void listsOnlyAcceptedDealsThatNameThisOracle() {
-		byte[] active = deal(payer, recipient, oracle.address(), 1_790_000_000L).window(10, 2)
+	void readsDealAccountsOfTheProgram() {
+		byte[] data = deal(payer, recipient, oracle.address(), 1_790_000_000L).window(10, 2)
 			.recorded(new int[] { 0 }, true)
 			.data();
-		byte[] proposal = deal(payer, recipient, oracle.address(), 0).awaitingProvider(5).data();
-		byte[] foreign = deal(payer, recipient, newAddress(), 1_790_000_000L).data();
-		when(rpc.getProgramAccounts(PROGRAM_ID, DealProgram.ORACLE_OFFSET, oracle.address())).thenReturn(List.of(
-				account("Active", active), account("Proposal", proposal), account("Foreign", foreign),
-				account("Junk", new byte[] { 1, 2, 3 })));
+		when(rpc.getAccountInfo(dealAddress)).thenReturn(new AccountInfo(PROGRAM_ID, 1, data));
 
-		List<ActiveDeal> deals = chain.activeDeals();
+		ChainDeal deal = chain.readDeal(dealAddress);
 
-		assertThat(deals).hasSize(1);
-		ActiveDeal deal = deals.get(0);
-		assertThat(deal.address()).isEqualTo("Active");
+		assertThat(deal.payer()).isEqualTo(payer);
+		assertThat(deal.oracle()).isEqualTo(oracle.address());
+		assertThat(deal.accepted()).isTrue();
 		assertThat(deal.startsAt()).isEqualTo(Instant.ofEpochSecond(1_790_000_000L));
-		assertThat(deal.checkIntervalSeconds()).isEqualTo(2);
 		assertThat(deal.totalRounds()).isEqualTo(5);
+		assertThat(deal.upChecks()).isEqualTo(1);
 		assertThat(deal.isRecorded(0)).isTrue();
 		assertThat(deal.isRecorded(1)).isFalse();
 	}
 
 	@Test
-	void sendsARecordObservationSignedByTheOracle() {
-		String dealAddress = newAddress();
+	void aMissingAccountIsNullAndAForeignOneIsRejected() {
+		assertThat(chain.readDeal(dealAddress)).isNull();
+
+		when(rpc.getAccountInfo(dealAddress)).thenReturn(new AccountInfo(newAddress(), 1, new byte[0]));
+		assertThatIllegalArgumentException().isThrownBy(() -> chain.readDeal(dealAddress))
+			.withMessageContaining("not owned by the uptime_deal program");
+		assertThatIllegalArgumentException().isThrownBy(() -> chain.readDeal("not-base58!"));
+	}
+
+	@Test
+	void sendsRecordObservationAndSettleDealSignedByTheOracle() {
+		when(rpc.getAccountInfo(dealAddress)).thenReturn(
+				new AccountInfo(PROGRAM_ID, 1, deal(payer, recipient, oracle.address(), 1_790_000_000L).data()));
 		when(rpc.getLatestBlockhash()).thenReturn(new byte[32]);
-		when(rpc.sendTransaction(any())).thenReturn("Sig");
+		when(rpc.sendTransaction(any())).thenReturn("Sig1", "Sig2");
+		ChainDeal deal = chain.readDeal(dealAddress);
 
-		assertThat(chain.recordObservation(dealAddress, 3, false)).isEqualTo("Sig");
+		assertThat(chain.recordObservation(dealAddress, deal, 3, false)).isEqualTo("Sig1");
+		assertThat(chain.sendSettle(dealAddress, deal)).isEqualTo("Sig2");
 
-		ArgumentCaptor<byte[]> tx = ArgumentCaptor.forClass(byte[].class);
-		verify(rpc).sendTransaction(tx.capture());
-		byte[] expected = DealProgram.observationInstruction(PROGRAM_ID, oracle.address(), dealAddress, 3, false)
-			.data();
-		byte[] bytes = tx.getValue();
-		// The single instruction's data closes the serialized transaction.
-		assertThat(Arrays.copyOfRange(bytes, bytes.length - expected.length, bytes.length)).isEqualTo(expected);
+		ArgumentCaptor<byte[]> txs = ArgumentCaptor.forClass(byte[].class);
+		verify(rpc, org.mockito.Mockito.times(2)).sendTransaction(txs.capture());
+		// The single instruction's data closes each serialized transaction.
+		assertThat(endsWith(txs.getAllValues().get(0),
+				DealProgram.observationInstruction(PROGRAM_ID, oracle.address(), dealAddress, 3, false).data()))
+			.isTrue();
+		assertThat(endsWith(txs.getAllValues().get(1), DealProgram.settleInstruction(PROGRAM_ID, oracle.address(),
+				dealAddress, DealProgram.decodeDeal(deal(payer, recipient, oracle.address(), 0).data())).data()))
+			.isTrue();
+	}
+
+	@Test
+	void readsTransactionStatusesAndClosures() {
+		when(rpc.getSignatureStatus("Sig")).thenReturn(new SignatureStatus(true, null));
+		when(rpc.getTransactionLogs("Sig")).thenReturn(List.of(dealSettledLog(dealAddress, 5, 5, true, 1)));
+		when(rpc.getSignaturesForAddress(dealAddress, SolanaDealChain.HISTORY_LIMIT)).thenReturn(List.of("Other", "Sig"));
+		when(rpc.getTransactionLogs("Other")).thenReturn(List.of("Program log: hi"));
+
+		assertThat(chain.status("Sig")).isEqualTo(new TxStatus(true, null));
+		assertThat(chain.status("Unknown")).isNull();
+		assertThat(chain.closureIn("Sig", dealAddress)).isEqualTo(new Closure(false, true, 5L, 5L));
+		assertThat(chain.closureIn("Missing", dealAddress)).isNull();
+		assertThat(chain.findClosure(dealAddress)).isEqualTo(new FoundClosure("Sig", new Closure(false, true, 5L, 5L)));
+
+		String cancelled = newAddress();
+		when(rpc.getSignaturesForAddress(cancelled, SolanaDealChain.HISTORY_LIMIT)).thenReturn(List.of("C"));
+		when(rpc.getTransactionLogs("C")).thenReturn(List.of(dealCancelledLog(cancelled, payer, 5)));
+		assertThat(chain.findClosure(cancelled).closure().cancelled()).isTrue();
+		assertThat(chain.findClosure(newAddress())).isNull();
 	}
 
 	@Test
@@ -102,8 +141,8 @@ class SolanaDealChainTest {
 		verify(unused, never()).requestAirdrop(anyString(), anyLong());
 	}
 
-	private static ProgramAccount account(String address, byte[] data) {
-		return new ProgramAccount(address, new AccountInfo(PROGRAM_ID, 1, data));
+	private static boolean endsWith(byte[] bytes, byte[] suffix) {
+		return Arrays.equals(Arrays.copyOfRange(bytes, bytes.length - suffix.length, bytes.length), suffix);
 	}
 
 }

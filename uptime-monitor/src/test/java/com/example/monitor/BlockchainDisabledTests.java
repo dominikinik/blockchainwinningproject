@@ -14,7 +14,8 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.example.monitor.application.HealthRelay;
-import com.example.monitor.domain.DealChain;
+import com.example.monitor.application.DealService;
+import com.example.monitor.domain.deal.DealChain;
 import com.example.monitor.domain.HealthProbe;
 import com.example.monitor.infrastructure.probe.HttpHealthProbe;
 import com.example.monitor.infrastructure.scheduling.HealthCheckScheduler;
@@ -22,7 +23,8 @@ import com.example.monitor.infrastructure.solana.OracleKey;
 import com.example.monitor.infrastructure.solana.SolanaRpc;
 
 /**
- * With the blockchain off, no Solana beans exist, /api/deals/config answers 503 and the relay only probes and records;
+ * With the blockchain off, no Solana beans or deal oracle exist, every /api/deals endpoint answers 503 and the relay
+ * only probes and records;
  * the real probe and the scheduler are wired. The provider URL points at a closed port, so a relay is a fast failure.
  */
 @SpringBootTest(properties = { "monitor.blockchain.enabled=false", "monitor.scheduler.enabled=true",
@@ -41,11 +43,13 @@ class BlockchainDisabledTests {
 	HealthRelay relay;
 
 	@Test
-	void noChainIsWiredAndTheConfigEndpointIsUnavailable() throws Exception {
+	void noChainOrOracleIsWiredAndTheDealEndpointsAreUnavailable() throws Exception {
 		assertThat(context.getBeansOfType(DealChain.class)).isEmpty();
 		assertThat(context.getBeansOfType(SolanaRpc.class)).isEmpty();
 		assertThat(context.getBeansOfType(OracleKey.class)).isEmpty();
+		assertThat(context.getBeansOfType(DealService.class)).isEmpty();
 		mvc.perform(get("/api/deals/config")).andExpect(status().isServiceUnavailable());
+		mvc.perform(get("/api/deals")).andExpect(status().isServiceUnavailable());
 	}
 
 	@Test
@@ -56,7 +60,6 @@ class BlockchainDisabledTests {
 		HealthRelay.Relay result = relay.relay();
 
 		assertThat(result.up()).isFalse();
-		assertThat(result.sent()).isEmpty();
 		mvc.perform(get("/api/uptime")).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(300));
 	}
 

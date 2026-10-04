@@ -1,22 +1,23 @@
 package com.example.monitor.infrastructure.solana;
 
-import java.util.ArrayList;
 import java.util.List;
 
-import com.example.monitor.domain.DealChain;
+import com.example.monitor.domain.deal.DealChain;
 import com.example.monitor.infrastructure.solana.DealProgram.DealAccount;
-import com.example.monitor.infrastructure.solana.SolanaRpc.ProgramAccount;
+import com.example.monitor.infrastructure.solana.DealProgram.Outcome;
+import com.example.monitor.infrastructure.solana.SolanaRpc.AccountInfo;
+import com.example.monitor.infrastructure.solana.SolanaRpc.SignatureStatus;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * {@link DealChain} over JSON-RPC: finds the program's deals that name this oracle with one {@code getProgramAccounts}
- * call (a {@code memcmp} on the oracle field), and sends {@code record_observation} signed by the oracle.
- */
+/** {@link DealChain} over JSON-RPC: reads deal accounts and sends {@code settle_deal} signed by the oracle. */
 public class SolanaDealChain implements DealChain {
 
 	private static final Logger log = LoggerFactory.getLogger(SolanaDealChain.class);
+
+	/** How many recent transactions of a vanished deal account are searched for its closing event. */
+	static final int HISTORY_LIMIT = 10;
 
 	private final SolanaRpc rpc;
 
@@ -56,30 +57,61 @@ public class SolanaDealChain implements DealChain {
 	}
 
 	@Override
-	public List<ActiveDeal> activeDeals() {
-		List<ActiveDeal> deals = new ArrayList<>();
-		for (ProgramAccount account : rpc.getProgramAccounts(programId, DealProgram.ORACLE_OFFSET, oracle.address())) {
-			DealAccount deal;
-			try {
-				deal = DealProgram.decodeDeal(account.account().data());
-			}
-			catch (IllegalArgumentException e) {
-				continue;
-			}
-			if (deal.active() && deal.oracle().equals(oracle.address())) {
-				deals.add(new ActiveDeal(account.address(), deal.startsAt(), deal.checkIntervalSeconds(),
-						deal.totalRounds(), deal.recorded()));
-			}
+	public ChainDeal readDeal(String address) {
+		Base58.decodePublicKey(address);
+		AccountInfo account = rpc.getAccountInfo(address);
+		if (account == null) {
+			return null;
 		}
-		return deals;
+		if (!programId.equals(account.owner())) {
+			throw new IllegalArgumentException("Account " + address + " is not owned by the uptime_deal program");
+		}
+		DealAccount deal = DealProgram.decodeDeal(account.data());
+		return new ChainDeal(deal.payer(), deal.recipient(), deal.oracle(), deal.amountLamports(),
+				deal.providerStakeLamports(), deal.durationSeconds(), deal.checkIntervalSeconds(), deal.minUptimeBps(),
+				deal.totalRounds(), deal.upChecks(), deal.downChecks(), deal.recorded(), deal.acceptDeadline(), deal.startsAt());
 	}
 
 	@Override
-	public String recordObservation(String address, int round, boolean up) {
+	public String recordObservation(String address, ChainDeal deal, int round, boolean up) {
 		byte[] tx = SolanaTransaction.signed(oracle,
 				List.of(DealProgram.observationInstruction(programId, oracle.address(), address, round, up)),
 				rpc.getLatestBlockhash());
 		return rpc.sendTransaction(tx);
+	}
+
+	@Override
+	public String sendSettle(String address, ChainDeal deal) {
+		DealAccount account = new DealAccount(deal.payer(), deal.recipient(), deal.oracle(), 0, deal.amountLamports(),
+				deal.guaranteeLamports(), deal.acceptDeadline(), deal.accepted(), deal.startsAt(), deal.durationSeconds(),
+				deal.checkIntervalSeconds(), deal.minUptimeBps(), deal.totalRounds(), deal.upChecks(), deal.downChecks(),
+				deal.recorded());
+		byte[] tx = SolanaTransaction.signed(oracle, List.of(DealProgram.settleInstruction(programId, oracle.address(),
+				address, account)), rpc.getLatestBlockhash());
+		return rpc.sendTransaction(tx);
+	}
+
+	@Override
+	public TxStatus status(String signature) {
+		SignatureStatus status = rpc.getSignatureStatus(signature);
+		return status == null ? null : new TxStatus(status.confirmed(), status.error());
+	}
+
+	@Override
+	public Closure closureIn(String signature, String address) {
+		List<String> logs = rpc.getTransactionLogs(signature);
+		return logs == null ? null : toClosure(DealProgram.closedBy(logs, address));
+	}
+
+	@Override
+	public FoundClosure findClosure(String address) {
+		for (String signature : rpc.getSignaturesForAddress(address, HISTORY_LIMIT)) {
+			Closure closure = closureIn(signature, address);
+			if (closure != null) {
+				return new FoundClosure(signature, closure);
+			}
+		}
+		return null;
 	}
 
 	@Override
@@ -96,6 +128,13 @@ public class SolanaDealChain implements DealChain {
 		catch (SolanaRpc.SolanaRpcException e) {
 			log.warn("Could not fund oracle {}: {}", oracle.address(), e.getMessage());
 		}
+	}
+
+	private static Closure toClosure(Outcome outcome) {
+		return outcome == null ? null
+				: new Closure(outcome.cancelled(), outcome.paidToRecipient(),
+						outcome.upChecks() == null ? null : outcome.upChecks().longValue(),
+						outcome.totalRounds() == null ? null : outcome.totalRounds().longValue());
 	}
 
 }

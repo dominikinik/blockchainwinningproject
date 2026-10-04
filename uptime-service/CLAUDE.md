@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in the 
 
 ## Overview
 
-A Spring Boot 4.1 / Java 21 service that is a pure health **provider**. It only answers calls and has no database and no scheduled jobs. `../uptime-monitor` calls its `GET /api/health` every 2 s and relays each result to the `uptime_deal` program as the oracle. It builds on the host with an installed Maven 3.9 (`mvn`; `../scripts/setup-toolchain.sh` installs it) and has no Maven wrapper. The repo's devcontainer has no JDK.
+A Spring Boot 4.1 / Java 21 service that is a pure health **provider**. It only answers calls and has no database and no scheduled jobs. `../uptime-monitor` calls its `GET /api/health` every 2 s, relays each result to the `uptime_deal` program as the oracle, and stores the deals it settles. It builds on the host with an installed Maven 3.9 (`mvn`; `../scripts/setup-toolchain.sh` installs it) and has no Maven wrapper. The repo's devcontainer has no JDK.
 
 ## Commands
 

@@ -4,18 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working in the 
 
 ## Overview
 
-A Spring Boot 4.1 / Java 21 service that is a stateless **proxy** between the health provider (`../uptime-service`) and the `uptime_deal` Solana program (`../uptime-deal`), whose **oracle** it is. Every 2 s it calls the provider's `GET /api/health` and sends the result to the program as the UP/DOWN `record_observation` of the round that just ended, on every active deal that names its oracle key. It finds those deals on chain on every check, so nothing is registered or stored: it has no database, never settles a deal (any wallet calls `settle_deal`), and a restart only loses the rounds it missed (unobserved rounds count as down on chain). It builds with an installed Maven 3.9 (`mvn`; `../scripts/setup-toolchain.sh` installs it) and has no Maven wrapper.
+A Spring Boot 4.1 / Java 21 service that is the health **proxy** between the provider (`../uptime-service`) and the `uptime_deal` Solana program (`../uptime-deal`), and that program's **oracle**. Every 2 s it calls the provider's `GET /api/health` and hands the result to the deal oracle, which sends it as the UP/DOWN `record_observation` of the round that just ended on each registered, accepted deal. Deals are registered with `POST /api/deals` and stored in PostgreSQL from the sibling `monitor-db` module. The oracle follows each proposal until it is accepted on chain and settles each deal once the on-chain counters prove a breach or the window and grace are over. It builds with an installed Maven 3.9 (`mvn`; `../scripts/setup-toolchain.sh` installs it) and has no Maven wrapper.
 
 ## Commands
+
+Running the service needs its database (see `../monitor-db/`). Tests don't:
+
+```bash
+docker compose -f ../monitor-db/docker-compose.yml up -d --wait   # PostgreSQL on :5433
+```
 
 Run these from `uptime-monitor/`:
 
 ```bash
 mvn spring-boot:run                        # start on :8082 (UPTIME_MONITOR_PORT), relaying http://localhost:8080/api/health
-MONITOR_BLOCKCHAIN_ENABLED=false mvn spring-boot:run      # probe and log only, send nothing
-mvn test                                   # all tests (~5 s, no network, chain or provider needed)
+MONITOR_BLOCKCHAIN_ENABLED=false mvn spring-boot:run      # probe and log only; no oracle, /api/deals returns 503
+mvn test                                   # all tests (~6 s, no database, network, chain or provider needed)
 mvn test -Dtest=HealthRelayTest            # one class
-mvn test -Dtest=HealthRelayTest#aHealthyCheckRecordsTheRoundThatJustEndedAsUp      # single test
+mvn test -Dtest=DealServiceTest#reportsCompletedRoundsAndLeavesPayoutDecisionToTheContract      # single test
 mvn package                                # build jar
 ```
 
@@ -23,6 +29,8 @@ Try it against the provider (`uptime-service` on :8080) and a validator on :8899
 
 ```bash
 curl localhost:8082/api/deals/config                  # programId, oracle, rpcUrl, checkIntervalSeconds for create_deal
+curl -XPOST localhost:8082/api/deals -H 'Content-Type: application/json' -d '{"address":"<deal>"}'   # register
+curl localhost:8082/api/deals/<deal>                  # PROPOSED / ACTIVE / SETTLED / FAILED / CANCELLED
 curl -XPOST localhost:8080/api/application/stop       # every check from now on records a DOWN round
 curl localhost:8082/api/uptime                        # last 5 minutes, one {time, down} per second
 ```
@@ -34,36 +42,67 @@ Swagger UI is at `/swagger-ui.html`, OpenAPI at `/v3/api-docs`, and the proxy's 
 Packages under `com.example.monitor`. Dependencies point inward: `interfaces` and `infrastructure` → `application` → `domain`. The domain and application layers have no Spring imports. `infrastructure/config/MonitorConfig` wires them.
 
 - **`domain/`**
-  - `HealthCheckResult` classifies one response: a 200 whose JSON `status` is `DOWN`/`OUT_OF_SERVICE`, or a 404, is `DOWN`. Any other 200 is `HEALTHY`. Any other status, or no response, is `INTERNAL_ERROR`. Only `HEALTHY` counts as UP; the other two are reported as DOWN.
-  - Ports:
-    - `HealthProbe` calls the endpoint once and never throws.
-    - `DealChain` covers `activeDeals()`, `recordObservation(address, round, up)` and `ensureOracleFunded()`, plus the program id, the oracle address and the RPC URL.
-  - `DealChain.ActiveDeal` is an accepted deal: its window start, round length, round count, and the program's per-round bitmap. `roundEndedBy(at)` returns the last round that ended at or before `at`: `floor((at - startsAt) / interval) - 1`, or `-1` before the first round ends and after the last.
-- **`application/HealthRelay`** is the whole proxy. `relay()` takes the clock time, probes once, and records the result in `UptimeHistory`. It then lists the active deals and, for each one whose `roundEndedBy` round is not yet recorded on chain, sends `record_observation` with the result. It funds the oracle once before the first send of a tick. It never throws:
-  - A listing failure skips the tick.
-  - One deal's failed send doesn't stop the others.
-  - Failed rounds are not retried, and they count as down on chain.
+  - `HealthCheckResult` classifies one response:
+    - A 200 whose JSON `status` is `DOWN`/`OUT_OF_SERVICE`, or a 404, is `DOWN`.
+    - Any other 200 is `HEALTHY`.
+    - Any other status, or no response, is `INTERNAL_ERROR`.
 
-  The relay returns what it sent. With no `DealChain` (blockchain disabled) it only probes, records and logs.
-- **`application/UptimeHistory`** serves `/api/uptime` from memory: the time of the first result, plus the DOWN results of the last `max-range-seconds`. A second is down before the first result or within `[t, t + interval)` of a DOWN result. The range is `[from, to]` inclusive and defaults to the last `monitor.history.default-range-seconds`, capped at `max-range-seconds`. A restart starts it over.
+    Only `HEALTHY` counts as UP.
+  - `HealthProbe` is a port: it calls the endpoint once and never throws.
+  - `ServiceId` is the UUID that deals are linked to: the relayed service's `monitor.service-id`.
+- **`domain/deal/`**: the deal oracle's model.
+  - `UptimeDeal` is immutable; every transition returns a copy.
+    - `PROPOSED` until the recipient accepts on chain, which sets the window start.
+    - `ACTIVE` until the settlement it sent is confirmed (`SETTLED`), or the account is found closed (`SETTLED`/`CANCELLED`), or it gives up (`FAILED`).
+  - Ports:
+    - `UptimeDealRepository`
+    - `DealChain`: read a deal account (`ChainDeal`: terms, counters, per-round bitmap), send `record_observation` and `settle_deal`, check a signature, find the closure of a vanished deal, fund the oracle.
+- **`application/HealthRelay`** is the proxy loop. `relay()`:
+  1. takes the clock time;
+  2. probes `monitor.health-url` once;
+  3. records the result in `UptimeHistory`;
+  4. hands it to every `HealthListener`, which today is only `DealService` and none when the blockchain is off.
+
+  It never throws, and a listener's failure is logged.
+- **`application/DealService`** (a `HealthListener`) is the oracle. Its methods are synchronized, because the relay, the scheduler and HTTP requests all change deals.
+  - `register(address, serviceId?)`:
+    - The deal is linked to the relayed service; another `serviceId` is a 400.
+    - It reads the account. The account must be owned by the program and name this oracle. Its duration must be in `[1, monitor.deal.max-duration-seconds]` and its round interval must equal the check interval.
+    - It funds the oracle and stores the deal (`PROPOSED` or `ACTIVE`). A duplicate is a 409.
+  - `onHealthResult(at, up)` queues the observation and reports it on each accepted deal: round `floor((at - startsAt) / interval) - 1`, skipped when it is before round 0, past the last round, or already recorded on chain. A failed send stays queued in memory and is retried on the next result or tick, and the queue is lost on restart.
+  - `settleDue()` runs every `monitor.deal.poll-interval-ms`. It retries queued observations, re-reads each proposal to pick up its acceptance, and sends `settle_deal` for each accepted deal once `canSettleEarly()` (the DOWN rounds prove the threshold unreachable) or the window plus `max(settle-grace, 10)` seconds has passed. It then confirms, resends or fails the transaction. A vanished account is resolved from its recent closing events. Anyone may call `settle_deal`; the program computes the payout from its own counters.
+- **`application/UptimeHistory`** serves `/api/uptime` from memory: the time of the first result, plus the DOWN results of the last `max-range-seconds`.
+  - A second is down before the first result, or within `[t, t + interval)` of a DOWN result.
+  - The range is `[from, to]` inclusive. It defaults to the last `monitor.history.default-range-seconds` and is capped at `max-range-seconds`.
+  - A restart starts it over.
 - **`infrastructure/`**
   - `probe/HttpHealthProbe`: a `RestClient` GET with a connect/read timeout of `monitor.probe-timeout-ms`. It reads the JSON `status` only on a 200, and treats a non-JSON 200 as healthy.
-  - `solana/SolanaDealChain`:
-    - `activeDeals()` makes one `getProgramAccounts` call with a memcmp of the oracle key at `DealProgram.ORACLE_OFFSET` (72). It keeps the accounts that decode as an active `Deal` naming this oracle, and skips proposals and undecodable data.
-    - `recordObservation` signs the instruction with `OracleKey` and sends it.
-    - `ensureOracleFunded` asks the faucet when the balance is below `oracle-min-lamports`, and never throws.
-  - `DealProgram` holds the `Deal` account layout and the `record_observation` instruction (discriminator, `round` u32 LE, `up` u8; accounts oracle (signer), deal (writable)).
-  - The Solana client (`Base58`, `Ed25519`, `OracleKey`, `SolanaTransaction`, `SolanaRpc`/`HttpSolanaRpc`) is hand-rolled. `SolanaRpc` covers only `getProgramAccounts`, `getLatestBlockhash`, `sendTransaction`, `getBalance` and `requestAirdrop`.
-  - `scheduling/HealthCheckScheduler`: `@Scheduled(fixedRate = monitor.check-interval-ms)` → `relay()`. It is off when `monitor.scheduler.enabled=false`.
-- **`interfaces/web/`**
-  - `DealController` serves `GET /api/deals/config` → `{programId, oracle, rpcUrl, checkIntervalSeconds}`, which is what a wallet needs for `create_deal`. It returns 503 when the blockchain is disabled.
-  - `UptimeController` serves `GET /api/uptime?from&to` → `[{time, down}]`.
-  - `ApiExceptionHandler` maps `IllegalArgumentException` → 400.
+  - `persistence/JdbcUptimeDealRepository`: `JdbcClient` on the `uptime_deal` table owned by `../monitor-db`, one row per deal, updated in place. A duplicate address raises `DealAlreadyRegisteredException`.
+  - `solana/SolanaDealChain` implements `DealChain` on `SolanaRpc`, `OracleKey`, `SolanaTransaction` and `DealProgram`. `DealProgram` holds the program's binary layout: the `Deal` account, the `record_observation` and `settle_deal` instructions, and the `DealSettled`/`DealCancelled` events. The Solana client (`Base58`, `Ed25519`, `OracleKey`, `SolanaTransaction`, `SolanaRpc`/`HttpSolanaRpc`) is hand-rolled.
+  - `scheduling/HealthCheckScheduler`: `@Scheduled(fixedRate = monitor.check-interval-ms)` → `relay()`. `scheduling/DealSettlementScheduler` → `settleDue()`. Both are off when `monitor.scheduler.enabled=false`.
+- **`interfaces/web/DealController`** under `/api/deals`. The JSON shape is the one the frontend reads, plus `serviceId`.
+  - `GET /config` returns `{programId, oracle, rpcUrl, checkIntervalSeconds}`.
+  - `POST {address, serviceId?}` returns 201.
+  - `GET` returns all deals, most recently proposed first. `GET /{address}` returns one deal; `startsAt`/`endsAt` are null while `PROPOSED`.
+  - Every endpoint returns 503 when `monitor.blockchain.enabled=false`.
+- **`interfaces/web/UptimeController`** serves `GET /api/uptime?from&to` → `[{time, down}]`.
+- `ApiExceptionHandler` maps errors:
+  - `IllegalArgumentException` → 400
+  - `NoSuchElementException` → 404
+  - `DealAlreadyRegisteredException` → 409
+  - `SolanaRpcException` → 502
 
 Lombok is available (`optional`, version managed by Spring Boot, wired as an explicit annotation processor in `maven-compiler-plugin`, and excluded from the boot jar). `lombok.config` marks generated code `@lombok.Generated` so coverage tools skip it.
 
+Persistence: `spring.datasource.*` defaults to `jdbc:postgresql://localhost:5433/monitor` (user/password `monitor`). Override it with `MONITOR_DB_URL`, `MONITOR_DB_USER` and `MONITOR_DB_PASSWORD`. If you change the schema, update these together:
+
+- `monitor-db/init/02-schema.sh`
+- `JdbcUptimeDealRepository`
+- `src/test/resources/schema.sql`
+
 Configuration (`application.properties`, bound to the `MonitorProperties` record):
 
+- `monitor.service-id` (`MONITOR_SERVICE_ID`, default `00000000-0000-0000-0000-000000008080`)
 - `monitor.health-url` (`MONITOR_HEALTH_URL`, default `http://localhost:8080/api/health`)
 - `monitor.check-interval-ms` (2000)
 - `monitor.probe-timeout-ms` (1500; keep it below the interval)
@@ -74,37 +113,39 @@ Configuration (`application.properties`, bound to the `MonitorProperties` record
   - `oracle-keypair` (`MONITOR_ORACLE_KEYPAIR`, default `.oracle-keypair.json`, gitignored; blank = new key per start)
   - `oracle-min-lamports`
   - `oracle-airdrop-lamports`
-- `monitor.deal.program-id`
+- `monitor.deal.*`:
+  - `program-id`
+  - `max-duration-seconds` (3600)
+  - `settle-grace-seconds` (2)
+  - `poll-interval-ms` (500)
+  - `max-settle-attempts` (10)
+  - `confirm-timeout-seconds` (30)
 - `monitor.history.default-range-seconds` (300) and `monitor.history.max-range-seconds` (86400)
 
 Time comes from the injected `Clock` bean.
 
 ## Testing notes
 
-The tests need no network, chain or provider, and they never sleep.
+The tests need no database, network, chain or provider, and they never sleep. Spring tests run on in-memory H2 in PostgreSQL mode, using `src/test/resources/schema.sql`, a copy of the `monitor-db` tables.
 
-- `HealthCheckResultTest` covers the domain.
-- `HealthRelayTest` uses a fake probe, a fake `DealChain` and `support/MutableClock`. It covers:
-  - the round each result reports
-  - UP vs DOWN/unreachable/error
-  - before the first round and after the last
-  - already-recorded rounds
-  - several deals
-  - one failed send
-  - an unreachable chain
-  - no chain at all
-- `UptimeHistoryTest` covers the in-memory per-second history, its default range and limits, and the dropping of old results.
-- Adapter tests:
-  - `HttpHealthProbeTest` uses `MockRestServiceServer`, a real refused port, and a silent socket for the timeout.
-  - `SolanaDealChainTest` uses a mocked `SolanaRpc`. It covers the active-deal filter, the signed `record_observation` bytes and funding.
-  - `DealProgramTest` and `support/DealFixtures` build `Deal` account data the way the program writes it.
-  - `HealthCheckSchedulerTest`, plus the Solana client tests (`Base58Test`, `OracleKeyTest`, `SolanaTransactionTest`, `HttpSolanaRpcTest`).
-- `UptimeMonitorApplicationTests` is a full `@SpringBootTest` with MockMvc and `@MockitoBean` for `HealthProbe` and `SolanaRpc`. The `test` profile disables the scheduler, so tests call `HealthRelay.relay()` directly. It checks:
-  - there is no database or scheduler
-  - `/api/deals/config`
-  - a relay sending to an on-chain deal
-  - `/api/uptime` and its 400s
-  - the removed `/api/subscriptions` and `/api/deals` registry endpoints are gone
-- `BlockchainDisabledTests` checks that no Solana beans exist, `/api/deals/config` returns 503, and the relay with the real probe and scheduler only records.
+- Domain: `HealthCheckResultTest`, plus `UptimeDealTest` for the deal lifecycle.
+- Application:
+  - `HealthRelayTest`: a fake probe, listeners and `support/MutableClock`. It covers each result reaching every listener, DOWN/unreachable/error, a failing listener, and the history.
+  - `DealServiceTest`: a mocked `DealChain` and `support/InMemoryUptimeDealRepository`. It covers the round reported, DOWN rounds, retry after a failed send, proposals and early results, no early settlement, and registration rules.
+  - `UptimeHistoryTest`.
+- Persistence: `UptimeDealRepositoryContract` runs against `JdbcUptimeDealRepository` (H2 behind a Hikari pool) and the in-memory fake.
+- Adapters:
+  - `HttpHealthProbeTest`: `MockRestServiceServer`, a real refused port, and a silent socket.
+  - `SolanaDealChainTest`: a mocked `SolanaRpc`. It covers reads, the signed `record_observation`/`settle_deal` bytes, statuses and closures, and funding.
+  - `DealProgramTest`: `support/DealFixtures` builds `Deal` account data and event logs the way the program writes them.
+  - `HealthCheckSchedulerTest` and the Solana client tests.
+- `UptimeMonitorApplicationTests` is a full `@SpringBootTest` with MockMvc and `@MockitoBean` for `HealthProbe` and `SolanaRpc`. The `test` profile disables both schedulers, so tests call `HealthRelay.relay()` and `DealService.settleDue()` directly. It covers:
+  - the configured components
+  - registering a deal, after which a relayed result reaches it on chain
+  - proposals
+  - deal error mapping
+  - `/api/uptime`
+  - the removed `/api/subscriptions`
+- `BlockchainDisabledTests` checks that no Solana beans or oracle exist, that `/api/deals` returns 503, and that the relay, with the real probe and scheduler, only records.
 
 Add tests for every new feature in the matching layer.

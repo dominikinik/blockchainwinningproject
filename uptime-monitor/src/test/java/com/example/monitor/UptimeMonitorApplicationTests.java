@@ -2,8 +2,6 @@ package com.example.monitor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -13,31 +11,35 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.Instant;
-import java.util.List;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationContext;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import com.example.monitor.application.DealService;
 import com.example.monitor.application.HealthRelay;
 import com.example.monitor.domain.HealthCheckResult;
 import com.example.monitor.domain.HealthProbe;
+import com.example.monitor.infrastructure.config.MonitorProperties;
+import com.example.monitor.infrastructure.scheduling.DealSettlementScheduler;
 import com.example.monitor.infrastructure.scheduling.HealthCheckScheduler;
-import com.example.monitor.infrastructure.solana.DealProgram;
 import com.example.monitor.infrastructure.solana.OracleKey;
 import com.example.monitor.infrastructure.solana.SolanaRpc;
 import com.example.monitor.infrastructure.solana.SolanaRpc.AccountInfo;
-import com.example.monitor.infrastructure.solana.SolanaRpc.ProgramAccount;
+import com.example.monitor.infrastructure.solana.SolanaRpc.SolanaRpcException;
 import com.example.monitor.support.DealFixtures;
 
 /**
- * Starts the whole proxy with a mocked health probe and Solana RPC, and relays by hand through
- * {@link HealthRelay#relay()} instead of the scheduler (disabled in the test profile).
+ * Starts the whole application with a mocked health probe and Solana RPC, and relays and settles by hand through
+ * {@link HealthRelay#relay()} and {@link DealService#settleDue()} instead of the schedulers (disabled in the test
+ * profile).
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -56,6 +58,12 @@ class UptimeMonitorApplicationTests {
 	HealthRelay relay;
 
 	@Autowired
+	DealService deals;
+
+	@Autowired
+	MonitorProperties properties;
+
+	@Autowired
 	OracleKey oracle;
 
 	@MockitoBean
@@ -64,53 +72,93 @@ class UptimeMonitorApplicationTests {
 	@MockitoBean
 	HealthProbe probe;
 
-	@Test
-	void startsAsAProxyWithoutDatabaseOrScheduler() throws Exception {
-		assertThat(context.getBeanNamesForType(HealthCheckScheduler.class)).isEmpty();
-		assertThat(context.containsBean("dataSource")).isFalse();
-		mvc.perform(get("/actuator/health")).andExpect(status().isOk());
-		mvc.perform(get("/v3/api-docs")).andExpect(status().isOk());
+	@BeforeEach
+	void setUp() {
+		when(rpc.getLatestBlockhash()).thenReturn(new byte[32]);
+		when(rpc.sendTransaction(any())).thenReturn("sig");
 	}
 
 	@Test
-	void servesWhereDealsMustBeCreated() throws Exception {
-		mvc.perform(get("/api/deals/config"))
-			.andExpect(status().isOk())
+	void startsWithTheConfiguredComponents() throws Exception {
+		assertThat(properties.checkIntervalMs()).isEqualTo(2000);
+		assertThat(properties.probeTimeoutMs()).isLessThan(properties.checkIntervalMs());
+		assertThat(properties.serviceId()).hasToString("00000000-0000-0000-0000-000000008080");
+		assertThat(context.getBeanNamesForType(HealthCheckScheduler.class)).isEmpty();
+		assertThat(context.getBeanNamesForType(DealSettlementScheduler.class)).isEmpty();
+		mvc.perform(get("/actuator/health")).andExpect(status().isOk());
+		mvc.perform(get("/v3/api-docs")).andExpect(status().isOk()).andExpect(jsonPath("$.paths['/api/deals']").exists());
+	}
+
+	@Test
+	void aHealthResultIsReportedToARegisteredDealThroughTheWiring() throws Exception {
+		String deal = DealFixtures.newAddress();
+		when(rpc.getAccountInfo(deal)).thenReturn(new AccountInfo(DealFixtures.PROGRAM_ID, 1, DealFixtures.dealData(
+				DealFixtures.newAddress(), DealFixtures.newAddress(), oracle.address(), 1, 5_000_000,
+				Instant.now().getEpochSecond() - 4, 600)));
+
+		mvc.perform(get("/api/deals/config")).andExpect(status().isOk())
 			.andExpect(jsonPath("$.programId").value(DealFixtures.PROGRAM_ID))
 			.andExpect(jsonPath("$.oracle").value(oracle.address()))
-			.andExpect(jsonPath("$.rpcUrl").value("http://127.0.0.1:8899"))
 			.andExpect(jsonPath("$.checkIntervalSeconds").value(2));
+		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON).content("{\"address\":\"" + deal + "\"}"))
+			.andExpect(status().isCreated())
+			.andExpect(jsonPath("$.status").value("ACTIVE"))
+			.andExpect(jsonPath("$.serviceId").value(properties.serviceId().toString()))
+			.andExpect(jsonPath("$.durationSeconds").value(600))
+			.andExpect(jsonPath("$.endsAt").exists())
+			.andExpect(jsonPath("$.upChecks").doesNotExist());
+
+		when(probe.check(URL)).thenReturn(HealthCheckResult.fromResponse(404, null));
+		relay.relay();
+		verify(rpc).sendTransaction(any());
+
+		// The monitor reports observations; SLA totals and the payout decision stay on chain.
+		deals.settleDue();
+		mvc.perform(get("/api/deals/" + deal))
+			.andExpect(jsonPath("$.signature").doesNotExist())
+			.andExpect(jsonPath("$.totalRounds").doesNotExist());
+		mvc.perform(get("/api/deals")).andExpect(jsonPath("$[?(@.address == '" + deal + "')]").exists());
+		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON).content("{\"address\":\"" + deal + "\"}"))
+			.andExpect(status().isConflict());
 	}
 
 	@Test
-	void relaysTheProvidersHealthToEveryActiveDealOfTheOracle() {
-		long startsAt = Instant.now().getEpochSecond() - 5;
-		String address = DealFixtures.newAddress();
-		byte[] deal = DealFixtures.deal(DealFixtures.newAddress(), DealFixtures.newAddress(), oracle.address(), startsAt)
-			.window(600, 2)
-			.data();
-		when(rpc.getProgramAccounts(DealFixtures.PROGRAM_ID, DealProgram.ORACLE_OFFSET, oracle.address()))
-			.thenReturn(List.of(new ProgramAccount(address, new AccountInfo(DealFixtures.PROGRAM_ID, 1, deal))));
-		when(rpc.getLatestBlockhash()).thenReturn(new byte[32]);
-		when(rpc.sendTransaction(any())).thenReturn("Sig");
+	void registersAProposalBeforeItsRecipientAccepts() throws Exception {
+		String deal = DealFixtures.newAddress();
+		long deadline = Instant.now().getEpochSecond() + 86_400;
+		when(rpc.getAccountInfo(deal)).thenReturn(new AccountInfo(DealFixtures.PROGRAM_ID, 1, DealFixtures.proposalData(
+				DealFixtures.newAddress(), DealFixtures.newAddress(), oracle.address(), 1, 5_000_000, 7_000_000, 10,
+				deadline)));
+
+		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON).content("{\"address\":\"" + deal + "\"}"))
+			.andExpect(status().isCreated())
+			.andExpect(jsonPath("$.status").value("PROPOSED"))
+			.andExpect(jsonPath("$.amountLamports").value(5_000_000))
+			.andExpect(jsonPath("$.guaranteeLamports").value(7_000_000))
+			.andExpect(jsonPath("$.acceptDeadline").value(Instant.ofEpochSecond(deadline).toString()))
+			.andExpect(jsonPath("$.startsAt").doesNotExist())
+			.andExpect(jsonPath("$.endsAt").doesNotExist());
+		mvc.perform(get("/api/deals/" + deal)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PROPOSED"));
+
 		when(probe.check(URL)).thenReturn(HealthCheckResult.fromResponse(200, "UP"));
-
-		HealthRelay.Relay result = relay.relay();
-
-		assertThat(result.up()).isTrue();
-		assertThat(result.sent()).singleElement().satisfies(o -> {
-			assertThat(o.deal()).isEqualTo(address);
-			assertThat(o.up()).isTrue();
-			assertThat(o.signature()).isEqualTo("Sig");
-		});
+		relay.relay();
+		verify(rpc, never()).sendTransaction(any());
 	}
 
 	@Test
-	void withNoDealsNothingIsSent() {
-		when(probe.check(URL)).thenReturn(HealthCheckResult.unreachable("Connection refused"));
-
-		assertThat(relay.relay().up()).isFalse();
-		verify(rpc, never()).sendTransaction(any());
+	void dealErrorsMapToProblems() throws Exception {
+		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON).content("{}"))
+			.andExpect(status().isBadRequest());
+		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
+			.content("{\"address\":\"" + DealFixtures.newAddress() + "\",\"serviceId\":\"00000000-0000-0000-0000-000000000001\"}"))
+			.andExpect(status().isBadRequest())
+			.andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("not relayed by this monitor")));
+		String unreachable = DealFixtures.newAddress();
+		when(rpc.getAccountInfo(unreachable)).thenThrow(new SolanaRpcException("node down"));
+		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
+			.content("{\"address\":\"" + unreachable + "\"}"))
+			.andExpect(status().isBadGateway());
+		mvc.perform(get("/api/deals/" + DealFixtures.newAddress())).andExpect(status().isNotFound());
 	}
 
 	@Test
@@ -135,12 +183,8 @@ class UptimeMonitorApplicationTests {
 	}
 
 	@Test
-	void theTrackerAndDealRegistryEndpointsAreGone() throws Exception {
-		mvc.perform(post("/api/deals").contentType("application/json").content("{\"address\":\"x\"}"))
-			.andExpect(status().is4xxClientError());
-		mvc.perform(get("/api/deals/Deal1")).andExpect(status().isNotFound());
+	void theTrackerEndpointsAreGone() throws Exception {
 		mvc.perform(get("/api/subscriptions")).andExpect(status().isNotFound());
-		verify(rpc, never()).getProgramAccounts(anyString(), anyInt(), anyString());
 	}
 
 }

@@ -2,6 +2,8 @@ package com.example.monitor.infrastructure.solana;
 
 import static com.example.monitor.support.DealFixtures.PROGRAM_ID;
 import static com.example.monitor.support.DealFixtures.deal;
+import static com.example.monitor.support.DealFixtures.dealCancelledLog;
+import static com.example.monitor.support.DealFixtures.dealSettledLog;
 import static com.example.monitor.support.DealFixtures.newAddress;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -49,6 +51,7 @@ class DealProgramTest {
 		assertThat(deal.active()).isTrue();
 		assertThat(deal.startsAt()).isEqualTo(Instant.ofEpochSecond(1_790_000_000L));
 		assertThat(deal.endsAt()).isEqualTo(Instant.ofEpochSecond(1_790_000_600L));
+		assertThat(deal.settleOpensAt()).isEqualTo(Instant.ofEpochSecond(1_790_000_610L));
 		assertThat(deal.checkIntervalSeconds()).isEqualTo(60);
 		assertThat(deal.minUptimeBps()).isEqualTo(9_950);
 		assertThat(deal.totalRounds()).isEqualTo(10);
@@ -65,6 +68,7 @@ class DealProgramTest {
 		assertThat(deal.providerStakeLamports()).isEqualTo(7);
 		assertThat(deal.startsAt()).isNull();
 		assertThat(deal.endsAt()).isNull();
+		assertThat(deal.settleOpensAt()).isNull();
 	}
 
 	@Test
@@ -92,6 +96,55 @@ class DealProgramTest {
 		assertThat(ix.data()).hasSize(13);
 		assertThat(ix.data()[12]).isEqualTo((byte) 1);
 		assertThat(DealProgram.observationInstruction(PROGRAM_ID, oracle, deal, 0, false).data()[12]).isZero();
+	}
+
+	@Test
+	void buildsSettleDealInstructionWithoutAnyFigures() {
+		String deal = newAddress();
+		String caller = newAddress();
+		Instruction ix = DealProgram.settleInstruction(PROGRAM_ID, caller, deal,
+				DealProgram.decodeDeal(deal(payer, recipient, oracle, 0).data()));
+
+		assertThat(ix.accounts()).extracting(m -> Base58.encode(m.publicKey()))
+			.containsExactly(caller, deal, payer, recipient);
+		assertThat(ix.accounts()).extracting(AccountMeta::signer).containsExactly(true, false, false, false);
+		assertThat(ix.accounts()).extracting(AccountMeta::writable).containsExactly(false, true, true, true);
+		// Only the discriminator: the program reads uptime from its own state, nobody reports it.
+		assertThat(ix.data()).containsExactly(28, 10, 168, 174, 203, 149, 134, 54);
+	}
+
+	@Test
+	void readsTheVerdictFromDealSettledEvents() {
+		String deal = newAddress();
+		assertThat(DealProgram.paidToRecipient(List.of("Program log: Instruction: SettleDeal",
+				dealSettledLog(deal, 10, 0, 10, true, 5)))).isTrue();
+		assertThat(DealProgram.paidToRecipient(List.of(dealSettledLog(deal, 8, 1, 10, false, 5)))).isFalse();
+	}
+
+	@Test
+	void closedByFindsSettlementsAndCancellationsOfTheGivenDealOnly() {
+		String deal = newAddress();
+		String other = newAddress();
+
+		DealProgram.Outcome settled = DealProgram.closedBy(
+				List.of(dealSettledLog(other, 1, 0, 1, false, 5), dealSettledLog(deal, 9, 1, 10, true, 5)), deal);
+		assertThat(settled).isEqualTo(new DealProgram.Outcome(false, true, 9, 1, 10));
+
+		assertThat(DealProgram.closedBy(List.of(dealCancelledLog(deal, payer, 5)), deal))
+			.isEqualTo(new DealProgram.Outcome(true, null, null, null, null));
+		assertThat(DealProgram.closedBy(
+				List.of(dealCancelledLog(other, payer, 5), dealSettledLog(other, 1, 0, 1, true, 5)), deal))
+			.isNull();
+		assertThat(DealProgram.closedBy(List.of(dealCancelledLog(other, payer, 5)), null).cancelled()).isTrue();
+		assertThat(DealProgram.paidToRecipient(List.of(dealCancelledLog(deal, payer, 5)))).isNull();
+	}
+
+	@Test
+	void ignoresOtherLogLines() {
+		assertThat(DealProgram.paidToRecipient(List.of())).isNull();
+		assertThat(DealProgram.paidToRecipient(List.of("Program data: not-base64!", "Program data: AAAA",
+				"Program log: hi"))).isNull();
+		assertThat(DealProgram.closedBy(List.of("Program data: AAAA"), newAddress())).isNull();
 	}
 
 }

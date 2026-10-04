@@ -3,9 +3,11 @@
 import { Keypair, PublicKey, type Connection, type Transaction } from '@solana/web3.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cancelledLog, dealBytes, settledLog } from '../../test/dealFixtures'
+import { dealApi } from './dealApi'
 import { dealAddress } from './dealProgram'
 import { acceptDeal, cancelDeal, openDeal, readDeal, readOutcome, requestAirdrop, settleDeal, waitForConfirmation, type OpenDealParams } from './dealService'
 
+vi.mock('./dealApi', () => ({ dealApi: { register: vi.fn() } }))
 
 const programId = 'EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r'
 const programKey = new PublicKey(programId)
@@ -63,14 +65,13 @@ describe('waitForConfirmation', () => {
 })
 
 describe('openDeal', () => {
-  const fetchMock = vi.fn()
-  beforeEach(() => { fetchMock.mockReset(); vi.stubGlobal('fetch', fetchMock) })
-  afterEach(() => { vi.unstubAllGlobals() })
+  beforeEach(() => { vi.mocked(dealApi.register).mockReset() })
 
-  it('sends create_deal with every term, waits for it, then returns the deal address', async () => {
+  it('sends create_deal with every term, waits for it, then registers the deal address', async () => {
     const params = terms({ providerStakeLamports: 100_000_000n, durationSeconds: 30, checkIntervalSeconds: 3, minUptimeBps: 9_950, dealId: 5n })
+    vi.mocked(dealApi.register).mockResolvedValue({ address: 'D' } as never)
 
-    await expect(openDeal(params)).resolves.toBe(dealAddress(programKey, payer, 5n).toBase58())
+    await expect(openDeal(params)).resolves.toEqual({ address: 'D' })
 
     const sendTransaction = vi.mocked(params.sendTransaction)
     const tx: Transaction = sendTransaction.mock.calls[0][0]
@@ -85,7 +86,7 @@ describe('openDeal', () => {
     expect(ix.data.readBigUInt64LE(32)).toBe(30n)
     expect(ix.data.readBigUInt64LE(40)).toBe(3n)
     expect(ix.data.readUInt16LE(48)).toBe(9_950)
-    expect(fetchMock).not.toHaveBeenCalled() // the monitor finds the deal on chain; no call to /api/deals
+    expect(dealApi.register).toHaveBeenCalledWith(dealAddress(programKey, payer, 5n).toBase58())
   })
 
   it.each([
@@ -106,10 +107,19 @@ describe('openDeal', () => {
     expect(params.sendTransaction).not.toHaveBeenCalled()
   })
 
-  it('does not return an address when the wallet rejects or the transaction fails', async () => {
+  it('names the deal address when registration fails', async () => {
+    vi.mocked(dealApi.register).mockRejectedValue(new Error('Deal names oracle X'))
+    const error = await openDeal(terms({ dealId: 9n })).catch((e: Error) => e)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain(dealAddress(programKey, payer, 9n).toBase58())
+    expect((error as Error).message).toContain('Deal names oracle X')
+    expect((error as Error).message).toContain('Unobserved rounds count as down')
+  })
+
+  it('does not register when the wallet rejects or the transaction fails', async () => {
     await expect(openDeal(terms({ sendTransaction: vi.fn().mockRejectedValue(new Error('User rejected the request.')) }))).rejects.toThrow('User rejected')
     await expect(openDeal(terms({ connection: connectionWith({ confirmationStatus: 'confirmed', err: 'boom' }) }))).rejects.toThrow('Transaction failed')
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(dealApi.register).not.toHaveBeenCalled()
   })
 })
 
