@@ -112,6 +112,29 @@ $columns"
 	pass "$db.uptime_deal has the expected columns and primary key"
 done
 
+expected_heartbeat_columns='id|bigint||NO
+deal_address|character varying||NO
+round_no|integer||NO
+checked_at|timestamp with time zone|6|NO
+outcome|character varying||NO
+http_status|integer||YES
+detail|text||YES
+latency_ms|bigint||NO
+report|character varying||NO
+report_error|text||YES
+signature|character varying||YES'
+for db in monitor monitor_test; do
+	columns=$(psql "$db" -c "SELECT column_name, data_type, datetime_precision, is_nullable
+		FROM information_schema.columns WHERE table_name = 'deal_heartbeat' ORDER BY ordinal_position")
+	[ "$columns" = "$expected_heartbeat_columns" ] || fail "$db.deal_heartbeat columns differ:
+$columns"
+	[ "$(psql "$db" -c "SELECT a.attname FROM pg_index i JOIN pg_attribute a
+		ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+		WHERE i.indrelid = 'deal_heartbeat'::regclass AND i.indisprimary")" = id ] \
+		|| fail "$db.deal_heartbeat primary key must be id"
+	pass "$db.deal_heartbeat has the expected columns and primary key"
+done
+
 # Edge cases on the test database.
 S=11111111-1111-1111-1111-111111111111
 ins() { echo "INSERT INTO tracking_event (service_id, version, type, occurred_at, health_url, check_interval_ms, http_status, reason) VALUES ($1)"; }
@@ -164,5 +187,20 @@ pass "unknown deal statuses, zero durations and negative amounts or guarantees a
 rejects "$(deal "'x4', NULL, 'P', 'R', 1000000, 0, now(), now(), 10, 'ACTIVE', now()")" 'not-null constraint'
 rejects "$(deal "'x5', '$S', 'P', 'R', 1000000, 0, NULL, now(), 10, 'ACTIVE', now()")" 'not-null constraint'
 pass "deals without a service or an accept deadline are rejected"
+
+beat() { echo "INSERT INTO deal_heartbeat (deal_address, round_no, checked_at, outcome, http_status, detail, latency_ms, report) VALUES ($1)"; }
+psql monitor_test -c "$(beat "'$D', 0, now(), 'HEALTHY', 200, 'HTTP 200', 12, 'SENT'")"
+psql monitor_test -c "$(beat "'$D', 1, now(), 'INTERNAL_ERROR', NULL, 'Connection refused', 0, 'RETRYING'")"
+[ "$(psql monitor_test -c "SELECT string_agg(round_no::text, ',' ORDER BY id) FROM deal_heartbeat")" = 0,1 ] \
+	|| fail "heartbeat ids must follow insertion order"
+pass "heartbeats are appended with generated ids, and an unanswered probe has no HTTP status"
+rejects "$(beat "'$D', 2, now(), 'UP', 200, NULL, 1, 'SENT'")" 'check constraint'
+rejects "$(beat "'$D', 2, now(), 'HEALTHY', 200, NULL, 1, 'LOST'")" 'check constraint'
+rejects "$(beat "'$D', -1, now(), 'HEALTHY', 200, NULL, 1, 'SENT'")" 'check constraint'
+rejects "$(beat "'$D', 2, now(), 'HEALTHY', 200, NULL, -1, 'SENT'")" 'check constraint'
+pass "unknown outcomes and reports, negative rounds and negative latencies are rejected"
+rejects "$(beat "NULL, 2, now(), 'HEALTHY', 200, NULL, 1, 'SENT'")" 'not-null constraint'
+rejects "$(beat "'$D', 2, NULL, 'HEALTHY', 200, NULL, 1, 'SENT'")" 'not-null constraint'
+pass "heartbeats without a deal or a time are rejected"
 
 echo "monitor-db: $PASSED checks passed"

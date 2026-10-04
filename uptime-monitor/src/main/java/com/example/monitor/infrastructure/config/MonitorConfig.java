@@ -18,6 +18,8 @@ import com.example.monitor.domain.HealthProbe;
 import com.example.monitor.domain.ServiceId;
 import com.example.monitor.domain.deal.DealChain;
 import com.example.monitor.domain.deal.UptimeDealRepository;
+import com.example.monitor.domain.heartbeat.HeartbeatLog;
+import com.example.monitor.infrastructure.persistence.JdbcHeartbeatLog;
 import com.example.monitor.infrastructure.persistence.JdbcUptimeDealRepository;
 import com.example.monitor.infrastructure.probe.HttpHealthProbe;
 import com.example.monitor.infrastructure.scheduling.DealSettlementScheduler;
@@ -52,6 +54,11 @@ public class MonitorConfig {
 		return new JdbcUptimeDealRepository(jdbc);
 	}
 
+	@Bean
+	HeartbeatLog heartbeatLog(JdbcClient jdbc) {
+		return new JdbcHeartbeatLog(jdbc);
+	}
+
 	/** Samples the provider for {@code /api/uptime}; deals run their own heartbeats in {@link DealService}. */
 	@Bean
 	HealthRelay healthRelay(HealthProbe probe, UptimeHistory history, Clock clock, MonitorProperties properties) {
@@ -84,10 +91,10 @@ public class MonitorConfig {
 
 		/** The deal oracle: checks the provider once per round of each deal's own interval and settles the deals. */
 		@Bean
-		DealService dealService(UptimeDealRepository deals, DealChain chain, HealthProbe probe, Clock clock,
-				MonitorProperties properties) {
+		DealService dealService(UptimeDealRepository deals, DealChain chain, HealthProbe probe,
+				HeartbeatLog heartbeats, Clock clock, MonitorProperties properties) {
 			MonitorProperties.Deal deal = properties.deal();
-			return new DealService(deals, chain, probe, clock,
+			return new DealService(deals, chain, probe, heartbeats, clock,
 					new DealService.Settings(new ServiceId(properties.serviceId()), properties.healthUrl(),
 							deal.maxDurationSeconds(),
 							deal.settleGraceSeconds(), deal.maxSettleAttempts(), deal.confirmTimeoutSeconds(),

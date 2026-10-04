@@ -19,9 +19,10 @@ fi
 if ! docker exec monitor-db psql -U monitor -d monitor -tAc "SELECT 1 FROM pg_database WHERE datname = 'monitor_test'" | grep -q 1; then
 	docker exec monitor-db createdb -U monitor -O monitor monitor_test
 fi
-docker exec -e POSTGRES_USER=monitor monitor-db sh /docker-entrypoint-initdb.d/02-schema.sh
+# Pipe this checkout's schema script: the container mounts init/ of whichever checkout created it.
+docker exec -i -e POSTGRES_USER=monitor monitor-db sh < monitor-db/init/02-schema.sh
 # Start every run from empty tables so old deals and history cannot leak into the tests.
-docker exec monitor-db psql -U monitor -d monitor_test -c "TRUNCATE tracking_event, uptime_deal"
+docker exec monitor-db psql -U monitor -d monitor_test -c "TRUNCATE tracking_event, uptime_deal, deal_heartbeat"
 
 PROVIDER_PID=""
 MONITOR_PID=""

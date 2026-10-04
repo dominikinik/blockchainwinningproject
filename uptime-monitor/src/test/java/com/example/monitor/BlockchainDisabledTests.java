@@ -50,6 +50,8 @@ class BlockchainDisabledTests {
 		assertThat(context.getBeansOfType(DealService.class)).isEmpty();
 		mvc.perform(get("/api/deals/config")).andExpect(status().isServiceUnavailable());
 		mvc.perform(get("/api/deals")).andExpect(status().isServiceUnavailable());
+		// The heartbeat log stays readable; nothing writes it without the oracle.
+		mvc.perform(get("/api/heartbeats")).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
 	}
 
 	@Test

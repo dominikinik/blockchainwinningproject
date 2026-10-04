@@ -4,11 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Route, Routes, MemoryRouter } from 'react-router-dom'
 import { render } from '@testing-library/react'
 import { slaService } from '../services/solana/slaService'
+import { heartbeatApi } from '../services/heartbeat/heartbeatApi'
 import { makeSLA, PROVIDER } from '../test/utils'
 import { DashboardPage } from './DashboardPage'
 
 vi.mock('../services/solana/slaService', () => ({ slaService: { getSLAs: vi.fn() } }))
+vi.mock('../services/heartbeat/heartbeatApi', () => ({ heartbeatApi: { getRecent: vi.fn() } }))
 const getSLAs = vi.mocked(slaService.getSLAs)
+const getRecent = vi.mocked(heartbeatApi.getRecent)
 
 function setup() {
   return render(
@@ -22,7 +25,7 @@ function setup() {
 }
 
 describe('DashboardPage', () => {
-  beforeEach(() => { getSLAs.mockReset() })
+  beforeEach(() => { getSLAs.mockReset(); getRecent.mockReset(); getRecent.mockResolvedValue([]) })
   afterEach(() => { vi.useRealTimers() })
 
   it('shows a loading state first', async () => {
@@ -87,6 +90,15 @@ describe('DashboardPage', () => {
     expect(within(screen.getByText('Active SLAs').closest('.metric-card') as HTMLElement).getByText('00')).toBeInTheDocument()
     // ended but not yet settled, so customer payment + guarantee stay locked
     expect(screen.getByText('4 SOL', { selector: '.metric-card strong' })).toBeInTheDocument()
+  })
+
+  it('renders the heartbeat panel and survives a heartbeat failure', async () => {
+    getSLAs.mockResolvedValue([makeSLA({ name: 'Alpha' })])
+    getRecent.mockRejectedValue(new Error('Heartbeat log returned 502.'))
+    setup()
+    expect(await screen.findByText('Oracle heartbeats')).toBeInTheDocument()
+    expect(await screen.findByText('Heartbeat log returned 502.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Alpha' })).toBeInTheDocument()
   })
 
   it('navigates to the SLA details when a row is clicked', async () => {

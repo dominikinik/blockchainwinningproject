@@ -50,3 +50,24 @@
 .service-scope-note{display:flex;align-items:flex-start;gap:10px;padding:0 4px;color:#8993a2;font-size:11px;line-height:1.6}
 .service-scope-note svg{flex:none;margin-top:1px;color:#756ce5}
 @media(max-width:600px){.live-timeline-wrap{padding:20px 18px 16px}.live-timeline{gap:2px;height:46px}.live-timeline-axis{font-size:9px}.live-history-footer{padding:13px 18px}.service-scope-note{padding:0 2px}}
+.live-pill{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:800;color:#219d73;background:#eaf8f1;padding:7px 10px;border-radius:7px}
+.live-pulse{width:7px;height:7px;border-radius:50%;background:#2bb46d;animation:live-pulse 1.4s ease-out infinite}
+@keyframes live-pulse{0%{box-shadow:0 0 0 0 #2bb46d80}100%{box-shadow:0 0 0 8px #2bb46d00}}
+.heartbeat-state{padding:0 25px 25px}
+.heartbeat-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid #eef0f4}
+.heartbeat-stats>div{padding:15px 25px;border-right:1px solid #eef0f4;display:flex;flex-direction:column;gap:5px}
+.heartbeat-stats>div:last-child{border-right:0}
+.heartbeat-stats span{font-size:10px;font-weight:700;color:#98a0ae}
+.heartbeat-stats strong{font-size:20px;letter-spacing:-.6px;color:#252b3b}
+.heartbeat-stale{margin:0 25px 12px;font-size:11px;font-weight:700;color:#d38c20;background:#fff6e5;border-radius:7px;padding:8px 11px}
+.heartbeat-strip{display:flex;align-items:flex-end;gap:3px;height:34px;margin:6px 25px 18px}
+.heartbeat-bar{flex:1;max-width:14px;height:100%;border-radius:2px;background:#39bb8e}
+.heartbeat-bar.down{background:#ea907f}
+.heartbeat-bar.unsent{outline:2px solid #e9a63a;outline-offset:-2px}
+.heartbeat-table td{height:50px}
+.heartbeat-table a.mono-cell:hover{color:#6055e6!important}
+.report-badge{display:inline-flex;border-radius:6px;padding:6px 9px;font-size:10px;font-weight:800;line-height:1}
+.report-sent{background:#eaf8f1;color:#22a475}
+.report-retrying{background:#fff6e5;color:#d38c20}
+.report-dropped{background:#fff0ee;color:#e16e62}
+@media(max-width:600px){.heartbeat-stats{grid-template-columns:repeat(2,1fr)}.heartbeat-stats>div{padding:13px 18px}.heartbeat-strip{margin-left:18px;margin-right:18px}.heartbeat-stale{margin-left:18px;margin-right:18px}.heartbeat-table{min-width:640px}}

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in the 
 
 ## Overview
 
-A Spring Boot 4.1 / Java 21 service that is the health **proxy** between the provider (`../uptime-service`) and the `uptime_deal` Solana program (`../uptime-deal`), and that program's **oracle**. Each registered, accepted deal gets its own heartbeat at the deal's on-chain round interval (`check_interval_seconds`): when a round ends, the oracle calls the provider's `GET /api/health` and sends the result as that round's UP/DOWN `record_observation`. Separately, every `monitor.check-interval-ms` (2 s) it samples the provider for the dashboard's `/api/uptime`. Deals are registered with `POST /api/deals` and stored in PostgreSQL from the sibling `monitor-db` module. The oracle follows each proposal until it is accepted on chain and settles each deal once the on-chain counters prove a breach or the window and grace are over. It builds with an installed Maven 3.9 (`mvn`; `../scripts/setup-toolchain.sh` installs it) and has no Maven wrapper.
+A Spring Boot 4.1 / Java 21 service that is the health **proxy** between the provider (`../uptime-service`) and the `uptime_deal` Solana program (`../uptime-deal`), and that program's **oracle**. Each registered, accepted deal gets its own heartbeat at the deal's on-chain round interval (`check_interval_seconds`): when a round ends, the oracle calls the provider's `GET /api/health` and sends the result as that round's UP/DOWN `record_observation`. Every heartbeat is logged (application log and the `deal_heartbeat` table) and served at `/api/heartbeats` for the dashboard. Separately, every `monitor.check-interval-ms` (2 s) it samples the provider for the dashboard's `/api/uptime`. Deals are registered with `POST /api/deals` and stored in PostgreSQL from the sibling `monitor-db` module. The oracle follows each proposal until it is accepted on chain and settles each deal once the on-chain counters prove a breach or the window and grace are over. It builds with an installed Maven 3.9 (`mvn`; `../scripts/setup-toolchain.sh` installs it) and has no Maven wrapper.
 
 ## Commands
 
@@ -33,6 +33,8 @@ curl -XPOST localhost:8082/api/deals -H 'Content-Type: application/json' -d '{"a
 curl localhost:8082/api/deals/<deal>                  # PROPOSED / ACTIVE / SETTLED / FAILED / CANCELLED
 curl -XPOST localhost:8080/api/application/stop       # every check from now on records a DOWN round
 curl localhost:8082/api/uptime                        # last 5 minutes, one {time, down} per second
+curl 'localhost:8082/api/heartbeats?limit=20'         # latest deal heartbeats, newest first
+curl localhost:8082/api/deals/<deal>/heartbeats       # one deal's heartbeats
 ```
 
 Swagger UI is at `/swagger-ui.html`, OpenAPI at `/v3/api-docs`, and the proxy's own health at `/actuator/health`.
@@ -50,6 +52,7 @@ Packages under `com.example.monitor`. Dependencies point inward: `interfaces` an
     Only `HEALTHY` counts as UP.
   - `HealthProbe` is a port: it calls the endpoint once and never throws.
   - `ServiceId` is the UUID that deals are linked to: the checked provider's `monitor.service-id`.
+- **`domain/heartbeat/`**: `Heartbeat` is one deal round's probe (outcome, HTTP status, detail, latency) plus the delivery of its observation (`report`: `SENT` with the signature, `RETRYING` with the last error, or `DROPPED`). `HeartbeatLog` is its storage port (append, update the report, newest-first reads overall or per deal).
 - **`domain/deal/`**: the deal oracle's model.
   - `UptimeDeal` is immutable; every transition returns a copy.
     - `PROPOSED` until the recipient accepts on chain, which sets the window start.
@@ -70,6 +73,7 @@ Packages under `com.example.monitor`. Dependencies point inward: `interfaces` an
        - One probe per tick serves every deal whose round ended in it.
        - Rounds missed while the monitor was down aren't backfilled; the program counts them as down.
        - A heartbeat lands up to one poll interval after its round ends.
+       - Each heartbeat is written to the application log (`Heartbeat deal … round …: UP (HTTP 200, status UP, 3 ms), observation SENT <sig>`) and appended to the `HeartbeatLog`. A retry updates its row to `SENT` or `DROPPED`. A failing log is only warned about; it never stops the oracle.
     4. **Settles:** sends `settle_deal` for each accepted deal once `canSettleEarly()` (the DOWN rounds prove the threshold unreachable) or the window plus `max(settle-grace, 10)` seconds has passed. It then confirms, resends or fails the transaction. A vanished account is resolved from its recent closing events. Anyone may call `settle_deal`; the program computes the payout from its own counters.
 - **`application/UptimeHistory`** serves `/api/uptime` from memory: the time of the first result, plus the DOWN results of the last `max-range-seconds`.
   - A second is down before the first result, or within `[t, t + interval)` of a DOWN result.
@@ -77,6 +81,7 @@ Packages under `com.example.monitor`. Dependencies point inward: `interfaces` an
   - A restart starts it over.
 - **`infrastructure/`**
   - `probe/HttpHealthProbe`: a `RestClient` GET with a connect/read timeout of `monitor.probe-timeout-ms`. It reads the JSON `status` only on a 200, and treats a non-JSON 200 as healthy.
+  - `persistence/JdbcHeartbeatLog`: `JdbcClient` on the `deal_heartbeat` table owned by `../monitor-db`; ids are generated, reads are ordered by `checked_at DESC, id DESC`.
   - `persistence/JdbcUptimeDealRepository`: `JdbcClient` on the `uptime_deal` table owned by `../monitor-db`, one row per deal, updated in place. A duplicate address raises `DealAlreadyRegisteredException`.
   - `solana/SolanaDealChain` implements `DealChain` on `SolanaRpc`, `OracleKey`, `SolanaTransaction` and `DealProgram`. `DealProgram` holds the program's binary layout: the `Deal` account, the `record_observation` and `settle_deal` instructions, and the `DealSettled`/`DealCancelled` events. The Solana client (`Base58`, `Ed25519`, `OracleKey`, `SolanaTransaction`, `SolanaRpc`/`HttpSolanaRpc`) is hand-rolled.
   - `scheduling/HealthCheckScheduler`: `@Scheduled(fixedRate = monitor.check-interval-ms)` → `relay()`. `scheduling/DealSettlementScheduler` → `settleDue()`. Both are off when `monitor.scheduler.enabled=false`.
@@ -85,6 +90,7 @@ Packages under `com.example.monitor`. Dependencies point inward: `interfaces` an
   - `POST {address, serviceId?}` returns 201.
   - `GET` returns all deals, most recently proposed first. `GET /{address}` returns one deal; `startsAt`/`endsAt` are null while `PROPOSED`.
   - Every endpoint returns 503 when `monitor.blockchain.enabled=false`.
+- **`interfaces/web/HeartbeatController`** serves `GET /api/heartbeats?limit` and `GET /api/deals/{address}/heartbeats?limit` → `[{id, dealAddress, round, checkedAt, up, outcome, httpStatus, detail, latencyMs, report, reportError, signature}]`, newest first. `limit` is 1..500 (default 50), otherwise 400. An unknown deal reads empty. It works with the blockchain disabled too (empty).
 - **`interfaces/web/UptimeController`** serves `GET /api/uptime?from&to` → `[{time, down}]`.
 - `ApiExceptionHandler` maps errors:
   - `IllegalArgumentException` → 400
@@ -97,7 +103,7 @@ Lombok is available (`optional`, version managed by Spring Boot, wired as an exp
 Persistence: `spring.datasource.*` defaults to `jdbc:postgresql://localhost:5433/monitor` (user/password `monitor`). Override it with `MONITOR_DB_URL`, `MONITOR_DB_USER` and `MONITOR_DB_PASSWORD`. If you change the schema, update these together:
 
 - `monitor-db/init/02-schema.sh`
-- `JdbcUptimeDealRepository`
+- `JdbcUptimeDealRepository` and `JdbcHeartbeatLog`
 - `src/test/resources/schema.sql`
 
 Configuration (`application.properties`, bound to the `MonitorProperties` record):
@@ -128,7 +134,7 @@ Time comes from the injected `Clock` bean.
 
 The tests need no database, network, chain or provider, and they never sleep. Spring tests run on in-memory H2 in PostgreSQL mode, using `src/test/resources/schema.sql`, a copy of the `monitor-db` tables.
 
-- Domain: `HealthCheckResultTest`, plus `UptimeDealTest` for the deal lifecycle.
+- Domain: `HealthCheckResultTest`, `UptimeDealTest` for the deal lifecycle, and `HeartbeatTest`.
 - Application:
   - `HealthRelayTest`: a fake probe and `support/MutableClock`. It covers UP/DOWN/unreachable/error results and the history.
   - `DealServiceTest`: a mocked `DealChain`, a fake probe, `support/InMemoryUptimeDealRepository` and `MutableClock`. It covers:
@@ -142,8 +148,9 @@ The tests need no database, network, chain or provider, and they never sleep. Sp
     - no early settlement
     - registration with any interval
     - `roundEndedBy`
+    - the heartbeat log: one entry per deal per round with probe result and signature, `RETRYING` → `SENT`/`DROPPED`, and a broken log not stopping the oracle (`support/InMemoryHeartbeatLog`)
   - `UptimeHistoryTest`.
-- Persistence: `UptimeDealRepositoryContract` runs against `JdbcUptimeDealRepository` (H2 behind a Hikari pool) and the in-memory fake.
+- Persistence: `UptimeDealRepositoryContract` and `HeartbeatLogContract` run against the JDBC adapters (H2 behind a Hikari pool) and the in-memory fakes.
 - Adapters:
   - `HttpHealthProbeTest`: `MockRestServiceServer`, a real refused port, and a silent socket.
   - `SolanaDealChainTest`: a mocked `SolanaRpc`. It covers reads, the signed `record_observation`/`settle_deal` bytes, statuses and closures, and funding.
@@ -151,7 +158,8 @@ The tests need no database, network, chain or provider, and they never sleep. Sp
   - `HealthCheckSchedulerTest` and the Solana client tests.
 - `UptimeMonitorApplicationTests` is a full `@SpringBootTest` with MockMvc and `@MockitoBean` for `HealthProbe` and `SolanaRpc`. The `test` profile disables both schedulers, so tests call `HealthRelay.relay()` and `DealService.settleDue()` directly. It covers:
   - the configured components
-  - registering a deal, after which its heartbeat (not the dashboard sampler) reaches the chain
+  - registering a deal, after which its heartbeat (not the dashboard sampler) reaches the chain and `/api/deals/{address}/heartbeats`
+  - `/api/heartbeats` limit validation
   - proposals
   - deal error mapping
   - `/api/uptime`
