@@ -104,6 +104,7 @@ export function projection(deal: OnChainDeal): string {
 export function UptimeDealPage() {
   const { connection } = useConnection()
   const { publicKey, sendTransaction } = useWallet()
+  const me = publicKey?.toBase58()
   const now = useNow()
   const { data: config, error: configError, reload: reloadConfig } = useAsyncData(() => dealApi.getConfig(), [])
   const [serviceState, setServiceState] = useState<UptimeServiceState | null>(null)
@@ -119,12 +120,24 @@ export function UptimeDealPage() {
   const [chain, setChain] = useState<OnChainDeal | null>(null)
   const [closed, setClosed] = useState<ClosedDeal | null>(null)
   const [monitor, setMonitor] = useState<TrackedDeal | null>(null)
+  const [proposals, setProposals] = useState<TrackedDeal[]>([])
   const wallet = useBalance(connection, publicKey?.toBase58())
   const recipientBalance = useBalance(connection, chain?.recipient ?? monitor?.recipient)
 
   useEffect(() => {
     if (config) setIntervalSeconds(String(config.checkIntervalSeconds))
   }, [config])
+
+  useEffect(() => {
+    if (!me) { setProposals([]); return }
+    let cancelled = false
+    const load = () => dealApi.list().then((deals) => {
+      if (!cancelled) setProposals(deals.filter((deal) => deal.recipient === me && deal.status === 'PROPOSED'))
+    }, () => undefined)
+    void load()
+    const interval = window.setInterval(() => void load(), 2000)
+    return () => { cancelled = true; window.clearInterval(interval) }
+  }, [me])
 
   useEffect(() => {
     const load = () => uptimeService.getState().then(setServiceState, () => setServiceState(null))
@@ -169,7 +182,6 @@ export function UptimeDealPage() {
   }, [closed]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const clusterMismatch = config !== undefined && config !== null && !sameCluster(config.rpcUrl, SOLANA_RPC_URL)
-  const me = publicKey?.toBase58()
   const awaitingProvider = chain !== null && !closed && !chain.active
   const opensAt = chain ? settleOpensAt(chain) : null
   const canSettle = chain !== null && !closed && chain.active && opensAt !== null && now >= opensAt && Boolean(publicKey)
@@ -262,7 +274,7 @@ export function UptimeDealPage() {
       <form onSubmit={submit} className="surface form-surface" noValidate aria-label="Create uptime deal">
         <div className="form-section"><div className="form-section-heading"><span className="form-step">01</span><div><h2>Your wallet</h2><p>The customer signs create_deal and funds the payment.</p></div></div>
           {publicKey ? <div className="agreement-list">
-            <div><span>Payer</span><strong title={publicKey.toBase58()}>{shortAddress(publicKey.toBase58(), 6, 6)}</strong></div>
+            <div><span>My address</span><strong title={publicKey.toBase58()}>{shortAddress(publicKey.toBase58(), 6, 6)}</strong><button type="button" className="button" onClick={() => void navigator.clipboard.writeText(publicKey.toBase58())}>Copy my address</button></div>
             <div><span>Wallet balance</span><strong data-testid="wallet-balance">{formatLamports(wallet.lamports)}</strong></div>
             <div><span>Need SOL on localnet or devnet?</span><button type="button" className="button" onClick={airdrop} disabled={Boolean(busy)}><Droplets size={15} /> Airdrop 2 SOL</button></div>
           </div> : <div className="agreement-list"><div><span>Connect a wallet to create a deal.</span><WalletMultiButton /></div></div>}
@@ -285,6 +297,15 @@ export function UptimeDealPage() {
       </form>
 
       <aside className="summary-column">
+        {proposals.length > 0 && <section className="surface summary-card" aria-label="Proposals for you">
+          <h2>Proposals for you</h2>
+          {proposals.map((proposal) => <div className="agreement-escrow" key={proposal.address}>
+            <span title={proposal.address}>{shortAddress(proposal.address, 6, 6)} from {shortAddress(proposal.payer, 6, 6)}</span>
+            <button type="button" className="button settle-button" onClick={() => {
+              setAddress(proposal.address); setChain(null); setClosed(null); setMonitor(proposal)
+            }}>View proposal</button>
+          </div>)}
+        </section>}
         <section className="surface summary-card" aria-label="Uptime service">
           <div className="summary-icon"><Server size={21} /></div>
           <h2>Uptime monitor</h2>

@@ -10,7 +10,7 @@ export interface DealConfig {
   checkIntervalSeconds: number
 }
 
-export type DealStatus = 'AWAITING_PROVIDER' | 'ACTIVE' | 'SETTLED' | 'FAILED' | 'CANCELLED'
+export type DealStatus = 'PROPOSED' | 'ACTIVE' | 'SETTLED' | 'FAILED' | 'CANCELLED'
 
 /**
  * A deal as the uptime service monitors it (`GET /api/deals/{address}`). The terms and counters mirror the
@@ -73,6 +73,11 @@ export const dealApi = {
    */
   get(address: string): Promise<TrackedDeal> {
     return request<TrackedDeal>(`/api/deals/${encodeURIComponent(address)}`)
+  },
+
+  /** Lists deals registered with this monitor, including proposals awaiting their provider. */
+  list(): Promise<TrackedDeal[]> {
+    return request<TrackedDeal[]>('/api/deals')
   },
 
   /**

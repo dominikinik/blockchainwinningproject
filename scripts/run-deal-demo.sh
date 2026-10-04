@@ -12,6 +12,8 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PROGRAM_ID=EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r
+RPC_PORT=${DEMO_RPC_PORT:-8899}
+RPC_URL=http://127.0.0.1:$RPC_PORT
 for dir in "$HOME/.cargo/bin" "$HOME/.local/share/solana/install/active_release/bin"; do
 	[ -d "$dir" ] && PATH="$dir:$PATH"
 done
@@ -39,9 +41,10 @@ wait_for() {
 
 mkdir -p "$ROOT/uptime-deal/.anchor"
 solana-test-validator --reset --quiet --ledger "$ROOT/uptime-deal/.anchor/demo-ledger" \
+	--rpc-port "$RPC_PORT" \
 	--bpf-program "$PROGRAM_ID" "$ROOT/uptime-deal/target/deploy/uptime_deal.so" &
 PIDS="$PIDS $!"
-wait_for http://127.0.0.1:8899/health
+wait_for "$RPC_URL/health"
 
 # Reuse a running monitor-db container: "compose up" from another checkout would recreate it on this one's data.
 if [ "$(docker inspect -f '{{.State.Running}}' monitor-db 2>/dev/null)" != "true" ]; then
@@ -51,11 +54,11 @@ fi
 PIDS="$PIDS $!"
 wait_for http://localhost:8080/api/application/state
 
-(cd "$ROOT/uptime-monitor" && exec mvn -q spring-boot:run -Dspring-boot.run.arguments="--monitor.blockchain.rpc-url=http://127.0.0.1:8899") &
+(cd "$ROOT/uptime-monitor" && exec mvn -q spring-boot:run -Dspring-boot.run.arguments="--monitor.blockchain.rpc-url=$RPC_URL") &
 PIDS="$PIDS $!"
 wait_for http://localhost:8082/actuator/health
 
-(cd "$ROOT/frontend" && VITE_SOLANA_RPC_URL=http://127.0.0.1:8899 VITE_SOLANA_BURNER_WALLET=true exec npm run dev) &
+(cd "$ROOT/frontend" && VITE_SOLANA_RPC_URL="$RPC_URL" VITE_SOLANA_BURNER_WALLET=true exec npm run dev) &
 PIDS="$PIDS $!"
 wait_for http://localhost:5173
 
