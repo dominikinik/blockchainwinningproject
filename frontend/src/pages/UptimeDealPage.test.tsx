@@ -105,6 +105,19 @@ describe('UptimeDealPage', () => {
     expect(requestAirdrop).toHaveBeenCalledWith(connection, new PublicKey(WALLET), 2_000_000_000)
   })
 
+  it('creates a deal whose check interval differs from the monitor default', async () => {
+    await ready()
+    expect(screen.getByLabelText('Check interval (seconds)')).toHaveValue(2)
+
+    await userEvent.type(screen.getByLabelText('Recipient address'), PROVIDER)
+    await userEvent.clear(screen.getByLabelText('Check interval (seconds)'))
+    await userEvent.type(screen.getByLabelText('Check interval (seconds)'), '5')
+    await userEvent.click(screen.getByRole('button', { name: /Create deal/ }))
+
+    expect(openDeal).toHaveBeenCalledWith(expect.objectContaining({ durationSeconds: 10, checkIntervalSeconds: 5 }))
+    expect(screen.queryByText(/sampling interval/)).not.toBeInTheDocument()
+  })
+
   it('creates a deal with every term and follows the on-chain counters until the program pays the recipient', async () => {
     vi.mocked(readDeal).mockResolvedValueOnce(chainDeal({ upChecks: 3, downChecks: 0 })).mockResolvedValue(null)
     vi.mocked(readOutcome).mockResolvedValue({

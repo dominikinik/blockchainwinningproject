@@ -23,22 +23,17 @@ class HealthRelayTest {
 
 	private final UptimeHistory history = new UptimeHistory(clock, Duration.ofSeconds(2), 300, 86_400);
 
-	private final List<String> received = new ArrayList<>();
-
 	private final List<String> probed = new ArrayList<>();
 
 	private HealthCheckResult next = HealthCheckResult.fromResponse(200, "UP");
 
-	private HealthRelay relay(HealthListener... listeners) {
-		return new HealthRelay(url -> {
-			probed.add(url);
-			return next;
-		}, URL, List.of(listeners), history, clock);
-	}
+	private final HealthRelay relay = new HealthRelay(url -> {
+		probed.add(url);
+		return next;
+	}, URL, history, clock);
 
 	@Test
-	void probesOnceAndHandsTheResultToEveryListener() {
-		HealthRelay relay = relay((at, up) -> received.add("a " + at + " " + up), (at, up) -> received.add("b " + up));
+	void probesOnceAndRecordsAHealthyResult() {
 		clock.set(START.plusSeconds(2));
 
 		Relay result = relay.relay();
@@ -46,35 +41,21 @@ class HealthRelayTest {
 		assertThat(probed).containsExactly(URL);
 		assertThat(result.up()).isTrue();
 		assertThat(result.observedAt()).isEqualTo(START.plusSeconds(2));
-		assertThat(received).containsExactly("a " + START.plusSeconds(2) + " true", "b true");
+		assertThat(history.range(START.plusSeconds(2), START.plusSeconds(3))).noneMatch(UptimeHistory.Point::down);
 	}
 
 	@Test
-	void downAndUnreachableProvidersAreRelayedAsDown() {
-		HealthRelay relay = relay((at, up) -> received.add(String.valueOf(up)));
+	void downAndUnreachableProvidersAreRecordedAsDown() {
 		next = HealthCheckResult.fromResponse(200, "DOWN");
-		relay.relay();
+		assertThat(relay.relay().up()).isFalse();
 		next = HealthCheckResult.unreachable("Connection refused");
-		relay.relay();
+		assertThat(relay.relay().up()).isFalse();
 		next = HealthCheckResult.fromResponse(500, null);
-		relay.relay();
-
-		assertThat(received).containsExactly("false", "false", "false");
+		assertThat(relay.relay().up()).isFalse();
 	}
 
 	@Test
-	void aFailingListenerDoesNotStopTheOthersOrTheRelay() {
-		HealthRelay relay = relay((at, up) -> {
-			throw new IllegalStateException("node down");
-		}, (at, up) -> received.add("ok"));
-
-		assertThat(relay.relay().up()).isTrue();
-		assertThat(received).containsExactly("ok");
-	}
-
-	@Test
-	void everyResultIsRecordedInTheHistoryEvenWithoutListeners() {
-		HealthRelay relay = relay();
+	void aDownResultMarksItsIntervalDownInTheHistory() {
 		next = HealthCheckResult.fromResponse(404, null);
 		clock.set(START.plusSeconds(2));
 

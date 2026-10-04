@@ -90,7 +90,7 @@ class UptimeMonitorApplicationTests {
 	}
 
 	@Test
-	void aHealthResultIsReportedToARegisteredDealThroughTheWiring() throws Exception {
+	void aRegisteredDealGetsAHeartbeatAtItsOwnIntervalThroughTheWiring() throws Exception {
 		String deal = DealFixtures.newAddress();
 		when(rpc.getAccountInfo(deal)).thenReturn(new AccountInfo(DealFixtures.PROGRAM_ID, 1, DealFixtures.dealData(
 				DealFixtures.newAddress(), DealFixtures.newAddress(), oracle.address(), 1, 5_000_000,
@@ -108,12 +108,15 @@ class UptimeMonitorApplicationTests {
 			.andExpect(jsonPath("$.endsAt").exists())
 			.andExpect(jsonPath("$.upChecks").doesNotExist());
 
-		when(probe.check(URL)).thenReturn(HealthCheckResult.fromResponse(404, null));
+		// The dashboard sampler doesn't report to deals; the deal's heartbeat runs in settleDue.
+		when(probe.check(URL)).thenReturn(HealthCheckResult.fromResponse(200, "UP"));
 		relay.relay();
+		verify(rpc, never()).sendTransaction(any());
+		when(probe.check(URL)).thenReturn(HealthCheckResult.fromResponse(404, null));
+		deals.settleDue();
 		verify(rpc).sendTransaction(any());
 
 		// The monitor reports observations; SLA totals and the payout decision stay on chain.
-		deals.settleDue();
 		mvc.perform(get("/api/deals/" + deal))
 			.andExpect(jsonPath("$.signature").doesNotExist())
 			.andExpect(jsonPath("$.totalRounds").doesNotExist());
@@ -141,7 +144,7 @@ class UptimeMonitorApplicationTests {
 		mvc.perform(get("/api/deals/" + deal)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PROPOSED"));
 
 		when(probe.check(URL)).thenReturn(HealthCheckResult.fromResponse(200, "UP"));
-		relay.relay();
+		deals.settleDue();
 		verify(rpc, never()).sendTransaction(any());
 	}
 

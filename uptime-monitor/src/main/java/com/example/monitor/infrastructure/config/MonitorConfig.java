@@ -5,7 +5,6 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -13,7 +12,6 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestClient;
 
 import com.example.monitor.application.DealService;
-import com.example.monitor.application.HealthListener;
 import com.example.monitor.application.HealthRelay;
 import com.example.monitor.application.UptimeHistory;
 import com.example.monitor.domain.HealthProbe;
@@ -54,11 +52,10 @@ public class MonitorConfig {
 		return new JdbcUptimeDealRepository(jdbc);
 	}
 
-	/** Every {@link HealthListener} (the deal oracle, unless the blockchain is off) gets each result. */
+	/** Samples the provider for {@code /api/uptime}; deals run their own heartbeats in {@link DealService}. */
 	@Bean
-	HealthRelay healthRelay(HealthProbe probe, ObjectProvider<HealthListener> listeners, UptimeHistory history,
-			Clock clock, MonitorProperties properties) {
-		return new HealthRelay(probe, properties.healthUrl(), listeners.orderedStream().toList(), history, clock);
+	HealthRelay healthRelay(HealthProbe probe, UptimeHistory history, Clock clock, MonitorProperties properties) {
+		return new HealthRelay(probe, properties.healthUrl(), history, clock);
 	}
 
 	@Configuration
@@ -85,12 +82,14 @@ public class MonitorConfig {
 					chain.oracleMinLamports(), chain.oracleAirdropLamports());
 		}
 
-		/** The deal oracle; it is also a {@link HealthListener}, so {@code HealthRelay} feeds it. */
+		/** The deal oracle: checks the provider once per round of each deal's own interval and settles the deals. */
 		@Bean
-		DealService dealService(UptimeDealRepository deals, DealChain chain, Clock clock, MonitorProperties properties) {
+		DealService dealService(UptimeDealRepository deals, DealChain chain, HealthProbe probe, Clock clock,
+				MonitorProperties properties) {
 			MonitorProperties.Deal deal = properties.deal();
-			return new DealService(deals, chain, clock,
-					new DealService.Settings(new ServiceId(properties.serviceId()), deal.maxDurationSeconds(),
+			return new DealService(deals, chain, probe, clock,
+					new DealService.Settings(new ServiceId(properties.serviceId()), properties.healthUrl(),
+							deal.maxDurationSeconds(),
 							deal.settleGraceSeconds(), deal.maxSettleAttempts(), deal.confirmTimeoutSeconds(),
 							Math.max(1, properties.checkIntervalMs() / 1_000)));
 		}

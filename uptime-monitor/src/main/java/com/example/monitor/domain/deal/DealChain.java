@@ -36,6 +36,20 @@ public interface DealChain {
 			return round >= 0 && round / 8 < recorded.length && (recorded[round / 8] & (1 << (round % 8))) != 0;
 		}
 
+		/**
+		 * The last round that ended at or before {@code at}: the round a heartbeat at {@code at} reports.
+		 *
+		 * @return the zero-based round, or {@code -1} for a proposal, before the first round ends, or after the last
+		 */
+		public int roundEndedBy(Instant at) {
+			if (startsAt == null || checkIntervalSeconds <= 0) {
+				return -1;
+			}
+			long round = Math.floorDiv(java.time.Duration.between(startsAt, at).toMillis(), checkIntervalSeconds * 1_000)
+					- 1;
+			return round < 0 || round >= totalRounds ? -1 : (int) round;
+		}
+
 		public boolean canSettleEarly() {
 			long maximumPossibleUpRounds = totalRounds - downChecks;
 			return maximumPossibleUpRounds * 10_000L < (long) minUptimeBps * totalRounds;

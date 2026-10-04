@@ -228,10 +228,6 @@ export function UptimeDealPage() {
     if (!Number.isFinite(stake) || stake < 0) { setError('Enter a provider guarantee of 0 SOL or more.'); return }
     if (!Number.isInteger(seconds) || seconds < 1 || seconds > 3600) { setError('Enter a window of 1 to 3600 seconds.'); return }
     if (totalRounds(seconds, interval) === null) { setError('The check interval must divide the window evenly.'); return }
-    if (config && interval !== config.checkIntervalSeconds) {
-      setError(`The check interval must match the monitor's ${config.checkIntervalSeconds}-second sampling interval.`)
-      return
-    }
     if (!Number.isFinite(percent) || percent < 0.01 || percent > 100) { setError('Enter a minimum uptime between 0.01% and 100%.'); return }
     void run('Creating deal', async () => {
       setAddress(null); setChain(null); setClosed(null); setMonitor(null)
@@ -280,7 +276,7 @@ export function UptimeDealPage() {
           </div>
           <div className="field-grid">
             <div className="field"><label htmlFor="duration">Window (seconds)</label><input id="duration" type="number" min="1" max="3600" step="1" value={durationSeconds} onChange={(e) => setDurationSeconds(e.target.value)} /><small>1 to 3600 seconds.</small></div>
-            <div className="field"><label htmlFor="interval">Check interval (seconds)</label><input id="interval" type="number" min="1" step="1" value={intervalSeconds} onChange={(e) => setIntervalSeconds(e.target.value)} /><small>Must match the monitor sampling interval; one probe result is reported per round.</small></div>
+            <div className="field"><label htmlFor="interval">Check interval (seconds)</label><input id="interval" type="number" min="1" step="1" value={intervalSeconds} onChange={(e) => setIntervalSeconds(e.target.value)} /><small>The monitor checks the service once per round, at this interval, and reports each result on chain.</small></div>
             <div className="field"><label htmlFor="min-uptime">Minimum uptime (%)</label><input id="min-uptime" type="number" min="0.01" max="100" step="0.01" value={minUptimePercent} onChange={(e) => setMinUptimePercent(e.target.value)} /><small>Unobserved rounds count as down.</small></div>
           </div>
         </div>
