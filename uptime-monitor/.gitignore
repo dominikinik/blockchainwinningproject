@@ -1,0 +1,40 @@
+HELP.md
+target/
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Uptime deal oracle key (created on first start) ###
+.oracle-keypair.json
+
+### Maven wrapper (not used: build with an installed `mvn`, see scripts/setup-toolchain.sh) ###
+mvnw
+mvnw.cmd
+.mvn/

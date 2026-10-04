@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Page } from '@playwright/test'
 import { Connection, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js'
-import { BACKEND_URL, RPC_URL, WEB_URL } from './env'
+import { PROVIDER_URL, RPC_URL, WEB_URL } from './env'
 
 const connection = new Connection(RPC_URL, 'confirmed')
 const PAYMENT_SOL = 0.5
@@ -51,7 +51,7 @@ async function proposeAndAccept(browser: Browser) {
 }
 
 test.afterEach(async ({ request }) => {
-  await request.post(`${BACKEND_URL}/api/application/start`)
+  await request.post(`${PROVIDER_URL}/api/application/start`)
 })
 
 test('pays the provider both deposits when the service stays up for the whole window', async ({ browser }, testInfo) => {
@@ -75,7 +75,9 @@ test('pays the payer both deposits when the service goes down during the window'
 
   await payer.page.getByRole('button', { name: 'Simulate outage' }).click()
   await expect(payer.page.getByTestId('service-state')).toHaveText('DOWN')
-  await payer.page.waitForTimeout(2_000) // keep the service down for whole recorded seconds
+  // The monitor checks every 2 s and closes the deal early on the first Downtime, so keep the
+  // provider down for longer than one check interval.
+  await payer.page.waitForTimeout(3_000)
   await payer.page.getByRole('button', { name: 'Restore service' }).click()
   await expect(payer.page.getByTestId('service-state')).toHaveText('UP')
 

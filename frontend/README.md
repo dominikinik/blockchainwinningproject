@@ -15,12 +15,12 @@ npm run dev
 Open the URL printed by Vite (normally `http://localhost:5173`). Run `npm run build` for the TypeScript and production build check.
 The devcontainer forwards port `5173` for Vite and `8899` for Surfpool.
 
-The Monitoring page reads the Java service's own state and per-second uptime history through Vite's `/api` proxy. Start `uptime-db` and `uptime-service` to see the live green/red five-minute timeline. The proxy targets `http://localhost:8080` by default; set `SLANA_UPTIME_SERVICE_TARGET=http://host.docker.internal:8080` if Vite runs in the devcontainer and Java runs on the host. Customer SLA uptime data remains mocked. Production deployment needs a same-origin `/api` reverse proxy.
+The Monitoring page reads the Java service's own state and per-second uptime history through Vite's `/api` proxy. Start `uptime-service` (health provider), `monitor-db` and `uptime-monitor` to see the live green/red five-minute timeline. The proxy sends `/api/application` to the provider at `http://localhost:8080` (`SLANA_UPTIME_SERVICE_TARGET`) and every other `/api` call to the monitor at `http://localhost:8082` (`SLANA_UPTIME_MONITOR_TARGET`); set both to `http://host.docker.internal:<port>` if Vite runs in the devcontainer and Java runs on the host. Customer SLA uptime data remains mocked. Production deployment needs a same-origin `/api` reverse proxy.
 
 For that devcontainer setup, start Vite with:
 
 ```bash
-SLANA_UPTIME_SERVICE_TARGET=http://host.docker.internal:8080 npm run dev
+SLANA_UPTIME_SERVICE_TARGET=http://host.docker.internal:8080 SLANA_UPTIME_MONITOR_TARGET=http://host.docker.internal:8082 npm run dev
 ```
 
 ## Current behavior
