@@ -19,7 +19,7 @@ pub mod state;
 pub use constants::*;
 pub use instructions::*;
 
-declare_id!("EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r");
+declare_id!("FVYpjzHktSRkPeUMytDPwVnAXTEf1QqVymKTnqNqfDmr");
 
 #[program]
 pub mod uptime_deal {

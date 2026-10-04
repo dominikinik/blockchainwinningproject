@@ -56,13 +56,13 @@ describe('waitForConfirmation', () => {
 describe('openDeal', () => {
   beforeEach(() => { vi.mocked(dealApi.register).mockReset() })
 
-  it('sends create_deal with both deposits, waits for it, then registers the deal address', async () => {
+  it('sends create_deal with both deposits, waits for it, then registers the deal address and returns the signature', async () => {
     const connection = connectionWith({ confirmationStatus: 'confirmed', err: null })
     const sendTransaction = vi.fn().mockResolvedValue('sig')
     vi.mocked(dealApi.register).mockResolvedValue({ address: 'D' } as never)
 
     await expect(openDeal({ connection, payer, sendTransaction, config, recipient, ...terms, dealId: 5n }))
-      .resolves.toEqual({ address: 'D' })
+      .resolves.toEqual({ deal: { address: 'D' }, signature: 'sig' })
 
     const tx: Transaction = sendTransaction.mock.calls[0][0]
     expect(sendTransaction.mock.calls[0][1]).toBe(connection)
@@ -127,10 +127,10 @@ describe('acceptDeal', () => {
     status: 'PROPOSED',
   } as TrackedDeal
 
-  it('sends accept_deal with the terms the provider was shown and waits for confirmation', async () => {
+  it('sends accept_deal with the terms the provider was shown, waits for confirmation and returns the signature', async () => {
     const connection = connectionWith({ confirmationStatus: 'confirmed', err: null })
     const sendTransaction = vi.fn().mockResolvedValue('sig')
-    await expect(acceptDeal({ connection, recipient: provider, sendTransaction, config, deal: proposal })).resolves.toBeUndefined()
+    await expect(acceptDeal({ connection, recipient: provider, sendTransaction, config, deal: proposal })).resolves.toBe('sig')
 
     const tx: Transaction = sendTransaction.mock.calls[0][0]
     const ix = tx.instructions[0]
@@ -178,10 +178,10 @@ describe('cancelDeal', () => {
   it.each([
     ['the payer', payer],
     ['the provider', new PublicKey(recipient)],
-  ])('sends cancel_deal signed by %s with both parties and waits for confirmation', async (_name, signer) => {
+  ])('sends cancel_deal signed by %s with both parties, waits for confirmation and returns the signature', async (_name, signer) => {
     const connection = connectionWith({ confirmationStatus: 'confirmed', err: null })
     const sendTransaction = vi.fn().mockResolvedValue('sig')
-    await expect(cancelDeal({ connection, signer, sendTransaction, programId: new PublicKey(programId), deal })).resolves.toBeUndefined()
+    await expect(cancelDeal({ connection, signer, sendTransaction, programId: new PublicKey(programId), deal })).resolves.toBe('sig')
     const tx: Transaction = sendTransaction.mock.calls[0][0]
     expect(sendTransaction.mock.calls[0][1]).toBe(connection)
     expect(tx.instructions).toHaveLength(1)

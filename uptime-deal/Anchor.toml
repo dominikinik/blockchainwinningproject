@@ -5,7 +5,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-uptime_deal = "EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r"
+uptime_deal = "FVYpjzHktSRkPeUMytDPwVnAXTEf1QqVymKTnqNqfDmr"
+
+[programs.devnet]
+uptime_deal = "FVYpjzHktSRkPeUMytDPwVnAXTEf1QqVymKTnqNqfDmr"
 
 [provider]
 cluster = "localnet"

@@ -30,11 +30,11 @@ export interface OpenDealParams {
  * it and settles it once the window has passed.
  *
  * @param params the wallet, the service configuration and the deal terms
- * @returns the deal as tracked by the service, PROPOSED
+ * @returns the deal as tracked by the service (PROPOSED) and the signature of the create_deal transaction
  * @throws Error for an invalid recipient, payment, guarantee or duration, a rejected or failed transaction,
  *   or a refused registration (the message then names the deal address and how to withdraw the proposal)
  */
-export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
+export async function openDeal(params: OpenDealParams): Promise<ProposedDeal> {
   let recipient: PublicKey
   try { recipient = new PublicKey(params.recipient) } catch { throw new Error('Enter a valid provider address.') }
   if (recipient.equals(params.payer)) throw new Error('The provider must be another wallet.')
@@ -61,7 +61,7 @@ export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
   await waitForConfirmation(params.connection, signature)
   const address = dealAddress(programId, params.payer, dealId).toBase58()
   try {
-    return await dealApi.register(address)
+    return { deal: await dealApi.register(address), signature }
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : 'unknown error'
     throw new Error(
@@ -69,6 +69,13 @@ export async function openDeal(params: OpenDealParams): Promise<TrackedDeal> {
       'Your payment is locked; withdraw the proposal with cancel_deal.',
     )
   }
+}
+
+/** A proposal registered with the uptime service, with the transaction that created it. */
+export interface ProposedDeal {
+  deal: TrackedDeal
+  /** Signature of the confirmed create_deal transaction. */
+  signature: TransactionSignature
 }
 
 export interface AcceptDealParams {
@@ -87,10 +94,11 @@ export interface AcceptDealParams {
  * the deal on chain says anything else.
  *
  * @param params the wallet, the service configuration and the proposal
+ * @returns the signature of the confirmed accept_deal transaction
  * @throws Error when the wallet isn't the deal's recipient, the deal isn't a proposal, the wallet rejects,
  *   or the program refuses (expired, different terms, not enough SOL)
  */
-export async function acceptDeal(params: AcceptDealParams): Promise<void> {
+export async function acceptDeal(params: AcceptDealParams): Promise<TransactionSignature> {
   if (params.deal.status !== 'PROPOSED') throw new Error('Only a proposal can be accepted.')
   if (params.deal.recipient !== params.recipient.toBase58()) throw new Error('Only the provider named in the deal can accept it.')
   const transaction = new Transaction().add(acceptDealInstruction({
@@ -104,6 +112,7 @@ export async function acceptDeal(params: AcceptDealParams): Promise<void> {
   }))
   const signature = await params.sendTransaction(transaction, params.connection)
   await waitForConfirmation(params.connection, signature)
+  return signature
 }
 
 export interface CancelDealParams {
@@ -122,9 +131,10 @@ export interface CancelDealParams {
  * after the window ends for an accepted deal.
  *
  * @param params the wallet, the program and the deal
+ * @returns the signature of the confirmed cancel_deal transaction
  * @throws Error when the wallet rejects, the program refuses (too early, not a party) or the transaction isn't confirmed
  */
-export async function cancelDeal(params: CancelDealParams): Promise<void> {
+export async function cancelDeal(params: CancelDealParams): Promise<TransactionSignature> {
   const transaction = new Transaction().add(cancelDealInstruction({
     programId: params.programId,
     signer: params.signer,
@@ -134,6 +144,7 @@ export async function cancelDeal(params: CancelDealParams): Promise<void> {
   }))
   const signature = await params.sendTransaction(transaction, params.connection)
   await waitForConfirmation(params.connection, signature)
+  return signature
 }
 
 /**

@@ -43,7 +43,7 @@ mkdir -p .anchor
 anchor build --ignore-keys
 solana-test-validator --reset --quiet --ledger .anchor/demo-ledger \
   --rpc-port 8891 \
-  --bpf-program EesKoTPMwuRzvpfuZqNbyEf7mMrjUNXGCa2ugHAeVx2r target/deploy/uptime_deal.so
+  --bpf-program FVYpjzHktSRkPeUMytDPwVnAXTEf1QqVymKTnqNqfDmr target/deploy/uptime_deal.so
 ```
 
 Terminal 2, start PostgreSQL if it is not already running:
@@ -147,6 +147,8 @@ The monitor stores deals in `monitor-db`, so restarting it doesn't lose them; it
 | No Burner Wallet option appears | The frontend was not started with `VITE_SOLANA_BURNER_WALLET=true`. Stop and restart Vite with that variable set. |
 
 ## Switching this setup to Devnet for a demo
+
+The program is already deployed on Devnet; [DEVNET_DEMO.md](DEVNET_DEMO.md) has the full live-demo procedure. In short:
 
 Changing the frontend URL alone is not enough. Before using Devnet:
 

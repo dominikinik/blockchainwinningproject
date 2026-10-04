@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { ArrowRight, Coins, Copy, Droplets, Handshake, LockKeyhole, Server, ShieldCheck, Timer } from 'lucide-react'
+import { ArrowRight, Coins, Copy, Droplets, ExternalLink, Handshake, LockKeyhole, Server, ShieldCheck, Timer } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
@@ -9,13 +9,18 @@ import { useAsyncData } from '../hooks/useAsyncData'
 import { useBalance } from '../hooks/useBalance'
 import { useNow } from '../hooks/useNow'
 import { sameCluster, SOLANA_RPC_URL } from '../config/solana'
-import { shortAddress } from '../lib/format'
+import { explorerUrl, shortAddress } from '../lib/format'
 import { dealApi, type TrackedDeal } from '../services/deal/dealApi'
 import { CANCEL_TIMEOUT_SECONDS } from '../services/deal/dealProgram'
 import { acceptDeal, cancelDeal, openDeal, requestAirdrop } from '../services/deal/dealService'
 import { uptimeService, type UptimeServiceState } from '../services/uptime/uptimeService'
 
 const AIRDROP_LAMPORTS = 2 * LAMPORTS_PER_SOL
+/**
+ * Balances also refresh right after every action and status change, so a slow background poll is enough. A
+ * 2 s poll per balance, per open tab, exhausted the public Devnet RPC's per-IP limit and blocked transactions.
+ */
+const BALANCE_POLL_MS = 10_000
 
 /**
  * Formats lamports as SOL with up to 9 decimals.
@@ -72,6 +77,25 @@ export function dealLink(address: string): string {
   return `${window.location.origin}/deal?deal=${encodeURIComponent(address)}`
 }
 
+/** A transaction this window's wallet signed for the current deal. */
+interface DealTx {
+  label: string
+  signature: string
+}
+
+/**
+ * Links a transaction or account to Solana Explorer on the cluster the app uses, so anyone can check it on chain.
+ *
+ * @param props.kind a transaction signature or an account address
+ * @param props.value the signature or address, shown shortened
+ * @param props.testId the test id of the link
+ */
+function ExplorerLink({ kind, value, testId }: { kind: 'tx' | 'address'; value: string; testId?: string }) {
+  return <a href={explorerUrl(kind, value, SOLANA_RPC_URL)} target="_blank" rel="noreferrer" title={value} data-testid={testId}>
+    {shortAddress(value, 6, 6)} <ExternalLink size={13} />
+  </a>
+}
+
 /** Writes text to the clipboard, ignoring browsers that refuse it. */
 async function copy(text: string): Promise<void> {
   try { await navigator.clipboard.writeText(text) } catch { /* nothing to copy into */ }
@@ -96,9 +120,10 @@ export function UptimeDealPage() {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [deal, setDeal] = useState<TrackedDeal | null>(null)
+  const [txs, setTxs] = useState<DealTx[]>([])
   const [tracked, setTracked] = useState<TrackedDeal[]>([])
-  const wallet = useBalance(connection, publicKey?.toBase58())
-  const recipientBalance = useBalance(connection, deal?.recipient)
+  const wallet = useBalance(connection, publicKey?.toBase58(), BALANCE_POLL_MS)
+  const recipientBalance = useBalance(connection, deal?.recipient, BALANCE_POLL_MS)
 
   useEffect(() => {
     const load = () => uptimeService.getState().then(setServiceState, () => setServiceState(null))
@@ -185,7 +210,8 @@ export function UptimeDealPage() {
   function cancel(label: string) {
     if (!publicKey || !config || !deal) return
     void run(label, async () => {
-      await cancelDeal({ connection, signer: publicKey, sendTransaction, programId: new PublicKey(config.programId), deal })
+      const signature = await cancelDeal({ connection, signer: publicKey, sendTransaction, programId: new PublicKey(config.programId), deal })
+      setTxs((done) => [...done, { label: 'Cancel tx', signature }])
       setDeal({ ...deal, status: 'CANCELLED' })
       await wallet.refresh()
     })
@@ -194,7 +220,8 @@ export function UptimeDealPage() {
   function accept() {
     if (!publicKey || !config || !deal) return
     void run('Accepting deal', async () => {
-      await acceptDeal({ connection, recipient: publicKey, sendTransaction, config, deal })
+      const signature = await acceptDeal({ connection, recipient: publicKey, sendTransaction, config, deal })
+      setTxs((done) => [...done, { label: 'Acceptance tx', signature }])
       setDeal(await dealApi.get(deal.address))
       await wallet.refresh()
     })
@@ -211,12 +238,14 @@ export function UptimeDealPage() {
     if (!Number.isInteger(seconds) || seconds < 1 || seconds > 3600) { setError('Enter a window of 1 to 3600 seconds.'); return }
     void run('Proposing deal', async () => {
       setDeal(null)
-      const proposal = await openDeal({
+      setTxs([])
+      const { deal: proposal, signature } = await openDeal({
         connection, payer: publicKey, sendTransaction, config, recipient: recipient.trim(),
         amountLamports: BigInt(Math.round(sol * LAMPORTS_PER_SOL)),
         guaranteeLamports: BigInt(Math.round(guarantee * LAMPORTS_PER_SOL)),
         durationSeconds: seconds,
       })
+      setTxs([{ label: 'Proposal tx', signature }])
       setDeal(proposal)
       setSearchParams({ deal: proposal.address })
       await wallet.refresh()
@@ -266,7 +295,8 @@ export function UptimeDealPage() {
           <p className="summary-intro">Its per-second health history decides the deal.</p>
           <div className="summary-list">
             <div><span>Current state</span><strong data-testid="service-state">{serviceState ?? 'Unavailable'}</strong></div>
-            <div><span>Oracle</span><strong title={config?.oracle}>{config ? shortAddress(config.oracle, 6, 6) : '—'}</strong></div>
+            <div><span>Oracle</span><strong>{config ? <ExplorerLink kind="address" value={config.oracle} /> : '—'}</strong></div>
+            <div><span>Program</span><strong>{config ? <ExplorerLink kind="address" value={config.programId} testId="program-link" /> : '—'}</strong></div>
           </div>
           <button type="button" className="button settle-button" onClick={toggleService} disabled={!serviceState || Boolean(busy)}>{serviceState === 'DOWN' ? 'Restore service' : 'Simulate outage'}</button>
         </section>
@@ -277,7 +307,7 @@ export function UptimeDealPage() {
           <p className="summary-intro">Payers proposed these deals to your wallet. Review one to accept or reject it.</p>
           {incoming.map((offer) => <div className="agreement-escrow" key={offer.address}>
             <span title={offer.payer}>{shortAddress(offer.payer, 6, 6)} pays {formatLamports(offer.amountLamports)} · you lock {formatLamports(offer.guaranteeLamports)} · {offer.durationSeconds}s</span>
-            <button type="button" className="button" onClick={() => { setError(null); setSearchParams({ deal: offer.address }) }}>Review</button>
+            <button type="button" className="button" onClick={() => { setError(null); setTxs([]); setSearchParams({ deal: offer.address }) }}>Review</button>
           </div>)}
         </section>}
 
@@ -286,7 +316,7 @@ export function UptimeDealPage() {
           <h2>Deal</h2>
           <p className="summary-intro" role="status" data-testid="deal-verdict">{dealVerdict(deal, now)}</p>
           <div className="summary-list">
-            <div><span>Address</span><strong title={deal.address}>{shortAddress(deal.address, 6, 6)}</strong></div>
+            <div><span>Address</span><strong><ExplorerLink kind="address" value={deal.address} testId="deal-address-link" /></strong></div>
             <div><span>Window</span><strong>{deal.durationSeconds}s</strong></div>
             {proposed && <div><span>Accept by</span><strong>{new Date(deal.acceptDeadline).toLocaleString()}</strong></div>}
             <div><span>Measured</span><strong data-testid="deal-measured">{measured}</strong></div>
@@ -294,7 +324,8 @@ export function UptimeDealPage() {
             <div><span><Coins size={16} /> Provider balance</span><strong data-testid="recipient-balance">{formatLamports(recipientBalance.lamports)}</strong></div>
             <div><span>Payment</span><strong data-testid="deal-payment">{formatLamports(deal.amountLamports)}</strong></div>
             <div><span>Provider guarantee</span><strong data-testid="deal-guarantee">{formatLamports(deal.guaranteeLamports)}</strong></div>
-            {deal.signature && <div><span>Settlement tx</span><strong title={deal.signature}>{shortAddress(deal.signature, 6, 6)}</strong></div>}
+            {txs.map((tx) => <div key={tx.signature}><span>{tx.label}</span><strong><ExplorerLink kind="tx" value={tx.signature} testId="wallet-tx-link" /></strong></div>)}
+            {deal.signature && <div><span>Settlement tx</span><strong><ExplorerLink kind="tx" value={deal.signature} testId="settlement-tx-link" /></strong></div>}
           </div>
           {proposed && isPayer && <div className="agreement-escrow">
             <span>The provider sees it under “Proposals for you”, or opens this link</span>

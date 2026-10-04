@@ -57,7 +57,8 @@ The `/deal` page (`src/pages/UptimeDealPage.tsx`) is the one flow that uses no m
 5. **Follow.** The page polls `GET /api/deals/{address}` every second. It shows:
    - the countdown and the measured up/total seconds,
    - the program's verdict ("Paid to recipient" / "Refunded to payer", read from the `DealSettled` event; each side receives both deposits),
-   - the provider's on-chain balance, the payment and the guarantee.
+   - the provider's on-chain balance, the payment and the guarantee,
+   - Solana Explorer links (`ExplorerLink`, `lib/format.ts#explorerUrl`) for the deal account, the program, the oracle, every transaction this window's wallet signed for the deal (`openDeal` returns `{ deal, signature }`; `acceptDeal` and `cancelDeal` return their signature) and the oracle's settlement. The explorer cluster follows `SOLANA_RPC_URL`: devnet/testnet/mainnet for URLs naming them (so a hosted devnet RPC's API key never ends up in the link), otherwise a custom cluster pointing at that URL (localnet).
    "Simulate outage" / "Restore service" call `POST /api/application/{stop,start}`, so a manual test can force a refund.
 6. **Reclaim deposits.** When the deal is FAILED, or ACTIVE past `endsAt` + 600 s, and the connected wallet is the payer or the provider, the page shows a button that sends `cancel_deal` (`dealService.cancelDeal`, signed by that party). It is enabled once `endsAt` + 600 s (`CANCEL_TIMEOUT_SECONDS`) has passed. On success the deal shows as CANCELLED ("Cancelled · deposits returned"). The window input stays at 1..3600 (the backend's default maximum).
 
@@ -65,7 +66,7 @@ Configuration comes from `src/config/solana.ts`:
 - `VITE_SOLANA_RPC_URL` sets the cluster (default Devnet).
 - `VITE_SOLANA_BURNER_WALLET=true` replaces Phantom/Solflare with `UnsafeBurnerWalletAdapter`. That adapter holds a throwaway in-browser key, so tests need no wallet extension. Each connect makes a new key; fund it with the page's "Airdrop 2 SOL" button (localnet/devnet faucet).
 - `sameCluster(a, b)` compares RPC URLs (`localhost` = `127.0.0.1`, default ports, trailing slash ignored). The deal page compares `config.rpcUrl` from `/api/deals/config` with `SOLANA_RPC_URL`; on a mismatch it shows an error naming both URLs and `VITE_SOLANA_RPC_URL=<rpcUrl>`, and disables "Create deal". The devnet default is unchanged, so set `VITE_SOLANA_RPC_URL=http://127.0.0.1:8899` for a local service.
-- The header pill shows Devnet, Localnet or Custom RPC.
+- The header pill shows Devnet (no override, or any RPC URL containing "devnet"), Localnet or Custom RPC.
 
 To test by hand, run `../scripts/run-deal-demo.sh`. It starts a validator on :8899 with the program, `uptime-service` on :8080, `uptime-monitor` on :8082 (with `monitor-db`) and Vite on :5173 in burner mode. Then open `http://localhost:5173/deal` in two windows, one for the provider and one for the payer. Each window gets its own burner wallet; don't reload or disconnect either one during the demo.
 

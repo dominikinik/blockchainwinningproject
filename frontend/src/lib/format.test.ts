@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { explorerTxUrl, formatDate, formatSol, shortAddress, timeAgo, timeRemaining, timeRemainingPrecise } from './format'
+import { explorerTxUrl, explorerUrl, formatDate, formatSol, shortAddress, timeAgo, timeRemaining, timeRemainingPrecise } from './format'
 
 describe('shortAddress', () => {
   it('truncates long addresses with defaults', () => {
@@ -116,5 +116,26 @@ describe('time helpers', () => {
 describe('explorerTxUrl', () => {
   it('builds a devnet explorer link', () => {
     expect(explorerTxUrl('abc123')).toBe('https://explorer.solana.com/tx/abc123?cluster=devnet')
+  })
+})
+
+describe('explorerUrl', () => {
+  it('defaults to devnet without an RPC URL', () => {
+    expect(explorerUrl('address', 'Addr1')).toBe('https://explorer.solana.com/address/Addr1?cluster=devnet')
+  })
+
+  it('recognizes devnet from the public and hosted devnet RPC URLs, without leaking the URL', () => {
+    expect(explorerUrl('tx', 'sig', 'https://api.devnet.solana.com')).toBe('https://explorer.solana.com/tx/sig?cluster=devnet')
+    expect(explorerUrl('tx', 'sig', 'https://devnet.helius-rpc.com/?api-key=secret')).toBe('https://explorer.solana.com/tx/sig?cluster=devnet')
+  })
+
+  it('links testnet and mainnet to their clusters', () => {
+    expect(explorerUrl('tx', 'sig', 'https://api.testnet.solana.com')).toBe('https://explorer.solana.com/tx/sig?cluster=testnet')
+    expect(explorerUrl('tx', 'sig', 'https://api.mainnet-beta.solana.com')).toBe('https://explorer.solana.com/tx/sig')
+  })
+
+  it('points the explorer at a local validator as a custom cluster', () => {
+    expect(explorerUrl('tx', 'sig', 'http://127.0.0.1:8899'))
+      .toBe('https://explorer.solana.com/tx/sig?cluster=custom&customUrl=http%3A%2F%2F127.0.0.1%3A8899')
   })
 })

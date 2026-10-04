@@ -12,6 +12,10 @@ import { dealLink, dealVerdict, formatLamports, reclaimableAt, UptimeDealPage } 
 const ORACLE = 'DGT7vw5vTR1aaUvNkK7rAMJH8oQjUoETzbW7bp56GjDd'
 const DEAL = 'F3syGDiKt7sX9srgBWjZtB3ZLyJ3kSAfyaNsm2hnTuq3'
 const OUTSIDER = 'DGT7vw5vTR1aaUvNkK7rAMJH8oQjUoETzbW7bp56GjDd'
+const CREATE_SIG = '3CreateSig1111111111111111111111111111111111aa'
+const ACCEPT_SIG = '4AcceptSig1111111111111111111111111111111111bb'
+const CANCEL_SIG = '5CancelSig1111111111111111111111111111111111cc'
+const LOCAL_EXPLORER = 'cluster=custom&customUrl=http%3A%2F%2Flocalhost%3A8899'
 const getBalance = vi.fn()
 const connection = { getBalance }
 const sendTransaction = vi.fn()
@@ -57,8 +61,8 @@ describe('UptimeDealPage', () => {
     vi.mocked(dealApi.list).mockReset().mockResolvedValue([])
     vi.mocked(dealApi.setServiceUp).mockReset()
     vi.mocked(openDeal).mockReset()
-    vi.mocked(acceptDeal).mockReset().mockResolvedValue()
-    vi.mocked(cancelDeal).mockReset().mockResolvedValue()
+    vi.mocked(acceptDeal).mockReset().mockResolvedValue(ACCEPT_SIG)
+    vi.mocked(cancelDeal).mockReset().mockResolvedValue(CANCEL_SIG)
     cluster.url = 'http://localhost:8899'
     vi.mocked(requestAirdrop).mockReset().mockResolvedValue()
     vi.mocked(uptimeService.getState).mockReset().mockResolvedValue('UP')
@@ -84,6 +88,21 @@ describe('UptimeDealPage', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Propose deal/ })).toBeEnabled())
   })
 
+  it('polls the wallet balance every 10 s, so open tabs stay within public RPC rate limits', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      renderAt(<UptimeDealPage />)
+      expect(await screen.findByTestId('wallet-balance')).toHaveTextContent('2 SOL')
+      const reads = getBalance.mock.calls.length
+      await vi.advanceTimersByTimeAsync(8000)
+      expect(getBalance.mock.calls.length).toBe(reads)
+      await vi.advanceTimersByTimeAsync(2500)
+      expect(getBalance.mock.calls.length).toBe(reads + 1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('copies the wallet address so a provider can share it with the payer', async () => {
     renderAt(<UptimeDealPage />)
     await userEvent.click(screen.getByRole('button', { name: /Copy my address/ }))
@@ -98,7 +117,7 @@ describe('UptimeDealPage', () => {
 
   it('proposes a deal and follows it through acceptance until the provider is paid', async () => {
     let onChain = proposal()
-    vi.mocked(openDeal).mockResolvedValue(onChain)
+    vi.mocked(openDeal).mockResolvedValue({ deal: onChain, signature: CREATE_SIG })
     vi.mocked(dealApi.get).mockImplementation(async () => onChain)
     getBalance.mockImplementation(async (key: PublicKey) => key.toBase58() === WALLET ? 1_499_995_000 : 1_200_000_000)
     renderAt(<UptimeDealPage />)
@@ -117,6 +136,9 @@ describe('UptimeDealPage', () => {
     expect(await screen.findByTestId('deal-verdict')).toHaveTextContent('Waiting for the provider to accept')
     expect(screen.getByRole('button', { name: /Copy link/ })).toBeInTheDocument()
     expect(screen.getByTestId('deal-escrow')).toHaveTextContent('0.5 SOL')
+    expect(screen.getByText('Proposal tx')).toBeInTheDocument()
+    expect(screen.getByTestId('wallet-tx-link')).toHaveAttribute('href', `https://explorer.solana.com/tx/${CREATE_SIG}?${LOCAL_EXPLORER}`)
+    expect(screen.getByTestId('deal-address-link')).toHaveAttribute('href', `https://explorer.solana.com/address/${DEAL}?${LOCAL_EXPLORER}`)
 
     onChain = trackedDeal()
     expect(await screen.findByText(/Measuring uptime · \ds left/, {}, { timeout: 3000 })).toBeInTheDocument()
@@ -127,6 +149,20 @@ describe('UptimeDealPage', () => {
     expect(screen.getByTestId('deal-measured')).toHaveTextContent('10/10 s up (100.0%)')
     await waitFor(() => expect(screen.getByTestId('recipient-balance')).toHaveTextContent('1.2 SOL'))
     expect(screen.getByText('5vXy12...defSIG')).toBeInTheDocument()
+    expect(screen.getByTestId('settlement-tx-link')).toHaveAttribute('href', `https://explorer.solana.com/tx/5vXy1234567890abcdefSIG?${LOCAL_EXPLORER}`)
+  })
+
+  it('links the program and the deal transactions to the devnet explorer when the app runs on devnet', async () => {
+    cluster.url = 'https://api.devnet.solana.com'
+    vi.mocked(dealApi.getConfig).mockResolvedValue({ ...config, rpcUrl: 'https://api.devnet.solana.com' })
+    vi.mocked(openDeal).mockResolvedValue({ deal: proposal(), signature: CREATE_SIG })
+    vi.mocked(dealApi.get).mockResolvedValue(proposal())
+    renderAt(<UptimeDealPage />)
+    expect(await screen.findByTestId('program-link')).toHaveAttribute('href', `https://explorer.solana.com/address/${config.programId}?cluster=devnet`)
+    await waitFor(() => expect(screen.getByRole('button', { name: /Propose deal/ })).toBeEnabled())
+    await userEvent.type(screen.getByLabelText('Provider address'), PROVIDER)
+    await userEvent.click(screen.getByRole('button', { name: /Propose deal/ }))
+    expect(await screen.findByTestId('wallet-tx-link')).toHaveAttribute('href', `https://explorer.solana.com/tx/${CREATE_SIG}?cluster=devnet`)
   })
 
   it('validates the window, the payment and the guarantee before sending', async () => {
@@ -224,6 +260,8 @@ describe('UptimeDealPage', () => {
     expect(acceptDeal).toHaveBeenCalledWith({ connection, recipient: new PublicKey(PROVIDER), sendTransaction, config, deal: offer })
     expect(await screen.findByText(/Measuring uptime/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Accept and lock/ })).not.toBeInTheDocument()
+    expect(screen.getByText('Acceptance tx')).toBeInTheDocument()
+    expect(screen.getByTestId('wallet-tx-link')).toHaveAttribute('href', `https://explorer.solana.com/tx/${ACCEPT_SIG}?${LOCAL_EXPLORER}`)
   })
 
   it('lets the provider reject a proposal', async () => {
@@ -234,6 +272,8 @@ describe('UptimeDealPage', () => {
       connection, signer: new PublicKey(PROVIDER), sendTransaction, programId: new PublicKey(config.programId), deal: offer,
     })
     expect(await screen.findByText('Cancelled · deposits returned')).toBeInTheDocument()
+    expect(screen.getByText('Cancel tx')).toBeInTheDocument()
+    expect(screen.getByTestId('wallet-tx-link')).toHaveAttribute('href', `https://explorer.solana.com/tx/${CANCEL_SIG}?${LOCAL_EXPLORER}`)
   })
 
   it('shows why the acceptance failed', async () => {

@@ -12,6 +12,8 @@ describe('solana config', () => {
     ['http://127.0.0.1:18899', 'Solana Localnet'],
     ['http://localhost:8899', 'Solana Localnet'],
     ['https://rpc.example.com', 'Custom RPC'],
+    ['https://api.devnet.solana.com', 'Solana Devnet'],
+    ['https://devnet.helius-rpc.com/?api-key=x', 'Solana Devnet'],
     ['', 'Solana Devnet'],
   ])('labels %s as %s', (url, label) => {
     expect(networkLabel(url)).toBe(label)
