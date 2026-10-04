@@ -1,4 +1,4 @@
--- Copy of the tracking_event and uptime_deal tables from monitor-db/init/02-schema.sh, for the in-memory H2 test database.
+-- Copy of the tracking_event, uptime_deal and deal_heartbeat tables from monitor-db/init/02-schema.sh, for the in-memory H2 test database.
 CREATE TABLE IF NOT EXISTS tracking_event (
     id                BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE,
     service_id        UUID NOT NULL,
@@ -37,3 +37,22 @@ CREATE TABLE IF NOT EXISTS uptime_deal (
     error             TEXT,
     registered_at     TIMESTAMP(6) WITH TIME ZONE NOT NULL
 );
+
+-- One row per deal heartbeat: the provider probe the oracle made when one of the deal's rounds ended, and the
+-- delivery of its record_observation (SENT, RETRYING while a failed send is retried, DROPPED when it gave up).
+-- Append-only except for the report columns. Served newest first by /api/heartbeats.
+CREATE TABLE IF NOT EXISTS deal_heartbeat (
+    id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    deal_address      VARCHAR(44) NOT NULL,
+    round_no          INTEGER NOT NULL CHECK (round_no >= 0),
+    checked_at        TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+    outcome           VARCHAR(16) NOT NULL CHECK (outcome IN ('HEALTHY', 'DOWN', 'INTERNAL_ERROR')),
+    http_status       INTEGER,
+    detail            TEXT,
+    latency_ms        BIGINT NOT NULL CHECK (latency_ms >= 0),
+    report            VARCHAR(16) NOT NULL CHECK (report IN ('SENT', 'RETRYING', 'DROPPED')),
+    report_error      TEXT,
+    signature         VARCHAR(88)
+);
+CREATE INDEX IF NOT EXISTS deal_heartbeat_checked_at ON deal_heartbeat (checked_at DESC);
+CREATE INDEX IF NOT EXISTS deal_heartbeat_deal ON deal_heartbeat (deal_address, checked_at DESC);

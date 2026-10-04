@@ -116,6 +116,23 @@ class UptimeMonitorApplicationTests {
 		deals.settleDue();
 		verify(rpc).sendTransaction(any());
 
+		// The heartbeat is logged with its probe result and the sent observation.
+		mvc.perform(get("/api/deals/" + deal + "/heartbeats"))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.length()").value(1))
+			.andExpect(jsonPath("$[0].dealAddress").value(deal))
+			.andExpect(jsonPath("$[0].round").isNumber())
+			.andExpect(jsonPath("$[0].up").value(false))
+			.andExpect(jsonPath("$[0].outcome").value("DOWN"))
+			.andExpect(jsonPath("$[0].httpStatus").value(404))
+			.andExpect(jsonPath("$[0].report").value("SENT"))
+			.andExpect(jsonPath("$[0].signature").value("sig"))
+			.andExpect(jsonPath("$[0].latencyMs").isNumber())
+			.andExpect(jsonPath("$[0].checkedAt").exists());
+		mvc.perform(get("/api/heartbeats").param("limit", "500"))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$[?(@.dealAddress == '" + deal + "')]").exists());
+
 		// The monitor reports observations; SLA totals and the payout decision stay on chain.
 		mvc.perform(get("/api/deals/" + deal))
 			.andExpect(jsonPath("$.signature").doesNotExist())
@@ -183,6 +200,18 @@ class UptimeMonitorApplicationTests {
 			.andExpect(status().isBadRequest());
 		mvc.perform(get("/api/uptime").param("from", "2026-10-03T00:00:00Z").param("to", "2026-10-04T12:00:00Z"))
 			.andExpect(status().isBadRequest());
+	}
+
+	@Test
+	void heartbeatReadsValidateTheirLimit() throws Exception {
+		mvc.perform(get("/api/heartbeats")).andExpect(status().isOk()).andExpect(jsonPath("$").isArray());
+		mvc.perform(get("/api/heartbeats").param("limit", "0")).andExpect(status().isBadRequest());
+		mvc.perform(get("/api/heartbeats").param("limit", "501")).andExpect(status().isBadRequest());
+		mvc.perform(get("/api/heartbeats").param("limit", "many")).andExpect(status().isBadRequest());
+		mvc.perform(get("/api/deals/" + DealFixtures.newAddress() + "/heartbeats"))
+			.andExpect(status().isOk())
+			.andExpect(jsonPath("$.length()").value(0));
+		mvc.perform(get("/api/deals/x/heartbeats").param("limit", "-1")).andExpect(status().isBadRequest());
 	}
 
 	@Test

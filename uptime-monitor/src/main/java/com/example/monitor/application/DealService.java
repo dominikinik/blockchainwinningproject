@@ -1,6 +1,7 @@
 package com.example.monitor.application;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -22,6 +23,8 @@ import com.example.monitor.domain.deal.DealChain.FoundClosure;
 import com.example.monitor.domain.deal.DealChain.TxStatus;
 import com.example.monitor.domain.deal.UptimeDeal;
 import com.example.monitor.domain.deal.UptimeDealRepository;
+import com.example.monitor.domain.heartbeat.Heartbeat;
+import com.example.monitor.domain.heartbeat.HeartbeatLog;
 
 /**
  * The monitor as the oracle of the {@code uptime_deal} program. A payer proposes a deal on chain naming this
@@ -32,7 +35,8 @@ import com.example.monitor.domain.deal.UptimeDealRepository;
  * <li>re-reads a proposal until the recipient accepts it (or a party cancels it);</li>
  * <li>runs each accepted deal's heartbeat at the deal's own on-chain round interval: once a round ends, it calls the
  * provider's health endpoint and sends the UP/DOWN result as that round's observation (one probe per tick serves every
- * deal whose round ended in it); a failed send is retried from memory;</li>
+ * deal whose round ended in it); a failed send is retried from memory. Every heartbeat is logged, with the probe
+ * result and the delivery of its observation, to the {@link HeartbeatLog};</li>
  * <li>asks the program to settle after expiry or proven breach, and confirms sent transactions.</li>
  * </ul>
  * Methods are synchronized: deals change from the scheduler and HTTP requests.
@@ -68,18 +72,20 @@ public class DealService {
 
 	private final Settings settings;
 
-	private final List<PendingObservation> pendingObservations = new ArrayList<>();
+	private final HeartbeatLog heartbeats;
+
+	/** Logged heartbeats whose first send failed, retried every tick. */
+	private final List<Heartbeat> pendingObservations = new ArrayList<>();
 
 	/** The last round whose heartbeat ran, per deal; a restart starts with the next round that ends. */
 	private final Map<String, Integer> lastHeartbeat = new HashMap<>();
 
-	private record PendingObservation(String address, int round, boolean up) {
-	}
-
-	public DealService(UptimeDealRepository deals, DealChain chain, HealthProbe probe, Clock clock, Settings settings) {
+	public DealService(UptimeDealRepository deals, DealChain chain, HealthProbe probe, HeartbeatLog heartbeats,
+			Clock clock, Settings settings) {
 		this.deals = deals;
 		this.chain = chain;
 		this.probe = probe;
+		this.heartbeats = heartbeats;
 		this.clock = clock;
 		this.settings = settings;
 	}
@@ -155,7 +161,7 @@ public class DealService {
 	public synchronized void settleDue() {
 		Instant now = clock.instant();
 		retryObservations(now);
-		Heartbeat heartbeat = new Heartbeat();
+		SharedProbe probe = new SharedProbe();
 		for (UptimeDeal deal : deals.findUnfinished()) {
 			if (deal.status() == UptimeDeal.Status.PROPOSED) {
 				UptimeDeal next = checkAccepted(deal);
@@ -176,7 +182,7 @@ public class DealService {
 					}
 					else {
 							if (account.accepted()) {
-							beat(deal, account, now, heartbeat);
+							beat(deal, account, now, probe);
 						}
 						if (account.accepted() && (account.canSettleEarly()
 									|| !now.isBefore(deal.endsAt().plusSeconds(Math.max(settings.settleGraceSeconds(), 10))))) {
@@ -196,19 +202,24 @@ public class DealService {
 	}
 
 	/** One provider probe per tick, made only when some deal's round has ended, and shared by all of them. */
-	private final class Heartbeat {
+	private final class SharedProbe {
 
-		private Boolean up;
+		private HealthCheckResult result;
 
-		boolean up() {
-			if (up == null) {
-				HealthCheckResult result = probe.check(settings.healthUrl());
-				up = result.outcome() == HealthCheckResult.Outcome.HEALTHY;
-				if (!up) {
+		private Instant checkedAt;
+
+		private long latencyMs;
+
+		Heartbeat heartbeat(String address, int round) {
+			if (result == null) {
+				checkedAt = clock.instant();
+				result = probe.check(settings.healthUrl());
+				latencyMs = Math.max(0, Duration.between(checkedAt, clock.instant()).toMillis());
+				if (result.outcome() != HealthCheckResult.Outcome.HEALTHY) {
 					log.info("{} is DOWN: {}", settings.healthUrl(), result.detail());
 				}
 			}
-			return up;
+			return Heartbeat.probed(address, round, checkedAt, result, latencyMs);
 		}
 
 	}
@@ -218,23 +229,59 @@ public class DealService {
 	 * as that round's observation. Rounds missed while the monitor was down aren't backfilled; the program counts them
 	 * as down.
 	 */
-	private void beat(UptimeDeal deal, ChainDeal account, Instant now, Heartbeat heartbeat) {
+	private void beat(UptimeDeal deal, ChainDeal account, Instant now, SharedProbe probe) {
 		int round = account.roundEndedBy(now);
 		Integer last = lastHeartbeat.get(deal.address());
 		if (round < 0 || account.isRecorded(round) || (last != null && round <= last)) {
 			return;
 		}
 		lastHeartbeat.put(deal.address(), round);
-		boolean up = heartbeat.up();
+		Heartbeat heartbeat = probe.heartbeat(deal.address(), round);
 		try {
-			chain.recordObservation(deal.address(), account, round, up);
-			log.info("Recorded deal {} round {} as {}", deal.address(), round, up ? "UP" : "DOWN");
+			heartbeat = heartbeat.sent(chain.recordObservation(deal.address(), account, round, heartbeat.up()));
 		}
 		catch (RuntimeException e) {
-			log.warn("Could not report {} observation for deal {} round {}: {}", up ? "UP" : "DOWN", deal.address(),
+			log.warn("Could not report {} observation for deal {} round {}: {}", upDown(heartbeat), deal.address(),
 					round, e.getMessage());
-			pendingObservations.add(new PendingObservation(deal.address(), round, up));
+			heartbeat = heartbeat.retrying(e.getMessage());
 		}
+		heartbeat = logged(heartbeat);
+		if (heartbeat.report() == Heartbeat.Report.RETRYING) {
+			pendingObservations.add(heartbeat);
+		}
+	}
+
+	/** Appends a heartbeat to the log and writes it to the application log; a log failure never stops the oracle. */
+	private Heartbeat logged(Heartbeat heartbeat) {
+		log.info("Heartbeat deal {} round {}: {} ({}, {} ms), observation {}{}", heartbeat.dealAddress(),
+				heartbeat.round(), upDown(heartbeat), heartbeat.detail(), heartbeat.latencyMs(), heartbeat.report(),
+				heartbeat.signature() == null ? "" : " " + heartbeat.signature());
+		try {
+			return heartbeats.append(heartbeat);
+		}
+		catch (RuntimeException e) {
+			log.warn("Could not log the heartbeat of deal {} round {}: {}", heartbeat.dealAddress(), heartbeat.round(),
+					e.getMessage());
+			return heartbeat;
+		}
+	}
+
+	/** Stores a logged heartbeat's new report state; a heartbeat that failed to log is skipped. */
+	private void relog(Heartbeat heartbeat) {
+		if (heartbeat.id() == null) {
+			return;
+		}
+		try {
+			heartbeats.update(heartbeat);
+		}
+		catch (RuntimeException e) {
+			log.warn("Could not update the heartbeat of deal {} round {}: {}", heartbeat.dealAddress(),
+					heartbeat.round(), e.getMessage());
+		}
+	}
+
+	private static String upDown(Heartbeat heartbeat) {
+		return heartbeat.up() ? "UP" : "DOWN";
 	}
 
 	/**
@@ -242,22 +289,31 @@ public class DealService {
 	 * accepting observations (closed, or past its window and the program's grace).
 	 */
 	private void retryObservations(Instant now) {
-		for (PendingObservation observation : List.copyOf(pendingObservations)) {
+		for (Heartbeat observation : List.copyOf(pendingObservations)) {
 			try {
-				ChainDeal account = chain.readDeal(observation.address());
+				ChainDeal account = chain.readDeal(observation.dealAddress());
 				if (account == null || !account.accepted() || account.isRecorded(observation.round())
 						|| !now.isBefore(account.startsAt().plusSeconds(account.durationSeconds() + 10))) {
 					pendingObservations.remove(observation);
+					relog(observation.dropped(account != null && account.isRecorded(observation.round())
+							? "The round was recorded on chain by another transaction"
+							: "The deal stopped accepting observations before a retry landed"));
 					continue;
 				}
-				chain.recordObservation(observation.address(), account, observation.round(), observation.up());
+				String signature = chain.recordObservation(observation.dealAddress(), account, observation.round(),
+						observation.up());
 				pendingObservations.remove(observation);
-				log.info("Recorded deal {} round {} as {} on retry", observation.address(), observation.round(),
-						observation.up() ? "UP" : "DOWN");
+				relog(observation.sent(signature));
+				log.info("Recorded deal {} round {} as {} on retry", observation.dealAddress(), observation.round(),
+						upDown(observation));
 			}
 			catch (RuntimeException e) {
-				log.warn("Retrying the observation of deal {} round {} failed: {}", observation.address(),
+				log.warn("Retrying the observation of deal {} round {} failed: {}", observation.dealAddress(),
 						observation.round(), e.getMessage());
+				pendingObservations.remove(observation);
+				Heartbeat retrying = observation.retrying(e.getMessage());
+				pendingObservations.add(retrying);
+				relog(retrying);
 			}
 		}
 	}

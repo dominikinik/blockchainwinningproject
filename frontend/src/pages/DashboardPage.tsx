@@ -1,5 +1,6 @@
 import { Activity, ArrowDownRight, ArrowRight, ArrowUpRight, Clock3, Coins, Plus, ShieldCheck, TriangleAlert } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
+import { HeartbeatPanel } from '../components/HeartbeatPanel'
 import { EmptyState, ErrorState, LoadingState, SectionHeading, StatusBadge } from '../components/UI'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { useNow } from '../hooks/useNow'
@@ -37,6 +38,8 @@ export function DashboardPage() {
         <SectionHeading title="Your agreements" subtitle="A live view of your API service commitments." action={<span className="subtle-count">{slas.length} total agreements</span>} />
         {slas.length === 0 ? <EmptyState title="No agreements yet" description="Create an SLA to start tracking an API and its escrow." action={<Link className="button button-primary" to="/create">Create SLA <ArrowRight size={16} /></Link>} /> : <div className="table-scroll"><table className="data-table sla-table"><thead><tr><th>API / SLA</th><th>Provider</th><th>Required Uptime</th><th>Current Uptime</th><th>Total Escrow</th><th>Time Remaining</th><th>Status</th><th aria-label="Open" /></tr></thead><tbody>{slas.map((sla) => <tr key={sla.id} onClick={() => navigate(`/sla/${sla.id}`)} className="clickable-row"><td><Link to={`/sla/${sla.id}`} onClick={(event) => event.stopPropagation()} className="table-primary-link">{sla.name}</Link><span className="cell-subtext">{sla.endpoint}</span></td><td className="mono-cell">{shortAddress(sla.providerWallet)}</td><td>{sla.requiredUptime}%</td><td><span className={sla.status === 'violated' ? 'text-danger' : sla.status === 'at-risk' ? 'text-warning' : 'text-success'}>{sla.successfulChecks + sla.failedChecks ? `${sla.currentUptime.toFixed(2)}%` : '—'}</span></td><td className="font-semibold">{formatSol(totalEscrowSol(sla.customerPaymentSol, sla.providerGuaranteeSol))}</td><td><span className="time-cell"><Clock3 size={14} />{timeRemainingPrecise(sla.endAt, now)}</span></td><td><StatusBadge status={sla.status} /></td><td className="row-chevron"><ArrowUpRight size={16} /></td></tr>)}</tbody></table></div>}
       </section>
+
+      <HeartbeatPanel />
 
       <div className="dashboard-bottom">
         <div className="info-panel dark-panel"><span className="panel-kicker">MONITORING</span><h3>Check service health,<br />second by second.</h3><p>Review the Java uptime service's recent state and per-second history.</p><Link to="/monitoring">View uptime timeline <ArrowRight size={16} /></Link><div className="dark-panel-lines" aria-hidden="true"><span /><span /><span /></div></div>
