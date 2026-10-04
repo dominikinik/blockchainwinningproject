@@ -1,6 +1,7 @@
 package com.example.monitor.application;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -9,7 +10,6 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.example.monitor.domain.ServiceId;
 import com.example.monitor.domain.TrackingEvent;
 import com.example.monitor.domain.TrackingEventStore;
 import com.example.monitor.domain.deal.DealAlreadyRegisteredException;
@@ -26,10 +26,15 @@ import com.example.monitor.domain.deal.Verdict;
 
 /**
  * The monitor as the oracle of the {@code uptime_deal} program. A payer proposes a deal on chain naming this
- * monitor's key as its oracle and registers it here, usually while it is still a proposal, linked to a tracked
- * service. {@link #settleDue} re-reads a proposal until the recipient accepts it (or a party cancels it); the
- * window comes from the accepted deal account ({@code starts_at}, set by the chain at acceptance), never from the
- * caller. Accepted deals are settled from the service's events:
+ * monitor's key as its oracle and registers it here, usually while it is still a proposal, with the health
+ * endpoint it pays for. {@link #settleDue} re-reads a proposal until the recipient accepts it (or a party cancels
+ * it); the window comes from the accepted deal account ({@code starts_at}, set by the chain at acceptance), never
+ * from the caller.
+ * <p>
+ * Every deal has its own tracked service ({@link UptimeDeal#serviceIdFor}). Its tracking starts through the
+ * {@link ServiceMonitor} when the deal is accepted (or registered already accepted) and stops when the deal is
+ * settled, cancelled or failed; nobody subscribes or unsubscribes it by hand. Accepted deals are settled from that
+ * service's events:
  * <ul>
  * <li>{@link #onTrackingEvent}: after a {@code Downtime}, {@code InternalErrorHappened} or
  * {@code TrackingFinished} of the service, {@link SettlementPolicy} may decide the settlement at once: a failure
@@ -44,14 +49,17 @@ public class DealService implements TrackingEventListener {
 	private static final Logger log = LoggerFactory.getLogger(DealService.class);
 
 	/**
-	 * @param defaultServiceId      the service a deal is linked to when registered without one; may be {@code null}
+	 * @param defaultHealthUrl      the health endpoint a deal is measured on when registered without one (the
+	 *                              provider); may be {@code null}
 	 * @param maxDurationSeconds    longest on-chain window accepted
 	 * @param settleGraceSeconds    how long after a window ends before it is settled, for the last check to land
+	 * @param startGraceSeconds     how late after the acceptance the deal's tracking may start and still cover the
+	 *                              window from its start (the time it takes to notice the acceptance)
 	 * @param maxSettleAttempts     failed sends after which a deal is {@code FAILED}
 	 * @param confirmTimeoutSeconds how long to wait for a sent settlement before sending it again
 	 */
-	public record Settings(ServiceId defaultServiceId, long maxDurationSeconds, long settleGraceSeconds,
-			int maxSettleAttempts, long confirmTimeoutSeconds) {
+	public record Settings(String defaultHealthUrl, long maxDurationSeconds, long settleGraceSeconds,
+			long startGraceSeconds, int maxSettleAttempts, long confirmTimeoutSeconds) {
 	}
 
 	/** Where a wallet must create a deal for this oracle to settle it. */
@@ -64,15 +72,18 @@ public class DealService implements TrackingEventListener {
 
 	private final TrackingEventStore events;
 
+	private final ServiceMonitor monitor;
+
 	private final Clock clock;
 
 	private final Settings settings;
 
-	public DealService(UptimeDealRepository deals, DealChain chain, TrackingEventStore events, Clock clock,
-			Settings settings) {
+	public DealService(UptimeDealRepository deals, DealChain chain, TrackingEventStore events, ServiceMonitor monitor,
+			Clock clock, Settings settings) {
 		this.deals = deals;
 		this.chain = chain;
 		this.events = events;
+		this.monitor = monitor;
 		this.clock = clock;
 		this.settings = settings;
 	}
@@ -82,26 +93,25 @@ public class DealService implements TrackingEventListener {
 	}
 
 	/**
-	 * Starts settling an on-chain deal from a tracked service's events.
+	 * Starts settling an on-chain deal from the health of a service. An accepted deal's own service is tracked at
+	 * once; a proposal's from its acceptance.
 	 *
-	 * @param serviceId the service whose uptime the deal pays for, or {@code null} for the default service
+	 * @param healthUrl the health endpoint whose uptime the deal pays for, or {@code null} for the default one
 	 * @return the deal: {@code PROPOSED} with no window while the recipient hasn't accepted, or {@code ACTIVE}
-	 * @throws IllegalArgumentException       if the address or service is missing or invalid, the account isn't a
-	 *                                        deal of the program, names another oracle, or has a duration of 0 or
+	 * @throws IllegalArgumentException       if the address or health URL is missing or invalid, the account isn't
+	 *                                        a deal of the program, names another oracle, or has a duration of 0 or
 	 *                                        above the maximum
 	 * @throws DealAlreadyRegisteredException if the deal is already registered
 	 */
-	public synchronized UptimeDeal register(String address, ServiceId serviceId) {
+	public synchronized UptimeDeal register(String address, String healthUrl) {
 		if (address == null || address.isBlank()) {
 			throw new IllegalArgumentException("address is required");
 		}
-		ServiceId service = serviceId != null ? serviceId : settings.defaultServiceId();
-		if (service == null) {
-			throw new IllegalArgumentException("serviceId is required: no default service is configured");
+		String url = healthUrl != null && !healthUrl.isBlank() ? healthUrl : settings.defaultHealthUrl();
+		if (url == null || url.isBlank()) {
+			throw new IllegalArgumentException("healthUrl is required: no default service is configured");
 		}
-		if (events.load(service).isEmpty()) {
-			throw new IllegalArgumentException("Service " + service + " is not tracked by this monitor");
-		}
+		url = TrackingService.validateUrl(url);
 		if (deals.find(address).isPresent()) {
 			throw new DealAlreadyRegisteredException(address);
 		}
@@ -118,16 +128,16 @@ public class DealService implements TrackingEventListener {
 					+ " seconds must be between 1 and " + settings.maxDurationSeconds());
 		}
 		chain.ensureOracleFunded();
-		UptimeDeal tracked = UptimeDeal.register(address, service, deal.payer(), deal.recipient(),
+		UptimeDeal tracked = UptimeDeal.register(address, url, deal.payer(), deal.recipient(),
 				deal.amountLamports(), deal.guaranteeLamports(), deal.durationSeconds(), deal.acceptDeadline(),
 				deal.startsAt(), clock.instant());
 		deals.add(tracked);
 		if (deal.accepted()) {
-			log.info("Settling deal {} of service {} from {} to {}", address, service, tracked.startsAt(),
-					tracked.endsAt());
+			log.info("Settling deal {} of {} from {} to {}", address, url, tracked.startsAt(), tracked.endsAt());
+			startMonitoring(tracked);
 		}
 		else {
-			log.info("Watching proposal {} of service {} until its recipient accepts it", address, service);
+			log.info("Watching proposal {} of {} until its recipient accepts it", address, url);
 		}
 		return tracked;
 	}
@@ -154,7 +164,7 @@ public class DealService implements TrackingEventListener {
 			if (event.occurredAt().isBefore(deal.startsAt())) {
 				continue;
 			}
-			DealMeasurement m = DealMeasurement.of(history, deal.startsAt(), deal.durationSeconds(), event.occurredAt());
+			DealMeasurement m = measure(history, deal, event.occurredAt());
 			Optional<Verdict> verdict = SettlementPolicy.onEvent(event, m);
 			if (verdict.isPresent()) {
 				log.info("{} of {} closes deal {}: {}/{} up seconds", event.type(), event.serviceId(), deal.address(),
@@ -166,8 +176,9 @@ public class DealService implements TrackingEventListener {
 
 	/**
 	 * Advances every unfinished deal: picks up the acceptance (or cancellation) of a proposal, and for an active
-	 * deal decides it when its window is over, sends a decided settlement, or checks on a sent one. One deal's
-	 * failure never stops the others.
+	 * deal decides it when its window is over, sends a decided settlement, or checks on a sent one. The deal's own
+	 * service is tracked from the acceptance (and again if its tracking was lost while the deal is open, e.g. by a
+	 * crash) and stops being tracked once the deal is finished. One deal's failure never stops the others.
 	 */
 	public synchronized void settleDue() {
 		Instant now = clock.instant();
@@ -176,17 +187,18 @@ public class DealService implements TrackingEventListener {
 				UptimeDeal next = checkAccepted(deal);
 				if (!next.equals(deal)) {
 					deals.update(next);
+					syncMonitoring(next);
 				}
 				continue;
 			}
 			UptimeDeal next = deal;
 			try {
 				if (deal.isOpen()) {
+					startMonitoring(deal);
 					if (now.isBefore(deal.endsAt().plusSeconds(settings.settleGraceSeconds()))) {
 						continue;
 					}
-					DealMeasurement m = DealMeasurement.of(events.load(deal.serviceId()), deal.startsAt(),
-							deal.durationSeconds(), now);
+					DealMeasurement m = measure(events.load(deal.serviceId()), deal, now);
 					next = deal.decide(SettlementPolicy.atWindowEnd(m));
 					deals.update(next);
 				}
@@ -198,7 +210,43 @@ public class DealService implements TrackingEventListener {
 			}
 			if (!next.equals(deal)) {
 				deals.update(next);
+				syncMonitoring(next);
 			}
+		}
+	}
+
+	private DealMeasurement measure(List<TrackingEvent> history, UptimeDeal deal, Instant now) {
+		return DealMeasurement.of(history, deal.startsAt(), deal.durationSeconds(), now,
+				Duration.ofSeconds(settings.startGraceSeconds()));
+	}
+
+	/** Tracks an accepted deal's service and stops tracking a finished one's. */
+	private void syncMonitoring(UptimeDeal deal) {
+		if (deal.isOpen()) {
+			startMonitoring(deal);
+		}
+		else if (deal.isFinished()) {
+			stopMonitoring(deal);
+		}
+	}
+
+	/** A failure is logged; {@link #settleDue} tries again on its next tick while the deal is open. */
+	private void startMonitoring(UptimeDeal deal) {
+		try {
+			monitor.start(deal.serviceId(), deal.healthUrl());
+		}
+		catch (RuntimeException e) {
+			log.warn("Could not start tracking {} for deal {}: {}", deal.healthUrl(), deal.address(), e.getMessage());
+		}
+	}
+
+	private void stopMonitoring(UptimeDeal deal) {
+		try {
+			monitor.stop(deal.serviceId());
+		}
+		catch (RuntimeException e) {
+			log.warn("Could not stop tracking {} for {} deal {}: {}", deal.healthUrl(), deal.status(), deal.address(),
+					e.getMessage());
 		}
 	}
 

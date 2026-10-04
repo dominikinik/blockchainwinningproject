@@ -110,6 +110,27 @@ class DealMeasurementTest {
 	}
 
 	@Test
+	void aFirstTrackingWithinTheStartGraceCoversTheWindowFromItsStart() {
+		Duration grace = Duration.ofSeconds(5);
+		DealMeasurement onTime = DealMeasurement.of(List.of(started(3), down(6)), T0, 10, T0.plusSeconds(10), grace);
+		assertThat(onTime.covered()).isEqualTo(10);
+		assertThat(onTime.upSoFar()).isEqualTo(8);
+
+		DealMeasurement atTheEdge = DealMeasurement.of(List.of(started(5)), T0, 10, T0.plusSeconds(10), grace);
+		assertThat(atTheEdge.covered()).isEqualTo(10);
+
+		DealMeasurement tooLate = DealMeasurement.of(List.of(started(6)), T0, 10, T0.plusSeconds(10), grace);
+		assertThat(tooLate.covered()).isEqualTo(4);
+
+		DealMeasurement midway = DealMeasurement.of(List.of(started(3)), T0, 10, T0.plusSeconds(2), grace);
+		assertThat(midway.covered()).as("not before the tracking has started").isZero();
+
+		DealMeasurement restarted = DealMeasurement.of(List.of(started(-3), finished(1), started(3)), T0, 10,
+				T0.plusSeconds(10), grace);
+		assertThat(restarted.covered()).as("only the first tracking gets the grace").isEqualTo(8);
+	}
+
+	@Test
 	void finishedTrackingLeavesNoRemainingCoverageButKeepsRemainingWindow() {
 		DealMeasurement m = DealMeasurement.of(List.of(started(-3), finished(4)), T0, 10, T0.plusSeconds(4));
 		assertThat(m.covered()).isEqualTo(4);

@@ -14,6 +14,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -33,12 +34,14 @@ import com.example.monitor.domain.DowntimePublisher;
 import com.example.monitor.domain.HealthCheckResult;
 import com.example.monitor.domain.HealthProbe;
 import com.example.monitor.domain.ServiceId;
+import com.example.monitor.domain.deal.UptimeDeal;
 import com.example.monitor.infrastructure.config.MonitorProperties;
 import com.example.monitor.infrastructure.scheduling.HealthCheckScheduler;
 import com.example.monitor.infrastructure.solana.SolanaMemoDowntimePublisher;
 import com.example.monitor.infrastructure.solana.OracleKey;
 import com.example.monitor.infrastructure.solana.SolanaRpc;
 import com.example.monitor.infrastructure.solana.SolanaRpc.AccountInfo;
+import com.example.monitor.infrastructure.solana.SolanaRpc.SignatureStatus;
 import com.example.monitor.support.DealFixtures;
 import com.example.monitor.infrastructure.solana.SolanaRpc.SolanaRpcException;
 
@@ -197,8 +200,7 @@ class UptimeMonitorApplicationTests {
 	}
 
 	@Test
-	void aDowntimeClosesARegisteredDealThroughTheWiring() throws Exception {
-		String service = subscribe(null);
+	void aDealIsTrackedFromRegistrationUntilSettledAndADowntimeClosesItThroughTheWiring() throws Exception {
 		String deal = DealFixtures.newAddress();
 		when(rpc.getAccountInfo(deal)).thenReturn(new AccountInfo(DealFixtures.PROGRAM_ID, 1, DealFixtures.dealData(
 				DealFixtures.newAddress(), DealFixtures.newAddress(), oracle.address(), 1, 5_000_000,
@@ -207,18 +209,25 @@ class UptimeMonitorApplicationTests {
 		mvc.perform(get("/api/deals/config")).andExpect(status().isOk())
 			.andExpect(jsonPath("$.programId").value(DealFixtures.PROGRAM_ID))
 			.andExpect(jsonPath("$.oracle").value(oracle.address()));
+		String service = UptimeDeal.serviceIdFor(deal).toString();
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
-			.content("{\"address\":\"" + deal + "\",\"serviceId\":\"" + service + "\"}"))
+			.content("{\"address\":\"" + deal + "\",\"healthUrl\":\"" + URL + "\"}"))
 			.andExpect(status().isCreated())
 			.andExpect(jsonPath("$.status").value("ACTIVE"))
 			.andExpect(jsonPath("$.serviceId").value(service))
+			.andExpect(jsonPath("$.healthUrl").value(URL))
 			.andExpect(jsonPath("$.durationSeconds").value(10))
 			.andExpect(jsonPath("$.endsAt").exists())
 			.andExpect(jsonPath("$.upSeconds").doesNotExist());
 
+		// Accepted already, so the monitor tracks the deal's own service from now on.
+		mvc.perform(get("/api/subscriptions/" + service)).andExpect(status().isOk())
+			.andExpect(jsonPath("$.active").value(true))
+			.andExpect(jsonPath("$.healthUrl").value(URL));
+
 		when(probe.check(URL)).thenReturn(HealthCheckResult.fromResponse(404, null));
-		tracking.check(ServiceId.of(service));
-		// The deal starts at the current whole second and tracking a few ms into it, so up to 1 s is untracked.
+		tracking.checkActive();
+		// The deal starts at the current whole second and the check a few ms into it, so up to 1 s has elapsed.
 		mvc.perform(get("/api/deals/" + deal))
 			.andExpect(jsonPath("$.upSeconds").value(org.hamcrest.Matchers.either(org.hamcrest.Matchers.is(7))
 				.or(org.hamcrest.Matchers.is(8))))
@@ -229,14 +238,21 @@ class UptimeMonitorApplicationTests {
 		mvc.perform(get("/api/deals")).andExpect(jsonPath("$[?(@.address == '" + deal + "')]").exists());
 
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
-			.content("{\"address\":\"" + deal + "\",\"serviceId\":\"" + service + "\"}"))
+			.content("{\"address\":\"" + deal + "\",\"healthUrl\":\"" + URL + "\"}"))
 			.andExpect(status().isConflict());
-		mvc.perform(delete("/api/subscriptions/" + service)).andExpect(status().isOk());
+
+		// The settlement lands: the deal is settled and its tracking stops without an unsubscribe.
+		when(rpc.getSignatureStatus("sig")).thenReturn(new SignatureStatus(true, null));
+		when(rpc.getTransactionLogs("sig")).thenReturn(List.of(DealFixtures.dealSettledLog(deal, 7, 10, false, 5_000_000)));
+		deals.settleDue();
+		mvc.perform(get("/api/deals/" + deal)).andExpect(jsonPath("$.status").value("SETTLED"));
+		mvc.perform(get("/api/subscriptions/" + service)).andExpect(jsonPath("$.active").value(false));
+		mvc.perform(get("/api/subscriptions/" + service + "/events"))
+			.andExpect(jsonPath("$[-1].type").value("TrackingFinished"));
 	}
 
 	@Test
-	void registersAProposalBeforeItsRecipientAccepts() throws Exception {
-		String service = subscribe(null);
+	void registersAProposalBeforeItsRecipientAcceptsWithoutTrackingIt() throws Exception {
 		String deal = DealFixtures.newAddress();
 		long deadline = Instant.now().getEpochSecond() + 86_400;
 		when(rpc.getAccountInfo(deal)).thenReturn(new AccountInfo(DealFixtures.PROGRAM_ID, 1, DealFixtures.proposalData(
@@ -244,34 +260,36 @@ class UptimeMonitorApplicationTests {
 				deadline)));
 
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
-			.content("{\"address\":\"" + deal + "\",\"serviceId\":\"" + service + "\"}"))
+			.content("{\"address\":\"" + deal + "\",\"healthUrl\":\"" + URL + "\"}"))
 			.andExpect(status().isCreated())
 			.andExpect(jsonPath("$.status").value("PROPOSED"))
+			.andExpect(jsonPath("$.serviceId").value(UptimeDeal.serviceIdFor(deal).toString()))
 			.andExpect(jsonPath("$.amountLamports").value(5_000_000))
 			.andExpect(jsonPath("$.guaranteeLamports").value(7_000_000))
 			.andExpect(jsonPath("$.acceptDeadline").value(Instant.ofEpochSecond(deadline).toString()))
 			.andExpect(jsonPath("$.startsAt").doesNotExist())
 			.andExpect(jsonPath("$.endsAt").doesNotExist());
 		mvc.perform(get("/api/deals/" + deal)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PROPOSED"));
-		mvc.perform(delete("/api/subscriptions/" + service)).andExpect(status().isOk());
+		mvc.perform(get("/api/subscriptions/" + UptimeDeal.serviceIdFor(deal))).andExpect(status().isNotFound());
 	}
 
 	@Test
 	void dealErrorsMapToProblems() throws Exception {
-		String service = subscribe(null);
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON).content("{}"))
 			.andExpect(status().isBadRequest());
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
 			.content("{\"address\":\"" + DealFixtures.newAddress() + "\"}"))
 			.andExpect(status().isBadRequest())
-			.andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("serviceId is required")));
+			.andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("healthUrl is required")));
+		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
+			.content("{\"address\":\"" + DealFixtures.newAddress() + "\",\"healthUrl\":\"not a url\"}"))
+			.andExpect(status().isBadRequest());
 		String unreachable = DealFixtures.newAddress();
 		when(rpc.getAccountInfo(unreachable)).thenThrow(new SolanaRpcException("node down"));
 		mvc.perform(post("/api/deals").contentType(MediaType.APPLICATION_JSON)
-			.content("{\"address\":\"" + unreachable + "\",\"serviceId\":\"" + service + "\"}"))
+			.content("{\"address\":\"" + unreachable + "\",\"healthUrl\":\"" + URL + "\"}"))
 			.andExpect(status().isBadGateway());
 		mvc.perform(get("/api/deals/" + DealFixtures.newAddress())).andExpect(status().isNotFound());
-		mvc.perform(delete("/api/subscriptions/" + service)).andExpect(status().isOk());
 	}
 
 	@Test

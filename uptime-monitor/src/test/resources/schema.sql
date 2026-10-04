@@ -15,10 +15,12 @@ CREATE TABLE IF NOT EXISTS tracking_event (
 
 -- Deals of the uptime_deal Solana program that this monitor settles as their oracle. One row per deal,
 -- updated in place as it advances (PROPOSED -> ACTIVE at acceptance -> SETTLED / FAILED / CANCELLED).
--- starts_at stays NULL until the recipient accepts.
+-- starts_at stays NULL until the recipient accepts. service_id is the deal's own tracked service, which checks
+-- health_url from the acceptance until the deal is finished.
 CREATE TABLE IF NOT EXISTS uptime_deal (
     address           VARCHAR(44) PRIMARY KEY,
     service_id        UUID NOT NULL,
+    health_url        TEXT NOT NULL,
     payer             VARCHAR(44) NOT NULL,
     recipient         VARCHAR(44) NOT NULL,
     amount_lamports   BIGINT NOT NULL CHECK (amount_lamports >= 0),

@@ -43,7 +43,8 @@ To re-initialise the schema, run `down`, delete `monitor-db/data/`, then start a
   - `reason` (Downtime, InternalErrorHappened)
 
 `uptime_deal` has one row per deal that the monitor settles as the oracle, updated in place:
-- `address VARCHAR(44)` is the **primary key**. `service_id UUID` is the tracked service the deal is measured against.
+- `address VARCHAR(44)` is the **primary key**. `service_id UUID` is the deal's own tracked service, derived from the address. `health_url TEXT NOT NULL` is the endpoint that service checks; the monitor tracks it from the acceptance until the deal is finished.
+- `02-schema.sh` also adds `health_url` to databases created before the column existed. Existing rows get the provider's URL (`http://localhost:8080/api/health`), which is what earlier deals were measured on.
 - `payer`, `recipient`, `amount_lamports` (≥ 0), `guarantee_lamports` (≥ 0), `duration_seconds` (≥ 1) and `accept_deadline` come from the chain. `starts_at` is the chain time of the recipient's acceptance; it is NULL while the deal is a proposal.
 - `status` must be one of `PROPOSED`, `ACTIVE`, `SETTLED`, `FAILED`, `CANCELLED` (enforced by a CHECK).
 - The settlement fields are NULL until they're set: `up_seconds`, `total_seconds`, `paid_to_recipient`, `signature`, `sent_at` and `error`. `attempts` defaults to 0. `registered_at` is required.

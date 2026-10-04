@@ -16,7 +16,6 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.example.monitor.application.DealService;
-import com.example.monitor.domain.ServiceId;
 import com.example.monitor.domain.deal.UptimeDeal;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -42,16 +41,17 @@ public class DealController {
 
 	@PostMapping
 	@ResponseStatus(HttpStatus.CREATED)
-	@Operation(summary = "Settle a deal from a tracked service's events",
+	@Operation(summary = "Settle a deal from the health of a service",
 			description = "The deal must exist on chain and name this monitor's oracle. A proposal is tracked as "
 					+ "PROPOSED until its recipient accepts it on chain; the window then runs from the acceptance, read "
-					+ "from the deal account. It closes early (refund) when a failure makes more than 99% uptime unreachable, settles "
-					+ "when tracking of the service finishes, and otherwise settles when the window ends. Without "
-					+ "serviceId the deal is measured against the default service. 400 for an invalid request or deal, "
+					+ "from the deal account. The monitor starts checking healthUrl for this deal alone (under the "
+					+ "deal's serviceId) when the deal is accepted and stops once it is settled, cancelled or failed. "
+					+ "The deal closes early (refund) when a failure makes more than 99% uptime unreachable, settles "
+					+ "when that tracking is finished by hand, and otherwise settles when the window ends. Without "
+					+ "healthUrl the default service's endpoint is used. 400 for an invalid request or deal, "
 					+ "409 if already registered, 502 if the RPC node fails, 503 if the blockchain is disabled.")
 	public DealResponse register(@RequestBody RegisterRequest request) {
-		ServiceId service = request.serviceId() == null ? null : new ServiceId(request.serviceId());
-		return DealResponse.of(deals().register(request.address(), service));
+		return DealResponse.of(deals().register(request.address(), request.healthUrl()));
 	}
 
 	@GetMapping("/{address}")
@@ -77,23 +77,24 @@ public class DealController {
 
 	/**
 	 * @param address   Base58 address of the on-chain deal
-	 * @param serviceId the tracked service the deal pays for; omit for the default service
+	 * @param healthUrl the health endpoint the deal pays for; omit for the default service's
 	 */
 	public record RegisterRequest(@Schema(example = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin") String address,
-			UUID serviceId) {
+			@Schema(example = "http://localhost:8080/api/health") String healthUrl) {
 	}
 
 	/**
-	 * Same shape as the deal JSON the frontend reads, plus {@code serviceId}. {@code startsAt}/{@code endsAt} are
-	 * {@code null} while the deal is {@code PROPOSED}.
+	 * Same shape as the deal JSON the frontend reads, plus {@code serviceId} (the deal's own tracked service, whose
+	 * history is under {@code /api/subscriptions/{serviceId}}) and {@code healthUrl}. {@code startsAt}/{@code endsAt}
+	 * are {@code null} while the deal is {@code PROPOSED}.
 	 */
-	public record DealResponse(String address, UUID serviceId, String payer, String recipient, long amountLamports,
+	public record DealResponse(String address, UUID serviceId, String healthUrl, String payer, String recipient, long amountLamports,
 			long guaranteeLamports, long durationSeconds, Instant acceptDeadline, Instant startsAt, Instant endsAt,
 			UptimeDeal.Status status, Long upSeconds, Long totalSeconds, Boolean paidToRecipient, String signature,
 			Instant sentAt, int attempts, String error) {
 
 		static DealResponse of(UptimeDeal d) {
-			return new DealResponse(d.address(), d.serviceId().value(), d.payer(), d.recipient(), d.amountLamports(),
+			return new DealResponse(d.address(), d.serviceId().value(), d.healthUrl(), d.payer(), d.recipient(), d.amountLamports(),
 					d.guaranteeLamports(), d.durationSeconds(), d.acceptDeadline(), d.startsAt(), d.endsAt(), d.status(),
 					d.upSeconds(), d.totalSeconds(), d.paidToRecipient(), d.signature(), d.sentAt(), d.attempts(),
 					d.error());

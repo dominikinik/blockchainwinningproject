@@ -9,7 +9,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param probeTimeoutMs  connect and read timeout of one health call; keep it below the interval
  * @param blockchain      where downtime reports and deal settlements go
  * @param deal            how deals are settled
- * @param defaultService  the service tracked from startup, which deals are linked to by default
+ * @param defaultService  the service tracked from startup, whose health endpoint deals use by default
  * @param history         limits of {@code GET /api/uptime}
  */
 @ConfigurationProperties("monitor")
@@ -33,17 +33,20 @@ public record MonitorProperties(long checkIntervalMs, long probeTimeoutMs, Block
 	 * @param programId             address of the {@code uptime_deal} program
 	 * @param maxDurationSeconds    longest on-chain window a deal may have to be registered
 	 * @param settleGraceSeconds    how long after a window ends before it is settled
+	 * @param startGraceSeconds     how late after the acceptance a deal's tracking may start and still cover its
+	 *                              window from the start
 	 * @param pollIntervalMs        how often deals are advanced (window ends, sends, confirmations)
 	 * @param maxSettleAttempts     failed sends after which a deal is {@code FAILED}
 	 * @param confirmTimeoutSeconds how long to wait for a sent settlement before sending it again
 	 */
-	public record Deal(String programId, long maxDurationSeconds, long settleGraceSeconds, long pollIntervalMs,
-			int maxSettleAttempts, long confirmTimeoutSeconds) {
+	public record Deal(String programId, long maxDurationSeconds, long settleGraceSeconds, long startGraceSeconds,
+			long pollIntervalMs, int maxSettleAttempts, long confirmTimeoutSeconds) {
 	}
 
 	/**
 	 * @param id        UUID the default service is tracked under
-	 * @param healthUrl its health endpoint; blank tracks nothing at startup and leaves deals without a default
+	 * @param healthUrl its health endpoint, also the one deals use by default; blank tracks nothing at startup
+	 *                  and leaves deals without a default
 	 */
 	public record DefaultService(UUID id, String healthUrl) {
 

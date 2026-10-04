@@ -1,13 +1,16 @@
 package com.example.monitor.domain.deal;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 import com.example.monitor.domain.ServiceId;
 
 /**
  * Aggregate root: one on-chain {@code uptime_deal} that this monitor settles as its oracle, measured
- * against one tracked service. Immutable; every transition returns a new copy that the caller stores.
+ * against the deal's own tracked service ({@link #serviceIdFor}), which watches {@code healthUrl} from the
+ * acceptance until the deal is finished. Immutable; every transition returns a new copy that the caller stores.
  * <p>
  * Life cycle: {@code PROPOSED} while the recipient hasn't accepted (no window runs), {@code ACTIVE} from the
  * acceptance ({@link #accepted}) until a settlement is <em>decided</em> ({@link #decide}, which fixes
@@ -15,7 +18,8 @@ import com.example.monitor.domain.ServiceId;
  * found closed on chain ({@link #settledBy}, {@link #cancelled}), or given up ({@link #failed}).
  *
  * @param address           Base58 address of the on-chain {@code Deal} account
- * @param serviceId         the tracked service whose events measure the deal
+ * @param serviceId         the deal's own tracked service, whose events measure it ({@link #serviceIdFor})
+ * @param healthUrl         the health endpoint that service checks
  * @param payer             proposed the deal and paid {@code amountLamports}
  * @param recipient         the provider: accepts, pays {@code guaranteeLamports}, and gets both deposits above 99%
  * @param guaranteeLamports the recipient's guarantee, locked at acceptance
@@ -31,7 +35,7 @@ import com.example.monitor.domain.ServiceId;
  * @param attempts        failed settlement attempts so far
  * @param error           the last settlement error, if any
  */
-public record UptimeDeal(String address, ServiceId serviceId, String payer, String recipient, long amountLamports,
+public record UptimeDeal(String address, ServiceId serviceId, String healthUrl, String payer, String recipient, long amountLamports,
 		long guaranteeLamports, long durationSeconds, Instant acceptDeadline, Instant startsAt, Status status, Long upSeconds, Long totalSeconds,
 		Boolean paidToRecipient, String signature, Instant sentAt, int attempts, String error, Instant registeredAt) {
 
@@ -56,6 +60,7 @@ public record UptimeDeal(String address, ServiceId serviceId, String payer, Stri
 	public UptimeDeal {
 		Objects.requireNonNull(address, "address");
 		Objects.requireNonNull(serviceId, "serviceId");
+		Objects.requireNonNull(healthUrl, "healthUrl");
 		Objects.requireNonNull(status, "status");
 		Objects.requireNonNull(acceptDeadline, "acceptDeadline");
 		if (startsAt == null && status == Status.ACTIVE) {
@@ -64,14 +69,22 @@ public record UptimeDeal(String address, ServiceId serviceId, String payer, Stri
 	}
 
 	/**
+	 * The service a deal is tracked under: a UUID derived from its address, so every deal has its own stream of
+	 * events and its monitoring can be started and stopped without touching any other service.
+	 */
+	public static ServiceId serviceIdFor(String address) {
+		return new ServiceId(UUID.nameUUIDFromBytes(("uptime-deal:" + address).getBytes(StandardCharsets.UTF_8)));
+	}
+
+	/**
 	 * A newly registered deal: {@code PROPOSED} when {@code startsAt} is {@code null} (not accepted yet),
 	 * otherwise {@code ACTIVE} with its window.
 	 */
-	public static UptimeDeal register(String address, ServiceId serviceId, String payer, String recipient,
+	public static UptimeDeal register(String address, String healthUrl, String payer, String recipient,
 			long amountLamports, long guaranteeLamports, long durationSeconds, Instant acceptDeadline, Instant startsAt,
 			Instant now) {
-		return new UptimeDeal(address, serviceId, payer, recipient, amountLamports, guaranteeLamports, durationSeconds,
-				acceptDeadline, startsAt, startsAt == null ? Status.PROPOSED : Status.ACTIVE, null, null, null, null, null,
+		return new UptimeDeal(address, serviceIdFor(address), healthUrl, payer, recipient, amountLamports,
+				guaranteeLamports, durationSeconds, acceptDeadline, startsAt, startsAt == null ? Status.PROPOSED : Status.ACTIVE, null, null, null, null, null,
 				0, null, now);
 	}
 
@@ -89,14 +102,19 @@ public record UptimeDeal(String address, ServiceId serviceId, String payer, Stri
 		if (status != Status.PROPOSED) {
 			throw new IllegalStateException("Deal " + address + " is not a proposal");
 		}
-		return new UptimeDeal(address, serviceId, payer, recipient, amountLamports, guaranteeLamports, durationSeconds,
-				acceptDeadline, Objects.requireNonNull(windowStart, "windowStart"), Status.ACTIVE, upSeconds,
+		return new UptimeDeal(address, serviceId, healthUrl, payer, recipient, amountLamports, guaranteeLamports,
+				durationSeconds, acceptDeadline, Objects.requireNonNull(windowStart, "windowStart"), Status.ACTIVE, upSeconds,
 				totalSeconds, paidToRecipient, signature, sentAt, attempts, error, registeredAt);
 	}
 
 	/** Active and no settlement decided yet: events and the window end may still decide one. */
 	public boolean isOpen() {
 		return status == Status.ACTIVE && upSeconds == null;
+	}
+
+	/** Settled, cancelled or failed: nothing about the deal changes any more, so its service needs no tracking. */
+	public boolean isFinished() {
+		return status == Status.SETTLED || status == Status.CANCELLED || status == Status.FAILED;
 	}
 
 	/** Active with a decided settlement that still has to be sent or confirmed. */
@@ -145,8 +163,8 @@ public record UptimeDeal(String address, ServiceId serviceId, String payer, Stri
 
 	private UptimeDeal with(Status newStatus, Long up, Long total, Boolean paid, String sig, Instant at, int tries,
 			String err) {
-		return new UptimeDeal(address, serviceId, payer, recipient, amountLamports, guaranteeLamports, durationSeconds,
-				acceptDeadline, startsAt, newStatus, up, total, paid, sig, at, tries, err, registeredAt);
+		return new UptimeDeal(address, serviceId, healthUrl, payer, recipient, amountLamports, guaranteeLamports,
+				durationSeconds, acceptDeadline, startsAt, newStatus, up, total, paid, sig, at, tries, err, registeredAt);
 	}
 
 }

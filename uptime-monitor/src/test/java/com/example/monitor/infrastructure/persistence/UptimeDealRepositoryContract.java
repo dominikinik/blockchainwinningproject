@@ -20,11 +20,9 @@ abstract class UptimeDealRepositoryContract {
 
 	static final Instant T0 = Instant.parse("2026-10-04T12:00:00.123456Z");
 
+	static final String HEALTH_URL = "http://provider:8080/api/health";
+
 	UptimeDealRepository repo;
-
-	ServiceId a = ServiceId.newId();
-
-	ServiceId b = ServiceId.newId();
 
 	abstract UptimeDealRepository newRepository();
 
@@ -34,21 +32,23 @@ abstract class UptimeDealRepositoryContract {
 	}
 
 	/** An accepted deal; its accept deadline is one day after the window start. */
-	static UptimeDeal deal(String address, ServiceId service, Instant startsAt) {
-		return UptimeDeal.register(address, service, "Payer", "Recipient", 500_000_000L, 700_000_000L, 10,
+	static UptimeDeal deal(String address, Instant startsAt) {
+		return UptimeDeal.register(address, HEALTH_URL, "Payer", "Recipient", 500_000_000L, 700_000_000L, 10,
 				startsAt.plusSeconds(86_400), startsAt, T0);
 	}
 
-	static UptimeDeal proposal(String address, ServiceId service, Instant acceptDeadline) {
-		return UptimeDeal.register(address, service, "Payer", "Recipient", 500_000_000L, 700_000_000L, 10,
+	static UptimeDeal proposal(String address, Instant acceptDeadline) {
+		return UptimeDeal.register(address, HEALTH_URL, "Payer", "Recipient", 500_000_000L, 700_000_000L, 10,
 				acceptDeadline, null, T0);
 	}
 
 	@Test
 	void addFindAndRoundTripEveryField() {
-		UptimeDeal deal = deal("D1", a, T0);
+		UptimeDeal deal = deal("D1", T0);
 		repo.add(deal);
 		assertThat(repo.find("D1")).contains(deal);
+		assertThat(repo.find("D1").orElseThrow().healthUrl()).isEqualTo(HEALTH_URL);
+		assertThat(repo.find("D1").orElseThrow().serviceId()).isEqualTo(UptimeDeal.serviceIdFor("D1"));
 
 		UptimeDeal full = deal.decide(new Verdict(8, 10)).sent("sig", T0.plusSeconds(3)).failedAttempt("lost", 5)
 			.sent("sig2", T0.plusSeconds(4)).settled(false);
@@ -59,7 +59,7 @@ abstract class UptimeDealRepositoryContract {
 
 	@Test
 	void aProposalRoundTripsWithoutAWindowAndKeepsItsWindowOnceAccepted() {
-		UptimeDeal proposal = proposal("P1", a, T0.plusSeconds(100));
+		UptimeDeal proposal = proposal("P1", T0.plusSeconds(100));
 		repo.add(proposal);
 		assertThat(repo.find("P1")).contains(proposal);
 		assertThat(repo.find("P1").orElseThrow().startsAt()).isNull();
@@ -71,18 +71,19 @@ abstract class UptimeDealRepositoryContract {
 
 	@Test
 	void duplicatesAndUnknownUpdatesAreRejected() {
-		repo.add(deal("D1", a, T0));
-		assertThatThrownBy(() -> repo.add(deal("D1", b, T0))).isInstanceOf(DealAlreadyRegisteredException.class);
-		assertThatThrownBy(() -> repo.update(deal("D2", a, T0))).isInstanceOf(NoSuchElementException.class);
-		assertThat(repo.find("D1").orElseThrow().serviceId()).isEqualTo(a);
+		repo.add(deal("D1", T0));
+		assertThatThrownBy(() -> repo.add(deal("D1", T0.plusSeconds(1))))
+			.isInstanceOf(DealAlreadyRegisteredException.class);
+		assertThatThrownBy(() -> repo.update(deal("D2", T0))).isInstanceOf(NoSuchElementException.class);
+		assertThat(repo.find("D1").orElseThrow().startsAt()).isEqualTo(T0);
 	}
 
 	@Test
 	void listsMostRecentlyProposedFirstAndFiltersUnfinishedAndActiveByService() {
-		UptimeDeal old = deal("D1", a, T0);
-		UptimeDeal newer = deal("D2", b, T0.plusSeconds(60));
-		UptimeDeal closed = deal("D3", a, T0.plusSeconds(30));
-		UptimeDeal waiting = proposal("D4", a, T0.plusSeconds(86_400 + 90));
+		UptimeDeal old = deal("D1", T0);
+		UptimeDeal newer = deal("D2", T0.plusSeconds(60));
+		UptimeDeal closed = deal("D3", T0.plusSeconds(30));
+		UptimeDeal waiting = proposal("D4", T0.plusSeconds(86_400 + 90));
 		repo.add(old);
 		repo.add(newer);
 		repo.add(closed);
@@ -91,7 +92,10 @@ abstract class UptimeDealRepositoryContract {
 
 		assertThat(repo.findAll()).extracting(UptimeDeal::address).containsExactly("D4", "D2", "D3", "D1");
 		assertThat(repo.findUnfinished()).extracting(UptimeDeal::address).containsExactly("D1", "D2", "D4");
-		assertThat(repo.findActive(a)).extracting(UptimeDeal::address).containsExactly("D1");
+		assertThat(repo.findActive(UptimeDeal.serviceIdFor("D1"))).extracting(UptimeDeal::address)
+			.containsExactly("D1");
+		assertThat(repo.findActive(UptimeDeal.serviceIdFor("D3"))).isEmpty();
+		assertThat(repo.findActive(UptimeDeal.serviceIdFor("D4"))).isEmpty();
 		assertThat(repo.findActive(ServiceId.newId())).isEmpty();
 	}
 

@@ -148,6 +148,23 @@ class TrackingServiceTest {
 	}
 
 	@Test
+	void startAndStopAreIdempotentSubscribeAndUnsubscribe() {
+		ServiceId id = ServiceId.newId();
+		service.stop(id);
+		assertThat(store.load(id)).isEmpty();
+
+		service.start(id, URL);
+		service.start(id, "http://other/health");
+		assertThat(service.events(id)).containsExactly(new TrackingStarted(id, URL, Duration.ofSeconds(2), T0));
+
+		clock.set(T0.plusSeconds(4));
+		service.stop(id);
+		service.stop(id);
+		assertThat(service.events(id)).hasSize(2).last().isEqualTo(new TrackingFinished(id, T0.plusSeconds(4)));
+		assertThat(service.isActive(id)).isFalse();
+	}
+
+	@Test
 	void unsubscribeErrors() {
 		ServiceId unknown = ServiceId.newId();
 		assertThatThrownBy(() -> service.unsubscribe(unknown)).isInstanceOf(TrackingNotFoundException.class);

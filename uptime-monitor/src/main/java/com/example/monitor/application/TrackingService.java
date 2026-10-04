@@ -31,7 +31,7 @@ import com.example.monitor.domain.TrackingSummary;
  * again, aggregated, and the resulting downtime is sent to the {@link DowntimePublisher}; then every
  * {@link TrackingEventListener} (the deal oracle) is told about the event.
  */
-public class TrackingService {
+public class TrackingService implements ServiceMonitor {
 
 	private static final Logger log = LoggerFactory.getLogger(TrackingService.class);
 
@@ -99,6 +99,32 @@ public class TrackingService {
 			tracking.finish(clock.instant());
 		});
 		log.info("Stopped tracking {}", id);
+	}
+
+	/** Subscribes the service unless it is already tracked. */
+	@Override
+	public void start(ServiceId id, String healthUrl) {
+		try {
+			if (!isActive(id)) {
+				subscribe(healthUrl, id);
+			}
+		}
+		catch (TrackingException.AlreadyActive e) {
+			log.debug("{} was subscribed meanwhile", id);
+		}
+	}
+
+	/** Unsubscribes the service if it is tracked. */
+	@Override
+	public void stop(ServiceId id) {
+		try {
+			if (isActive(id)) {
+				unsubscribe(id);
+			}
+		}
+		catch (TrackingException.NotActive e) {
+			log.debug("{} was unsubscribed meanwhile", id);
+		}
 	}
 
 	/**
@@ -224,7 +250,11 @@ public class TrackingService {
 		return tracking;
 	}
 
-	private static String validateUrl(String healthUrl) {
+	/**
+	 * @return the trimmed URL
+	 * @throws IllegalArgumentException if it isn't an absolute http(s) URL
+	 */
+	static String validateUrl(String healthUrl) {
 		if (healthUrl == null || healthUrl.isBlank()) {
 			throw new IllegalArgumentException("healthUrl is required");
 		}

@@ -31,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import com.example.monitor.domain.HealthProbe;
 import com.example.monitor.domain.ServiceId;
 import com.example.monitor.domain.TrackingEvent;
 import com.example.monitor.domain.TrackingEvent.Downtime;
@@ -53,8 +54,9 @@ import com.example.monitor.support.MutableClock;
 
 /**
  * The oracle end to end below the HTTP layer: {@link DealService} with the real {@link SolanaDealChain} over a
- * mocked {@link SolanaRpc}, so the signed settle_deal bytes are checked too. The deal window is
- * {@code [T0+1, T0+11)}; the service has been tracked since {@code T0-100} with a 2 s interval.
+ * mocked {@link SolanaRpc}, so the signed settle_deal bytes are checked too, and a real {@link TrackingService}
+ * (2 s interval, no listeners) as its {@link ServiceMonitor}. The deal window is {@code [T0+1, T0+11)}; the deal's
+ * own service starts being tracked when the deal is registered accepted, at {@code T0+0.3}.
  */
 class DealServiceTest {
 
@@ -70,37 +72,48 @@ class DealServiceTest {
 
 	final InMemoryTrackingEventStore events = new InMemoryTrackingEventStore();
 
+	static final String HEALTH_URL = "http://p/health";
+
 	final InMemoryUptimeDealRepository repo = new InMemoryUptimeDealRepository();
 
-	final ServiceId service = ServiceId.newId();
+	final TrackingService tracking = new TrackingService(events, mock(HealthProbe.class), report -> {
+	}, clock, Duration.ofSeconds(2));
 
 	final String deal = newAddress();
+
+	final ServiceId service = UptimeDeal.serviceIdFor(deal);
 
 	final String payer = newAddress();
 
 	final String recipient = newAddress();
 
-	DealService deals = deals(0, service);
+	DealService deals = deals(0, HEALTH_URL);
 
-	DealService deals(long oracleMinLamports, ServiceId defaultService) {
+	DealService deals(long oracleMinLamports, String defaultHealthUrl) {
+		return deals(oracleMinLamports, defaultHealthUrl, tracking);
+	}
+
+	DealService deals(long oracleMinLamports, String defaultHealthUrl, ServiceMonitor monitor) {
 		return new DealService(repo, new SolanaDealChain(rpc, oracle, PROGRAM_ID, "http://rpc", oracleMinLamports, 1_000),
-				events, clock, new DealService.Settings(defaultService, 3600, 2, 3, 30));
+				events, monitor, clock, new DealService.Settings(defaultHealthUrl, 3600, 2, 5, 3, 30));
 	}
 
 	@BeforeEach
 	void setUp() {
-		append(new TrackingStarted(service, "http://p/health", Duration.ofSeconds(2), T0.minusSeconds(100)));
 		when(rpc.getAccountInfo(deal)).thenReturn(dealAccount(oracle.address()));
 		when(rpc.getLatestBlockhash()).thenReturn(new byte[32]);
 		when(rpc.sendTransaction(any())).thenReturn("sig1");
 	}
 
 	@Test
-	void registerTakesTheWindowFromTheDealAccountAndLinksTheDefaultService() {
+	void registerTakesTheWindowFromTheDealAccountAndTracksTheDefaultHealthUrlForThisDealAlone() {
 		UptimeDeal tracked = deals.register(deal, null);
 
 		assertThat(tracked.status()).isEqualTo(Status.ACTIVE);
 		assertThat(tracked.serviceId()).isEqualTo(service);
+		assertThat(tracked.healthUrl()).isEqualTo(HEALTH_URL);
+		assertThat(events.load(service))
+			.containsExactly(new TrackingStarted(service, HEALTH_URL, Duration.ofSeconds(2), T0.plusMillis(300)));
 		assertThat(tracked.startsAt()).isEqualTo(T0.plusSeconds(1));
 		assertThat(tracked.endsAt()).isEqualTo(T0.plusSeconds(11));
 		assertThat(tracked.payer()).isEqualTo(payer);
@@ -116,10 +129,12 @@ class DealServiceTest {
 	void registerRejectsInvalidRequests() {
 		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(null, null));
 		assertThatIllegalArgumentException().isThrownBy(() -> deals.register("not base58 0", null));
-		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(deal, ServiceId.newId()))
-			.withMessageContaining("is not tracked");
+		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(deal, "ftp://p/health"))
+			.withMessageContaining("absolute http(s) URL");
 		assertThatIllegalArgumentException().isThrownBy(() -> deals(0, null).register(deal, null))
-			.withMessageContaining("serviceId is required");
+			.withMessageContaining("healthUrl is required");
+		assertThatIllegalArgumentException().isThrownBy(() -> deals(0, " ").register(deal, " "))
+			.withMessageContaining("healthUrl is required");
 
 		String missing = newAddress();
 		assertThatIllegalArgumentException().isThrownBy(() -> deals.register(missing, null))
@@ -136,6 +151,7 @@ class DealServiceTest {
 			.withMessageContaining("names oracle");
 
 		assertThat(deals.list()).isEmpty();
+		assertThat(tracking.list()).isEmpty();
 	}
 
 	@Test
@@ -154,8 +170,8 @@ class DealServiceTest {
 
 	@Test
 	void registerRejectsDuplicatesAndUnknownLookups() {
-		deals.register(deal, service);
-		assertThatThrownBy(() -> deals.register(deal, service)).isInstanceOf(DealAlreadyRegisteredException.class);
+		deals.register(deal, null);
+		assertThatThrownBy(() -> deals.register(deal, null)).isInstanceOf(DealAlreadyRegisteredException.class);
 		assertThatThrownBy(() -> deals.get(newAddress())).isInstanceOf(NoSuchElementException.class);
 	}
 
@@ -171,36 +187,99 @@ class DealServiceTest {
 		assertThat(tracked.guaranteeLamports()).isEqualTo(GUARANTEE);
 		assertThat(tracked.acceptDeadline()).isEqualTo(T0.plusSeconds(86_400));
 
-		deals.onTrackingEvent(append(new Downtime(service, 404, "HTTP 404", T0.plusSeconds(5))));
+		deals.onTrackingEvent(new Downtime(service, 404, "HTTP 404", T0.plusSeconds(5)));
 		clock.set(T0.plusSeconds(10_000));
 		deals.settleDue();
 		deals.settleDue();
 		assertThat(deals.get(deal).status()).isEqualTo(Status.PROPOSED);
 		verify(rpc, never()).sendTransaction(any());
+		assertThat(events.load(service)).as("a proposal is not tracked").isEmpty();
 	}
 
 	@Test
 	void takesTheWindowFromTheAcceptanceThenSettlesIt() {
 		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
-		deals.register(deal, null);
+		deals.register(deal, "http://custom/health");
 		clock.set(T0.plusSeconds(4));
 		deals.settleDue();
 		assertThat(deals.get(deal).status()).isEqualTo(Status.PROPOSED);
+		assertThat(events.load(service)).isEmpty();
 
 		// The recipient accepts at T0 + 5; the window runs from there, not from the proposal.
 		when(rpc.getAccountInfo(deal)).thenReturn(dealAccount(oracle.address(), T0.plusSeconds(5), 10));
+		clock.set(T0.plusSeconds(6));
 		deals.settleDue();
 		UptimeDeal accepted = deals.get(deal);
 		assertThat(accepted.status()).isEqualTo(Status.ACTIVE);
 		assertThat(accepted.startsAt()).isEqualTo(T0.plusSeconds(5));
 		assertThat(accepted.endsAt()).isEqualTo(T0.plusSeconds(15));
 		verify(rpc, never()).sendTransaction(any());
+		// Tracking of this deal's own service starts on the acceptance; the second it took to notice is in the grace.
+		assertThat(events.load(service)).containsExactly(
+				new TrackingStarted(service, "http://custom/health", Duration.ofSeconds(2), T0.plusSeconds(6)));
 
 		clock.set(T0.plusSeconds(17));
 		deals.settleDue();
 		ArgumentCaptor<byte[]> tx = ArgumentCaptor.forClass(byte[].class);
 		verify(rpc).sendTransaction(tx.capture());
 		assertSignedSettlement(tx.getValue(), 10, 10);
+		assertThat(tracking.isActive(service)).as("still tracked until the settlement lands").isTrue();
+
+		when(rpc.getSignatureStatus("sig1")).thenReturn(new SignatureStatus(true, null));
+		when(rpc.getTransactionLogs("sig1")).thenReturn(List.of(dealSettledLog(deal, 10, 10, true, AMOUNT)));
+		clock.set(T0.plusSeconds(18));
+		deals.settleDue();
+		assertThat(deals.get(deal).status()).isEqualTo(Status.SETTLED);
+		assertThat(events.load(service)).hasSize(2).last().isEqualTo(new TrackingFinished(service, T0.plusSeconds(18)));
+	}
+
+	@Test
+	void anAcceptanceNoticedAfterTheStartGraceCountsTheGapAsDown() {
+		when(rpc.getAccountInfo(deal)).thenReturn(proposalAccount(T0.plusSeconds(86_400)));
+		deals.register(deal, null);
+		when(rpc.getAccountInfo(deal)).thenReturn(dealAccount(oracle.address(), T0.plusSeconds(5), 10));
+		clock.set(T0.plusSeconds(11));
+		deals.settleDue();
+
+		clock.set(T0.plusSeconds(17));
+		deals.settleDue();
+		ArgumentCaptor<byte[]> tx = ArgumentCaptor.forClass(byte[].class);
+		verify(rpc).sendTransaction(tx.capture());
+		assertSignedSettlement(tx.getValue(), 4, 10);
+	}
+
+	@Test
+	void trackingThatCouldNotStartIsStartedOnTheNextTickWhileTheDealIsOpen() {
+		ServiceMonitor flaky = new ServiceMonitor() {
+
+			boolean failed;
+
+			@Override
+			public void start(ServiceId id, String healthUrl) {
+				if (!failed) {
+					failed = true;
+					throw new IllegalStateException("database down");
+				}
+				tracking.start(id, healthUrl);
+			}
+
+			@Override
+			public void stop(ServiceId id) {
+				tracking.stop(id);
+			}
+
+		};
+		DealService deals = deals(0, HEALTH_URL, flaky);
+
+		assertThat(deals.register(deal, null).status()).isEqualTo(Status.ACTIVE);
+		assertThat(events.load(service)).isEmpty();
+
+		clock.set(T0.plusSeconds(1));
+		deals.settleDue();
+		assertThat(tracking.isActive(service)).isTrue();
+		assertThat(events.load(service)).hasSize(1);
+		deals.settleDue();
+		assertThat(events.load(service)).as("never subscribed twice").hasSize(1);
 	}
 
 	@Test
@@ -230,6 +309,7 @@ class DealServiceTest {
 		assertThat(deals.get(deal).status()).isEqualTo(Status.CANCELLED);
 		assertThat(deals.get(deal).signature()).isEqualTo("rejectTx");
 		verify(rpc, never()).sendTransaction(any());
+		assertThat(events.load(service)).as("never accepted, so never tracked").isEmpty();
 	}
 
 	@Test
@@ -285,6 +365,8 @@ class DealServiceTest {
 		assertThat(settled.status()).isEqualTo(Status.SETTLED);
 		assertThat(settled.paidToRecipient()).isTrue();
 		verify(rpc, times(1)).sendTransaction(any());
+		assertThat(tracking.isActive(service)).as("tracking stops once the deal is settled").isFalse();
+		assertThat(events.load(service).getLast()).isEqualTo(new TrackingFinished(service, T0.plusSeconds(13)));
 
 		deals.settleDue();
 		verify(rpc, times(2)).getSignatureStatus("sig1");
@@ -314,9 +396,10 @@ class DealServiceTest {
 		String longDeal = newAddress();
 		when(rpc.getAccountInfo(longDeal)).thenReturn(dealAccount(oracle.address(), T0, 1000));
 		deals.register(longDeal, null);
+		ServiceId longService = UptimeDeal.serviceIdFor(longDeal);
 
-		deals.onTrackingEvent(append(new Downtime(service, 404, "HTTP 404", T0.plusSeconds(5))));
-		deals.onTrackingEvent(append(new InternalErrorHappened(service, 500, "HTTP 500", T0.plusSeconds(7))));
+		deals.onTrackingEvent(append(new Downtime(longService, 404, "HTTP 404", T0.plusSeconds(5))));
+		deals.onTrackingEvent(append(new InternalErrorHappened(longService, 500, "HTTP 500", T0.plusSeconds(7))));
 
 		assertThat(deals.get(longDeal).isOpen()).isTrue();
 		clock.set(T0.plusSeconds(8));
@@ -356,7 +439,7 @@ class DealServiceTest {
 		deals.register(old, null);
 		deals.settleDue();
 		assertThat(deals.get(old).signature()).isEqualTo("sig1");
-		assertThat(deals.get(old).upSeconds()).isEqualTo(10);
+		assertThat(deals.get(old).upSeconds()).as("nobody tracked the window").isZero();
 	}
 
 	@Test
@@ -382,6 +465,7 @@ class DealServiceTest {
 		deals.settleDue();
 		assertThat(deals.get(deal).status()).isEqualTo(Status.FAILED);
 		assertThat(deals.get(deal).error()).contains("node down");
+		assertThat(tracking.isActive(service)).as("tracking stops once the deal failed").isFalse();
 	}
 
 	@Test
@@ -419,6 +503,7 @@ class DealServiceTest {
 		assertThat(settled.status()).isEqualTo(Status.SETTLED);
 		assertThat(settled.signature()).isEqualTo("settle");
 		assertThat(settled.paidToRecipient()).isTrue();
+		assertThat(tracking.isActive(service)).isFalse();
 	}
 
 	@Test
@@ -430,6 +515,8 @@ class DealServiceTest {
 		clock.set(T0.plusSeconds(13));
 		deals.settleDue();
 		assertThat(deals.get(deal).status()).isEqualTo(Status.CANCELLED);
+		assertThat(tracking.isActive(service)).as("tracking stops once the deal is cancelled").isFalse();
+		assertThat(events.load(service).getLast()).isEqualTo(new TrackingFinished(service, T0.plusSeconds(13)));
 	}
 
 	@Test
@@ -457,7 +544,7 @@ class DealServiceTest {
 
 	@Test
 	void fundsTheOracleWhenItIsLowAndToleratesAFaucetFailure() {
-		DealService funded = deals(100, service);
+		DealService funded = deals(100, HEALTH_URL);
 		when(rpc.getBalance(oracle.address())).thenReturn(10L);
 		funded.register(deal, null);
 		verify(rpc).requestAirdrop(oracle.address(), 1_000);

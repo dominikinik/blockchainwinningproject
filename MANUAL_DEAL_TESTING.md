@@ -59,7 +59,7 @@ cd uptime-service
 mvn spring-boot:run
 ```
 
-Terminal 4, start the monitor (the deal oracle) against that validator. It subscribes the provider on startup:
+Terminal 4, start the monitor (the deal oracle) against that validator. It subscribes the provider on startup for the dashboard, and it tracks each deal's provider on its own from the deal's acceptance until the deal is settled or cancelled:
 
 ```sh
 cd uptime-monitor
