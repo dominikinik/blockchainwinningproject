@@ -3,6 +3,7 @@ package com.example.uptime;
 import static com.example.uptime.support.DealFixtures.PROGRAM_ID;
 import static com.example.uptime.support.DealFixtures.deal;
 import static com.example.uptime.support.DealFixtures.newAddress;
+import static com.example.uptime.support.DealFixtures.proposalData;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -132,6 +133,24 @@ class UptimeServiceApplicationTests {
 		mvc.perform(get("/api/deals")).andExpect(status().isOk()).andExpect(jsonPath("$[?(@.address == '" + deal + "')]").exists());
 
 		mvc.perform(registerDeal(deal)).andExpect(status().isConflict());
+	}
+
+	@Test
+	void registersAProposalBeforeItsRecipientAccepts() throws Exception {
+		String deal = newAddress();
+		long deadline = Instant.now().getEpochSecond() + 86_400;
+		when(rpc.getAccountInfo(deal)).thenReturn(new AccountInfo(PROGRAM_ID, 1,
+				proposalData(newAddress(), newAddress(), oracle.address(), 1, 5_000_000, 7_000_000, 10, deadline)));
+
+		mvc.perform(registerDeal(deal))
+			.andExpect(status().isCreated())
+			.andExpect(jsonPath("$.status").value("PROPOSED"))
+			.andExpect(jsonPath("$.amountLamports").value(5_000_000))
+			.andExpect(jsonPath("$.guaranteeLamports").value(7_000_000))
+			.andExpect(jsonPath("$.acceptDeadline").value(Instant.ofEpochSecond(deadline).toString()))
+			.andExpect(jsonPath("$.startsAt").doesNotExist())
+			.andExpect(jsonPath("$.endsAt").doesNotExist());
+		mvc.perform(get("/api/deals/" + deal)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PROPOSED"));
 	}
 
 	@Test

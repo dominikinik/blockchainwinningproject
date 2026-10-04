@@ -43,7 +43,7 @@ describe('App routes', () => {
   it('renders the uptime deal page at /deal', async () => {
     at('/deal')
     expect(screen.getByRole('heading', { name: 'Uptime deal' })).toBeInTheDocument()
-    expect(await screen.findByText('Connect a wallet to create a deal.')).toBeInTheDocument()
+    expect(await screen.findByText('Connect a wallet to propose or accept a deal.')).toBeInTheDocument()
   })
   it('renders SLA details route (not found for unknown id)', async () => {
     at('/sla/unknown')
